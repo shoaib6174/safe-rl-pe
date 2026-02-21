@@ -1,5 +1,7 @@
 # VCP-CBF parameters (Phase 1: validation only, Phase 2: active)
 enabled: false
-d: 0.05
-alpha: 1.0
+d: 0.1           # VCP offset distance (meters). Tuned up from 0.05 per validation.
+alpha: 1.0        # CBF class-K function parameter
+w_v: 150.0        # QP weight on velocity deviation (high = prefer steering over braking)
+w_omega: 1.0      # QP weight on angular velocity deviation
 safety_margin: 0.1
