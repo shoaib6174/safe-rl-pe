@@ -40,6 +40,7 @@
 | 27 | 2026-02-22 | **Phase 2.5 Session 2**: Differentiable QP layer (qpth), 50 tests, 404 total, 2.5ms/solve | [S27](worklogs/2026-02-22_S27.md) |
 | 28 | 2026-02-22 | **Phase 2.5 Session 3**: BarrierNet actor + PPO agent, rollout buffer, 32 tests, 436 total | [S28](worklogs/2026-02-22_S28.md) |
 | 29 | 2026-02-22 | **Phase 2.5 Session 4**: Training integration, trainer script, 21 tests, 457 total | [S29](worklogs/2026-02-22_S29.md) |
+| 30 | 2026-02-22 | **Phase 2.5 Session 5**: niro-2 deployment, comparison framework, 2 training runs launched, 21 tests, 478 total | [S30](worklogs/2026-02-22_S30.md) |
 
 ## Paper Reading Status
 
