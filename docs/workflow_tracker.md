@@ -31,6 +31,7 @@
 | 18 | 2026-02-22 | **Phase 2 Session 1**: Beta distribution policy, SB3 integration, 20 tests, 138 total | [S18](worklogs/2026-02-22_S18.md) |
 | 19 | 2026-02-22 | **Phase 2 Session 2**: Multi-constraint VCP-CBF, collision CBF, typed constraints, 19 tests, 157 total | [S19](worklogs/2026-02-22_S19.md) |
 | 20 | 2026-02-22 | **Phase 2 Session 3**: Safe action bounds (LP + analytical), VCPCBFFilter integration, 25 tests, 182 total | [S20](worklogs/2026-02-22_S20.md) |
+| 21 | 2026-02-22 | **Phase 2 Session 4**: CBF-Beta policy integration, SafeRolloutBuffer, CBFBoundsComputer, 22 tests | [S21](worklogs/2026-02-22_S21.md) |
 
 ## Paper Reading Status
 
