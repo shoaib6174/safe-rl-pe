@@ -487,6 +487,7 @@ class DomainRandomizer:
 - Train pursuer and evader policies from scratch in Isaac Lab with DR
 - Use the same self-play protocol (AMS-DRL) from Phase 3
 - Achieve NE convergence comparable to Phase 3
+- **Match v_max to target robot hardware** (critical for sim-to-real)
 
 **Files to create/modify:**
 - `isaac_lab/training/train_pe_dr.py` -- training script for Isaac Lab
@@ -495,32 +496,52 @@ class DomainRandomizer:
 
 **Instructions:**
 
-1. Set up the training pipeline:
+1. **Match dynamics to target robot** (critical change from Phase 3):
+   - For TurtleBot4: set `v_max = 0.3 m/s`, `omega_max = 1.82 rad/s`
+   - For F1TENTH: set `v_max = 3.0 m/s`, `omega_max = 3.14 rad/s`
+   - Scale arena to maintain similar time-to-cross ratio:
+     - Phase 3 used 20m x 20m at 1.0 m/s → time-to-cross = 20s
+     - TurtleBot4: 6m x 6m at 0.3 m/s → time-to-cross = 20s (matched)
+     - F1TENTH: 20m x 20m at 3.0 m/s → time-to-cross = 6.7s (faster game)
+   - Update VCP-CBF parameters: `d_vcp` and `safety_margin` scale with v_max
+     - `d_vcp = 0.05 * (v_max / 1.0)` → 0.015m for TurtleBot4
+     - `safety_margin = 0.1 * (v_max / 1.0)` → 0.03m for TurtleBot4
+   - Update `max_steps` to preserve similar episode duration:
+     - `max_steps = int(60.0 / dt)` = 1200 at 20Hz (same as Phase 1-3)
+   - **DR center the v_max range on the REAL robot's v_max, not 1.0 m/s**:
+     ```python
+     dr_config['v_max'] = {'mean': 0.3, 'std': 0.06, 'distribution': 'normal'}  # TurtleBot4
+     ```
+
+2. Set up the training pipeline:
    - Use the same PPO hyperparameters from Phase 3 (lr=3e-4, gamma=0.99, etc.)
    - Use the same CBF-Beta constrained policy architecture
    - Use 2048-4096 parallel environments with DR enabled
    - Target: 10-50M total timesteps (DR requires more data than non-DR)
 
-2. Run AMS-DRL self-play:
+3. Run AMS-DRL self-play:
    - S0: Cold-start evader (500K steps)
    - S1: Train pursuer vs frozen evader (1M steps)
    - S2: Train evader vs frozen pursuer (1M steps)
    - Continue alternating until |SR_P - SR_E| < 0.10
 
-3. Log all metrics to W&B:
+4. Log all metrics to W&B:
    - Capture rate, escape rate per self-play phase
    - CBF violation rate (should be zero with CBF-Beta)
    - Episode length distribution
    - DR parameter distributions
+   - **Log v_max and arena size in run config for traceability**
 
-4. Compare DR-trained policies vs Phase 3 non-DR policies:
+5. Compare DR-trained policies vs Phase 3 non-DR policies:
    - In nominal simulation: DR policies may be slightly worse (robustness vs optimality trade-off)
    - Under perturbation: DR policies should be significantly better
+   - **Compare matched-v_max DR policy vs Phase 3 (1.0 m/s) policy deployed with velocity scaling**
 
 **Verification:**
 - NE convergence: |SR_P - SR_E| < 0.10
 - Zero CBF violations during training
 - DR-trained policies degrade <5% in nominal simulation vs non-DR policies
+- **Matched-v_max policy performs >= velocity-scaled policy on Gazebo evaluation**
 - DR-trained policies maintain >80% of nominal performance under worst-case DR parameters
 
 ---
@@ -1233,9 +1254,9 @@ class GPColdStartManager:
    - Verify odometry noise is within DR training range
 
 4. Arena setup:
-   - Mark a rectangular arena on the floor (start with 4m x 4m for TurtleBot4 speed)
-   - Scale: if v_max_real = 0.3 m/s and v_max_sim = 1.0 m/s, scale arena by 0.3x => 6m x 6m
-   - Actually: re-train with v_max matching the robot, keep arena at feasible size
+   - Mark a rectangular arena on the floor matching the training arena from Session 4
+   - For TurtleBot4: 6m x 6m arena (matched to v_max=0.3 m/s re-training in Session 4)
+   - Arena size preserves the same time-to-cross ratio as simulation (20s at robot v_max)
    - Place physical obstacles (cardboard cylinders, boxes) matching training layout
    - Set up external tracking if available (OptiTrack, AprilTag ceiling) for ground truth
 
@@ -1467,6 +1488,33 @@ ros2 launch pe_bringup pe_two_robots.launch.py \
 
 ---
 
+### Sessions 19-21: Iteration Buffer (Debugging & Refinement)
+
+**Purpose**: Real sim-to-real transfer is inherently iterative. These buffer sessions provide dedicated time for debugging, parameter tuning, and re-running failed experiments. In practice, the first attempt rarely works end-to-end.
+
+**Session 19: Sim-to-Gazebo Iteration** (3-5h)
+- Debug issues discovered during Sessions 7-9 (Gazebo/ROS2 integration)
+- Re-tune RCBF-QP parameters if safety margin is too conservative or too aggressive in Gazebo
+- Fix ONNX inference issues (BiMDN LSTM state management, quantization artifacts)
+- Re-run Session 9 evaluation if sim-to-Gazebo gap > 10%
+
+**Session 20: Gazebo-to-Real Iteration** (4-6h)
+- Debug real-robot issues discovered during Sessions 14-16
+- Tune GP cold-start parameters based on actual sensor noise characteristics
+- Adjust arena scaling if robots behave differently at real-world scale
+- Re-calibrate sensor offsets and timing delays
+- Re-run safety stress tests after parameter changes
+
+**Session 21: End-to-End Polish** (3-4h)
+- Re-run comprehensive evaluation (Session 18) with final tuned parameters
+- Record additional demonstration videos if earlier recordings had issues
+- Fill gaps in data collection for Phase 5 tables/figures
+- Document all parameter changes made during iteration with rationale
+
+**Note**: If all prior sessions succeed on first attempt, these buffer sessions can be used for additional experiments (e.g., testing with F1TENTH, exploring larger arenas, additional challenge scenarios). In practice, at least 1-2 of these sessions will be needed for debugging.
+
+---
+
 ## 5. Testing Plan (Automated)
 
 ### 5.1 Unit Tests
@@ -1584,7 +1632,7 @@ ros2 launch pe_bringup pe_two_robots.launch.py \
 
 | Criterion | Metric | Target | Measurement Method | Protocol |
 |-----------|--------|--------|-------------------|----------|
-| Sim-to-real gap | Capture rate difference (sim vs real) | < 10% | 100 sim episodes vs 50 real episodes | Same initial conditions (seeded); 3 seeds; Welch's t-test, p < 0.05 |
+| Sim-to-real gap | Capture rate difference (sim vs real) | < 10% | 100 sim episodes vs 50 real episodes | Same initial conditions (seeded); 5 seeds; Welch's t-test, p < 0.05 |
 | Safety | Safety violation count on real robot | ZERO | All real robot episodes (50+) | Any wall/obstacle/robot collision = FAIL; log min CBF value per step |
 | Real-time inference | Control loop frequency | >= 20Hz (mean), no drop below 10Hz | ROS2 timing logs per-callback | Record 10,000 consecutive steps; plot histogram |
 | QP solve time | 95th percentile solve time | < 50ms | QP solver C++ benchmark on target hardware | 10,000 random (state, action) pairs including 10% near-infeasible |
@@ -2207,12 +2255,12 @@ scikit-learn==1.6.1
 
 ### 10.2 Reproducibility Protocol
 
-1. **Random seeds**: All experiments use seeds `[0, 1, 2]` as in prior phases
+1. **Random seeds**: All experiments use seeds `[0, 1, 2, 3, 4]` as in prior phases
 2. **Isaac Lab determinism**: Set `torch.use_deterministic_algorithms(True)` and `torch.backends.cudnn.deterministic = True`
 3. **ONNX determinism**: ONNX models are deterministic by design; verify by comparing 1000 inference calls
 4. **Domain randomization seed**: DR parameters seeded per-environment at reset; record `env_seed = base_seed + env_idx`
 5. **GP reproducibility**: Fix GP hyperparameter init; set `torch.manual_seed(seed)` before GP training
-6. **Gazebo reproducibility**: Gazebo physics is NOT perfectly deterministic; run 3 seeds and report mean ± std
+6. **Gazebo reproducibility**: Gazebo physics is NOT perfectly deterministic; run 5 seeds and report mean ± std
 7. **Real robot**: Real experiments are inherently non-repeatable; report over 50+ episodes for statistical power
 8. **Hardware documentation**: Record exact hardware specs (RPi4 model, Jetson model, WiFi router, robot firmware version)
 9. **Git state**: Tag each experiment with the exact git commit hash; store in W&B run metadata

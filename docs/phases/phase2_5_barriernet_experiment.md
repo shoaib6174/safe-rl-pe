@@ -598,8 +598,40 @@ GCBF+ (Zhang et al., T-RO 2024, MIT) is a graph-based CBF framework for multi-ag
                G_list.append(G_row)
                h_list.append(h_row)
 
-           # Arena boundary constraints (similar structure)
-           # ... (arena-specific CBF constraints added here)
+           # Arena boundary constraints (4 walls, VCP-CBF formulation from Phase 2)
+           # Uses the same VCP position (q_x, q_y) computed above.
+           x_min = arena_params['x_min']
+           x_max = arena_params['x_max']
+           y_min = arena_params['y_min']
+           y_max = arena_params['y_max']
+
+           # Left wall: h1 = q_x - x_min >= 0
+           h1 = q_x - x_min
+           a_v_1 = cos_th        # dh1/dv via VCP Jacobian
+           a_w_1 = -d_vcp * sin_th
+           G_list.append(torch.stack([-2*dt*a_v_1, -2*dt*a_w_1], dim=-1))
+           h_list.append(gamma * h1)
+
+           # Right wall: h2 = x_max - q_x >= 0
+           h2 = x_max - q_x
+           a_v_2 = -cos_th
+           a_w_2 = d_vcp * sin_th
+           G_list.append(torch.stack([-2*dt*a_v_2, -2*dt*a_w_2], dim=-1))
+           h_list.append(gamma * h2)
+
+           # Bottom wall: h3 = q_y - y_min >= 0
+           h3 = q_y - y_min
+           a_v_3 = sin_th
+           a_w_3 = d_vcp * cos_th
+           G_list.append(torch.stack([-2*dt*a_v_3, -2*dt*a_w_3], dim=-1))
+           h_list.append(gamma * h3)
+
+           # Top wall: h4 = y_max - q_y >= 0
+           h4 = y_max - q_y
+           a_v_4 = -sin_th
+           a_w_4 = -d_vcp * cos_th
+           G_list.append(torch.stack([-2*dt*a_v_4, -2*dt*a_w_4], dim=-1))
+           h_list.append(gamma * h4)
 
            # Pad to n_constraints_max if fewer constraints
            while len(G_list) < self.n_constraints_max:
@@ -840,7 +872,7 @@ GCBF+ (Zhang et al., T-RO 2024, MIT) is a graph-based CBF framework for multi-ag
        """
 
        def __init__(self, obs_dim, hidden_dim=256, n_layers=2,
-                    n_constraints_max=6, v_max=1.0, omega_max=2.84,
+                    n_constraints_max=8, v_max=1.0, omega_max=2.84,
                     d_vcp=0.05, dt=0.05, gamma_cbf=0.5):
            super().__init__()
 
@@ -2221,7 +2253,7 @@ qpth==0.0.16               # Alternative differentiable QP (faster for small QPs
 # Seed the noise RNG:
 torch.manual_seed(seed)
 
-# Run all evaluation with 3 seeds: [0, 1, 2]
+# Run all evaluation with 5 seeds: [0, 1, 2, 3, 4]
 # Statistical significance: Welch's t-test with p < 0.05
 ```
 

@@ -1,0 +1,232 @@
+"""Unit tests for the PursuitEvasionEnv environment."""
+
+import numpy as np
+import pytest
+
+from envs.pursuit_evasion_env import PursuitEvasionEnv
+from envs.wrappers import SingleAgentPEWrapper
+
+
+class TestPursuitEvasionEnv:
+    """Tests for the core PE environment."""
+
+    def make_env(self, **kwargs):
+        defaults = dict(
+            arena_width=20.0,
+            arena_height=20.0,
+            dt=0.05,
+            max_steps=1200,
+            capture_radius=0.5,
+            render_mode=None,
+        )
+        defaults.update(kwargs)
+        return PursuitEvasionEnv(**defaults)
+
+    def test_reset_returns_correct_structure(self):
+        env = self.make_env()
+        obs, info = env.reset(seed=42)
+
+        assert "pursuer" in obs
+        assert "evader" in obs
+        assert obs["pursuer"].shape == (14,)
+        assert obs["evader"].shape == (14,)
+        assert "distance" in info
+
+    def test_reset_initial_separation(self):
+        """Agents should start with min_init_distance <= d <= max_init_distance."""
+        env = self.make_env(min_init_distance=3.0, max_init_distance=15.0)
+        for seed in range(20):
+            obs, info = env.reset(seed=seed)
+            d = info["distance"]
+            assert d >= 3.0 - 0.01, f"seed={seed}: distance {d} < min 3.0"
+            assert d <= 15.0 + 0.01, f"seed={seed}: distance {d} > max 15.0"
+
+    def test_step_returns_correct_structure(self):
+        env = self.make_env()
+        env.reset(seed=42)
+
+        p_action = np.array([0.5, 0.0], dtype=np.float32)
+        e_action = np.array([0.5, 0.0], dtype=np.float32)
+        obs, rewards, terminated, truncated, info = env.step(p_action, e_action)
+
+        assert "pursuer" in obs
+        assert "evader" in obs
+        assert "pursuer" in rewards
+        assert "evader" in rewards
+        assert isinstance(terminated, bool)
+        assert isinstance(truncated, bool)
+
+    def test_zero_sum_reward(self):
+        """Reward should be zero-sum at every step."""
+        env = self.make_env()
+        env.reset(seed=42)
+
+        for _ in range(50):
+            p_action = env.pursuer_action_space.sample()
+            e_action = env.evader_action_space.sample()
+            obs, rewards, terminated, truncated, info = env.step(p_action, e_action)
+
+            r_sum = rewards["pursuer"] + rewards["evader"]
+            assert r_sum == pytest.approx(0.0, abs=1e-10), \
+                f"Non-zero-sum: r_P={rewards['pursuer']}, r_E={rewards['evader']}"
+
+            if terminated or truncated:
+                env.reset(seed=42)
+
+    def test_capture_detection(self):
+        """Force agents close together and verify capture triggers."""
+        env = self.make_env(capture_radius=0.5)
+        env.reset(seed=42)
+
+        # Manually place agents very close
+        env.pursuer_state = np.array([0.0, 0.0, 0.0])
+        env.evader_state = np.array([0.3, 0.0, 0.0])
+        env.prev_distance = env._compute_distance()
+
+        # Step with zero actions (they're already close)
+        p_action = np.array([0.0, 0.0], dtype=np.float32)
+        e_action = np.array([0.0, 0.0], dtype=np.float32)
+        obs, rewards, terminated, truncated, info = env.step(p_action, e_action)
+
+        assert terminated is True, "Capture should trigger when distance <= capture_radius"
+        assert "episode_metrics" in info
+        assert info["episode_metrics"]["captured"] is True
+
+    def test_timeout_detection(self):
+        """Episode should truncate at max_steps."""
+        env = self.make_env(max_steps=10)
+        env.reset(seed=42)
+
+        # Place agents far apart so no capture
+        env.pursuer_state = np.array([-8.0, 0.0, 0.0])
+        env.evader_state = np.array([8.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        p_action = np.array([0.0, 0.0], dtype=np.float32)
+        e_action = np.array([0.0, 0.0], dtype=np.float32)
+
+        for i in range(10):
+            obs, rewards, terminated, truncated, info = env.step(p_action, e_action)
+            if i < 9:
+                assert not terminated and not truncated
+            else:
+                assert truncated is True
+                assert "episode_metrics" in info
+                assert info["episode_metrics"]["captured"] is False
+
+    def test_observations_normalized(self):
+        """Observations should be roughly within [-1, 1]."""
+        env = self.make_env()
+        obs, _ = env.reset(seed=42)
+
+        for role in ["pursuer", "evader"]:
+            o = obs[role]
+            # Allow slight overflow due to floating point
+            assert np.all(o >= -1.1), f"{role} obs has values < -1.1: {o}"
+            assert np.all(o <= 1.1), f"{role} obs has values > 1.1: {o}"
+
+    def test_pursuer_positive_reward_closing(self):
+        """Pursuer should get positive reward when closing distance."""
+        env = self.make_env()
+        env.reset(seed=42)
+
+        # Place pursuer heading toward evader
+        env.pursuer_state = np.array([-5.0, 0.0, 0.0])  # heading east
+        env.evader_state = np.array([5.0, 0.0, 0.0])     # to the east
+        env.prev_distance = env._compute_distance()
+
+        # Pursuer moves toward evader, evader stands still
+        p_action = np.array([1.0, 0.0], dtype=np.float32)
+        e_action = np.array([0.0, 0.0], dtype=np.float32)
+        _, rewards, _, _, _ = env.step(p_action, e_action)
+
+        assert rewards["pursuer"] > 0, "Pursuer should get positive reward when closing"
+        assert rewards["evader"] < 0, "Evader should get negative reward when pursuer closes"
+
+    def test_capture_bonus(self):
+        """Capture should give large positive reward to pursuer."""
+        env = self.make_env(capture_radius=1.0, capture_bonus=100.0)
+        env.reset(seed=42)
+
+        # Place agents just outside capture radius heading toward each other
+        env.pursuer_state = np.array([-0.5, 0.0, 0.0])
+        env.evader_state = np.array([0.5, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        # Both approach
+        p_action = np.array([1.0, 0.0], dtype=np.float32)
+        e_action = np.array([1.0, 0.0], dtype=np.float32)  # heading west (pi), so moves west... wait
+        # Evader heading is pi, so v=1.0 moves in direction pi = west (-x)
+        # That means evader moves toward pursuer
+
+        _, rewards, terminated, _, _ = env.step(p_action, e_action)
+
+        if terminated:
+            # Capture bonus should dominate
+            assert rewards["pursuer"] > 50, f"Capture reward too small: {rewards['pursuer']}"
+
+    def test_action_space_bounds(self):
+        """Action space should have correct bounds."""
+        env = self.make_env(pursuer_v_max=1.0, pursuer_omega_max=2.84)
+        assert env.pursuer_action_space.low[0] == pytest.approx(0.0)
+        assert env.pursuer_action_space.high[0] == pytest.approx(1.0)
+        assert env.pursuer_action_space.low[1] == pytest.approx(-2.84)
+        assert env.pursuer_action_space.high[1] == pytest.approx(2.84)
+
+    def test_reproducibility(self):
+        """Same seed should produce identical sequences."""
+        env1 = self.make_env()
+        env2 = self.make_env()
+
+        obs1, _ = env1.reset(seed=123)
+        obs2, _ = env2.reset(seed=123)
+
+        np.testing.assert_array_equal(obs1["pursuer"], obs2["pursuer"])
+
+        action = np.array([0.5, 1.0], dtype=np.float32)
+        o1, r1, t1, tr1, _ = env1.step(action, action)
+        o2, r2, t2, tr2, _ = env2.step(action, action)
+
+        np.testing.assert_array_equal(o1["pursuer"], o2["pursuer"])
+        assert r1["pursuer"] == r2["pursuer"]
+
+
+class TestSingleAgentWrapper:
+    """Tests for the SingleAgentPEWrapper."""
+
+    def test_pursuer_wrapper(self):
+        base_env = PursuitEvasionEnv(render_mode=None)
+        env = SingleAgentPEWrapper(base_env, role="pursuer", opponent_policy=None)
+
+        obs, info = env.reset(seed=42)
+        assert obs.shape == (14,)
+
+        action = env.action_space.sample()
+        obs, reward, terminated, truncated, info = env.step(action)
+        assert obs.shape == (14,)
+        assert isinstance(reward, float)
+
+    def test_evader_wrapper(self):
+        base_env = PursuitEvasionEnv(render_mode=None)
+        env = SingleAgentPEWrapper(base_env, role="evader", opponent_policy=None)
+
+        obs, info = env.reset(seed=42)
+        assert obs.shape == (14,)
+
+        action = env.action_space.sample()
+        obs, reward, terminated, truncated, info = env.step(action)
+        assert obs.shape == (14,)
+
+    def test_invalid_role(self):
+        base_env = PursuitEvasionEnv(render_mode=None)
+        with pytest.raises(ValueError, match="role must be"):
+            SingleAgentPEWrapper(base_env, role="invalid")
+
+    def test_set_opponent(self):
+        """set_opponent should update the opponent policy without error."""
+        base_env = PursuitEvasionEnv(render_mode=None)
+        env = SingleAgentPEWrapper(base_env, role="pursuer")
+
+        # Should not raise
+        env.set_opponent(None)
+        env.set_opponent(lambda obs, deterministic=False: (np.zeros(2), None))

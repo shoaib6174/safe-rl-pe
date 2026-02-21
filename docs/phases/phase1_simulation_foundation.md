@@ -340,10 +340,21 @@ This achieves **uniform relative degree 1**, making CBF-QP well-posed. The VCP f
    # y_new = y + v * sin(theta) * dt
    # theta_new = theta + omega * dt
    # theta_new = wrap_angle(theta_new)  # Normalize to [-pi, pi]
+   #
+   # Arena wall collision model (position clipping):
+   # x_new = clip(x_new, robot_radius, arena_width - robot_radius)
+   # y_new = clip(y_new, robot_radius, arena_height - robot_radius)
+   # If clipped (wall contact): v = 0 (velocity zeroed, robot slides along wall)
+   # Rationale: Clipping with velocity zeroing is simple, deterministic,
+   # and prevents robots from escaping the arena. The robot's heading (theta)
+   # is NOT modified on wall contact, allowing the robot to turn away naturally.
+   # Note: In Phase 2+, the VCP-CBF arena boundary constraints should prevent
+   # wall contact entirely, so this clipping acts as a last-resort failsafe.
    ```
    - Test: verify that a robot driving forward at v=1.0 for 1s moves 1.0m
    - Test: verify that omega=pi/2 for 1s rotates 90 degrees
    - Test: verify boundary wrapping of theta
+   - Test: verify arena wall clipping — robot at (19.9, 10.0) heading east with v=1.0, dt=0.05 should be clipped to x=(20.0 - robot_radius) and v set to 0
 
 3. **Implement core environment** (`pursuit_evasion_env.py`):
    - `__init__`: arena size, robot params, game params
@@ -819,7 +830,7 @@ This achieves **uniform relative degree 1**, making CBF-QP well-posed. The VCP f
    python scripts/train.py wandb.mode=disabled
 
    # Multi-run hyperparameter sweep
-   python scripts/train.py --multirun algorithm.learning_rate=1e-3,3e-4,1e-4 seed=0,1,2
+   python scripts/train.py --multirun algorithm.learning_rate=1e-3,3e-4,1e-4 seed=0,1,2,3,4
    ```
 
 5. **Experiment tracking — wandb + TensorBoard** (`training/tracking.py`):
@@ -1298,7 +1309,7 @@ This achieves **uniform relative degree 1**, making CBF-QP well-posed. The VCP f
 **Validation**:
 - All baselines train without errors
 - PPO self-play outperforms random and is competitive with greedy
-- Comparison results are reproducible (3+ random seeds)
+- Comparison results are reproducible (5 random seeds)
 - **All baseline runs appear in wandb with grouped learning curves**
 - **Final comparison table logged to wandb as artifact**
 - **Evaluation videos for each baseline recorded and viewable in wandb**
@@ -1511,7 +1522,7 @@ self_play_config = {
     'timesteps_per_phase': 200_000,    # Steps per training phase
     'eval_episodes': 100,              # Episodes for evaluation
     'convergence_threshold': 0.10,     # |capture_rate - 0.5| < threshold
-    'n_seeds': 3,                      # Random seeds for reproducibility
+    'n_seeds': 5,                      # Random seeds for reproducibility
 }
 ```
 
@@ -1603,7 +1614,7 @@ wandb:
 
 | Criterion | Target | How to Measure |
 |-----------|--------|---------------|
-| Pursuer learns to capture | Capture rate > 80% vs random evader | Evaluate over 100 episodes, 3 seeds |
+| Pursuer learns to capture | Capture rate > 80% vs random evader | Evaluate over 100 episodes, 5 seeds |
 | Evader learns non-trivial evasion | Mean `|omega|` > 0.5 rad/s AND trajectory curvature variance > 0.1 | Automated metric over 100 episodes (rejects straight-line flee) |
 | Training converges | Mean reward improvement < 1% for 5 consecutive eval windows, within 2M timesteps | Log eval reward every 50K steps; check plateau condition |
 | VCP-CBF works: steering over braking | When CBF intervenes: `mean(|delta_omega|) / mean(|delta_v|)` > 2.0 | Compute ratio over all CBF intervention timesteps in 100 test episodes |
@@ -2062,7 +2073,7 @@ def make_reproducible_env(env_class, n_envs, seed, **env_kwargs):
 | Concern | Resolution |
 |---------|-----------|
 | `SubprocVecEnv` breaks reproducibility | Use `DummyVecEnv` for validation runs; `SubprocVecEnv` acceptable for exploratory training |
-| PPO is more sensitive to seed than off-policy (TD3/SAC) | Run 3 seeds minimum; report mean ± std |
+| PPO is more sensitive to seed than off-policy (TD3/SAC) | Run 5 seeds minimum; report mean ± std |
 | Cross-platform irreproducibility | Same platform + same CUDA version required for bit-for-bit matching |
 | `torch.use_deterministic_algorithms` may error | Some PyTorch ops lack deterministic impl; catch and document |
 

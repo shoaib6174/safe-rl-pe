@@ -973,3 +973,65 @@ r_P = -r_E
 J_P = E[Σ γ^t · r_P_t]  (pursuer maximizes)
 J_E = E[Σ γ^t · r_E_t]  (evader maximizes = pursuer minimizes)
 ```
+
+---
+
+## Appendix B: Compute Budget
+
+### B.1 Per-Phase GPU-Hour Estimates
+
+All estimates assume 5 seeds per configuration (standardized across all phases).
+
+| Phase | Key Training Runs | Est. GPU-Hours | Notes |
+|-------|-------------------|---------------|-------|
+| **Phase 1** | PPO self-play (5 seeds), DQN/DDPG/PPO baselines (5 seeds each), VCP-CBF validation (CPU) | **15-30** | Mostly CPU-bound; GPU optional. 2M timesteps per run at ~5K steps/sec. |
+| **Phase 2** | CBF-Beta training (5 seeds), ablation study (5 configs x 5 seeds = 25 runs, 300K steps each) | **50-125** | 2-5x slower than Phase 1 due to QP solver overhead (~1-5ms per step). |
+| **Phase 2.5** | BarrierNet training (5 seeds x 2M steps), CBF-Beta comparison (5 seeds) | **40-80** | QP-in-the-loop training adds ~3-10x overhead. cvxpylayers per-sample loop is the bottleneck. |
+| **Phase 3** | AMS-DRL self-play (6-12 phases x 500K steps, 5 seeds), baselines (5 methods x 5 seeds), BiMDN pre-training | **60-120** | BiMDN adds ~20% overhead. AMS-DRL phases are sequential per seed. |
+| **Phase 4** | Isaac Lab re-training with DR (2048-4096 parallel envs, 10-50M steps), GP training | **50-150** | GPU-accelerated via Isaac Lab. Bulk of compute is the initial DR re-training. |
+| **Phase 5** | 12 baselines x 5 seeds = 60 runs, 11 ablations x 5 seeds = 55 runs, best-response training (10 runs) | **250-625** | Largest compute phase. ~125 training runs total at 1-5 GPU-hours each. |
+| **TOTAL** | | **465-1,130** | |
+
+### B.2 Hardware Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| GPU | 1x RTX 2060 (8GB VRAM) | 1x RTX 3080+ (10GB+ VRAM) |
+| CPU | 8 cores | 16+ cores |
+| RAM | 16 GB | 32 GB |
+| Storage | 50 GB (models + logs) | 100 GB (with Isaac Lab) |
+| Isaac Lab | NVIDIA GPU with CUDA 11.8+, Isaac Sim 4.2+ | RTX 3070+ for 2048+ parallel envs |
+
+**Lab PC (niro-2)**: Verify GPU compatibility with `nvidia-smi` before starting Phase 4. Isaac Lab requires NVIDIA GPU with CUDA 11.8+.
+
+### B.3 Timeline Mapping
+
+At ~40 GPU-hours/week (single GPU, ~6h/day):
+
+| Phase | Coding (weeks) | Training (weeks) | Total (weeks) |
+|-------|----------------|-------------------|---------------|
+| Phase 1 | 3-4 | 0.5-1 | 3.5-5 |
+| Phase 2 | 4-5 | 1-3 | 5-8 |
+| Phase 2.5 | 3-4 | 1-2 | 4-6 |
+| Phase 3 | 4-5 | 1.5-3 | 5.5-8 |
+| Phase 4 | 6-8 | 1-4 | 7-12 |
+| Phase 5 | 5-6 | 6-16 | 11-22 |
+| **Total** | **25-32** | **11-29** | **36-61** |
+
+### B.4 Compute Prioritization (If Budget Exceeded)
+
+If total compute budget must be reduced, prioritize in this order:
+
+1. **Critical path** (cannot skip): Phase 1 self-play, Phase 2 CBF-Beta, Phase 3 AMS-DRL, Phase 4 DR re-training
+2. **Publication-essential**: Phase 5 top-3 baselines + top-3 ablations (reduce from 12+11 to 3+3)
+3. **Nice-to-have**: Phase 2.5 BarrierNet comparison, remaining baselines, remaining ablations
+4. **Reduce seeds**: Drop from 5 to 3 seeds for non-key experiments (with explicit statistical caveat)
+
+### B.5 Multi-GPU Strategy
+
+If multiple GPUs are available:
+- Phase 5 ablation/baseline runs are embarrassingly parallel (each run is independent)
+- Isaac Lab Phase 4 training benefits from a single high-end GPU (not multi-GPU)
+- Different seeds can run on different GPUs simultaneously
+- Estimated speedup with 2 GPUs: ~1.7x (overhead from job scheduling)
+- Estimated speedup with 4 GPUs: ~3x

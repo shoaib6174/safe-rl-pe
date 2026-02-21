@@ -725,7 +725,51 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
            self.critic_head = nn.Linear(256, 1)
    ```
 
-4. **BiMDN pre-training**:
+4. **BiMDN pre-training data collection**:
+   ```python
+   def collect_bimdn_pretraining_data(env, pursuer_policy, evader_policy,
+                                       n_episodes=500, history_len=10):
+       """
+       Collect supervised pre-training data for BiMDN.
+       Uses Phase 2 trained policies to generate diverse trajectories.
+       Records partial observations alongside ground-truth opponent positions.
+
+       Returns:
+           dataset: list of (obs_history, true_opponent_pos) pairs
+           Each obs_history: (history_len, obs_dim) numpy array
+           Each true_opponent_pos: (2,) numpy array [x, y]
+       """
+       dataset = []
+       for ep in range(n_episodes):
+           obs, _ = env.reset()
+           obs_buffer = deque(maxlen=history_len)
+
+           for step in range(env.max_steps):
+               obs_buffer.append(obs['pursuer'])
+
+               if len(obs_buffer) == history_len:
+                   obs_history = np.stack(list(obs_buffer))
+                   true_pos = env.get_evader_position()  # Ground truth
+                   dataset.append((obs_history, true_pos))
+
+               # Both agents act using Phase 2 policies
+               p_action = pursuer_policy.predict(obs['pursuer'])
+               e_action = evader_policy.predict(obs['evader'])
+               obs, _, done, _, _ = env.step({'pursuer': p_action, 'evader': e_action})
+               if done:
+                   break
+
+       return dataset  # ~500 episodes x ~600 steps = ~300K samples
+   ```
+
+   **Data collection procedure**:
+   - Load Phase 2 trained pursuer and evader checkpoints
+   - Run 500 episodes with FOV sensor active, recording full state
+   - Split 80/20 train/val with `torch.Generator().manual_seed(42)`
+   - Expected dataset size: ~200K-300K (obs_history, true_pos) pairs
+   - Storage: ~500MB uncompressed, save as `.npz` file
+
+5. **BiMDN pre-training**:
    ```python
    def pretrain_bimdn(bimdn, dataset, epochs=50, lr=1e-3):
        """
@@ -1127,7 +1171,7 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
 **Validation**:
 - Simultaneous self-play trains without divergence
 - Comparison with AMS-DRL is fair (same total timesteps, same network)
-- Results are reproducible (3 seeds)
+- Results are reproducible (5 seeds)
 
 **Estimated effort**: 3-4 hours (+1h buffer)
 
@@ -1175,15 +1219,25 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
            self.eval_window = 100
 
        def check_advancement(self, metrics):
-           """Advance if both agents achieve >70% success."""
+           """Advance when the pursuer demonstrates competence at the current level.
+
+           Criterion: capture_rate > advancement_threshold (0.70).
+           Since the evader improves via self-play, a 70% capture rate indicates
+           the pursuer has mastered the current difficulty level against a
+           co-adapting opponent. The evader's quality is implicitly validated
+           by the self-play equilibrium (NE gap check is separate).
+
+           Note: We do NOT require min(capture_rate, escape_rate) > threshold
+           because capture_rate + escape_rate = 1, making min <= 0.5 always.
+           The balance criterion is handled by AMS-DRL's NE convergence check.
+           """
            if self.current_level >= 4:
                return False
 
            capture_rate = np.mean(metrics[-self.eval_window:])
-           escape_rate = 1 - capture_rate
 
-           # Both agents need to be performing well
-           if min(capture_rate, escape_rate) > self.advancement_threshold * 0.5:
+           # Pursuer must achieve >70% capture rate at current level
+           if capture_rate > self.advancement_threshold:
                self.current_level += 1
                self.env.set_curriculum_level(self.levels[self.current_level])
                print(f"Advanced to Level {self.current_level}: "
@@ -1589,7 +1643,7 @@ amsdrl_config = {
 
 ```python
 curriculum_config = {
-    'advancement_threshold': 0.70,   # Min performance to advance
+    'advancement_threshold': 0.70,   # Capture rate > 70% to advance to next level
     'eval_window': 100,              # Episodes to average for advancement check
     'max_levels': 4,
 }
@@ -1709,15 +1763,15 @@ Key metrics to track during self-play training:
 
 | Criterion | Target | How to Measure | Protocol |
 |-----------|--------|---------------|----------|
-| NE convergence | NE gap < 0.10 within 6 phases | `abs(SR_P - SR_E)` computed over 200 eval episodes after each phase | 3 seeds; plot convergence curve with error bars |
-| BiMDN improvement | Capture rate +15% vs raw observation (same setup) | Train identical pipeline with/without BiMDN; evaluate 200 episodes | 3 seeds; Welch's t-test, p < 0.05 |
-| Safety maintained | Zero safety violations across all partial-obs training | `assert h_i(x) >= -1e-6` every timestep (CBF uses true state) | 3 seeds x all AMS-DRL phases; any violation = FAIL |
+| NE convergence | NE gap < 0.10 within 6 phases | `abs(SR_P - SR_E)` computed over 200 eval episodes after each phase | 5 seeds; plot convergence curve with error bars |
+| BiMDN improvement | Capture rate +15% vs raw observation (same setup) | Train identical pipeline with/without BiMDN; evaluate 200 episodes | 5 seeds; Welch's t-test, p < 0.05 |
+| Safety maintained | Zero safety violations across all partial-obs training | `assert h_i(x) >= -1e-6` every timestep (CBF uses true state) | 5 seeds x all AMS-DRL phases; any violation = FAIL |
 | Strategy diversity | >= 3 distinct DTW-based clusters (`cluster_entropy_norm` > 0.7) | DTW + k-means on 500 trajectories; silhouette > 0.3 | 500 eval trajectories; k=5 default |
-| Baselines complete | MACPO + MAPPO-Lag + CPO + unconstrained + simultaneous SP | All trained with same compute budget; eval table filled | 3 seeds each |
+| Baselines complete | MACPO + MAPPO-Lag + CPO + unconstrained + simultaneous SP | All trained with same compute budget; eval table filled | 5 seeds each |
 | Exploitability | < 0.15 reward gap for both agents | Train best-response for 500K steps against fixed opponent; compare | Report for both pursuer and evader |
-| Curriculum completes | Agent advances to Level 4 within training budget | Curriculum level tracked per phase; Level 4 reached | 3 seeds; if any seed fails to reach L4, investigate |
-| Health monitoring | No unrecovered collapses; <= 2 rollbacks total | Entropy, capture rate, Elo tracked throughout training | 3 seeds; report rollback events and triggers |
-| No catastrophic forgetting | Forgetting score < 0.15 at convergence | Evaluate against all historical checkpoints; compute peak drop | 3 seeds; report per-checkpoint win rates |
+| Curriculum completes | Agent advances to Level 4 within training budget | Curriculum level tracked per phase; Level 4 reached | 5 seeds; if any seed fails to reach L4, investigate |
+| Health monitoring | No unrecovered collapses; <= 2 rollbacks total | Entropy, capture rate, Elo tracked throughout training | 5 seeds; report rollback events and triggers |
+| No catastrophic forgetting | Forgetting score < 0.15 at convergence | Evaluate against all historical checkpoints; compute peak drop | 5 seeds; report per-checkpoint win rates |
 | Partial-obs visualization | FOV cones + lidar rays + belief ellipses render in PERenderer | `render_mode="human"` shows overlays; `render_mode="rgb_array"` produces valid video | Visual check + RecordVideo produces .mp4 with sensor overlays |
 | wandb tracking operational | All Phase 3 runs logged with NE gap, health metrics, baseline tables | wandb dashboard shows `ne/*`, `health/*`, `diversity/*` metrics | Verify runs in `phase3-evaluation` group |
 
@@ -1737,9 +1791,9 @@ Key metrics to track during self-play training:
 
 > **Phase 3 is COMPLETE when:**
 > 1. Deliverables D1-D15 are implemented and tested (including D9: health monitoring, D10-D11: viz/tracking)
-> 2. ALL must-pass criteria in Section 7.1 are met (3 seeds each)
+> 2. ALL must-pass criteria in Section 7.1 are met (5 seeds each)
 > 3. Baseline comparison table (Section 5, Session 6) is filled with actual numbers
-> 4. NE convergence plot generated with error bars (3 seeds)
+> 4. NE convergence plot generated with error bars (5 seeds)
 > 5. Strategy diversity analysis complete (DTW clusters identified and visualized)
 > 6. Minimum test suite (Section 7.4) passes: 21 tests (A-U), all green
 > 7. Health monitoring system active: entropy, baselines, rollback, forgetting detection all operational
@@ -2202,7 +2256,7 @@ scipy==1.15.0              # pdist for pairwise distances
 
 ### 9.2 Reproducibility Protocol
 
-1. **Random seeds**: All experiments use seeds `[0, 1, 2]`; set via `torch.manual_seed(seed)`, `np.random.seed(seed)`, `env.reset(seed=seed)`
+1. **Random seeds**: All experiments use seeds `[0, 1, 2, 3, 4]`; set via `torch.manual_seed(seed)`, `np.random.seed(seed)`, `env.reset(seed=seed)`
 2. **PyTorch determinism**: Set `torch.use_deterministic_algorithms(True)` and `CUBLAS_WORKSPACE_CONFIG=:4096:8`
 3. **Self-play reproducibility**: Each AMS-DRL phase saves checkpoint before training; rollback is reproducible
 4. **BiMDN pre-training**: Use fixed train/val split (80/20) with `torch.Generator().manual_seed(42)`

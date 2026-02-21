@@ -305,7 +305,10 @@ where `w5 = 0.05` (small, to not dominate task reward).
            # Rescale action back to [0, 1]
            x = (actions - self.low) / (self.high - self.low)
            x = torch.clamp(x, 1e-6, 1 - 1e-6)  # Numerical stability
-           return self.distribution.log_prob(x).sum(dim=-1)
+           # Jacobian correction for change of variables: [0,1] -> [low, high]
+           # Without this, policy gradients are incorrect when bounds != [0,1]
+           return self.distribution.log_prob(x).sum(dim=-1) \
+               - torch.log(self.high - self.low).sum(dim=-1)
    ```
 
 3. **Integrate with SB3 or custom PPO**:
@@ -496,42 +499,124 @@ where `w5 = 0.05` (small, to not dominate task reward).
    ```python
    def compute_safe_bounds(constraints, v_bounds, omega_bounds, alpha):
        """
-       Compute the tightest safe bounds for [v, omega] given CBF constraints.
+       Compute the tightest safe box bounds for [v, omega] given CBF constraints.
        For Beta policy: sample within these bounds instead of using QP.
 
-       For each constraint: a_v * v + a_omega * omega + alpha * h >= 0
+       For each constraint: a_v * v + a_omega * omega >= -alpha * h
        This defines a half-plane in (v, omega) space.
 
-       We compute conservative box bounds by finding the tightest
-       interval for each action dimension.
+       We compute conservative box bounds by solving 4 LPs (one per bound):
+       - v_min:   minimize v   s.t. all CBF constraints, v in v_bounds, omega in omega_bounds
+       - v_max:   maximize v   s.t. (same)
+       - omega_min: minimize omega s.t. (same)
+       - omega_max: maximize omega s.t. (same)
+
+       This is conservative because the true safe set is a polytope, not a box,
+       but it is tight along each axis (the box is the smallest axis-aligned box
+       containing the safe polytope intersected with the control bounds).
        """
-       v_min, v_max = v_bounds
-       omega_min, omega_max = omega_bounds
+       from scipy.optimize import linprog
 
-       for h, a_v, a_omega in constraints:
-           # Constraint: a_v * v + a_omega * omega >= -alpha * h
-           # For each constraint, tighten bounds conservatively
-           # (This is conservative — the true safe set is a polytope, not a box)
-           # More sophisticated: solve LP for each bound
-           pass
+       v_lo, v_hi = v_bounds
+       omega_lo, omega_hi = omega_bounds
 
-       return (v_min, v_max), (omega_min, omega_max)
+       # Build constraint matrix: A_ub @ x <= b_ub  (linprog uses <= form)
+       # Each CBF constraint: a_v * v + a_omega * omega >= -alpha * h
+       # Negate for <= form:  -a_v * v - a_omega * omega <= alpha * h
+       n_cbf = len(constraints)
+       A_ub = np.zeros((n_cbf, 2))
+       b_ub = np.zeros(n_cbf)
+       for i, (h, a_v, a_omega) in enumerate(constraints):
+           A_ub[i, 0] = -a_v
+           A_ub[i, 1] = -a_omega
+           b_ub[i] = alpha * h
+
+       bounds_lp = [(v_lo, v_hi), (omega_lo, omega_hi)]
+
+       # Solve 4 LPs for tightest box bounds
+       # v_min: minimize v  =>  c = [1, 0]
+       res = linprog([1, 0], A_ub=A_ub, b_ub=b_ub, bounds=bounds_lp, method='highs')
+       safe_v_min = res.x[0] if res.success else v_lo
+
+       # v_max: maximize v  =>  minimize -v  =>  c = [-1, 0]
+       res = linprog([-1, 0], A_ub=A_ub, b_ub=b_ub, bounds=bounds_lp, method='highs')
+       safe_v_max = res.x[0] if res.success else v_hi
+
+       # omega_min: minimize omega  =>  c = [0, 1]
+       res = linprog([0, 1], A_ub=A_ub, b_ub=b_ub, bounds=bounds_lp, method='highs')
+       safe_omega_min = res.x[1] if res.success else omega_lo
+
+       # omega_max: maximize omega  =>  minimize -omega  =>  c = [0, -1]
+       res = linprog([0, -1], A_ub=A_ub, b_ub=b_ub, bounds=bounds_lp, method='highs')
+       safe_omega_max = res.x[1] if res.success else omega_hi
+
+       # Ensure bounds are valid (min <= max)
+       if safe_v_min > safe_v_max or safe_omega_min > safe_omega_max:
+           # Infeasible: no safe box exists. Return nominal bounds
+           # and let the 3-tier infeasibility handler deal with it.
+           return v_bounds, omega_bounds
+
+       return (safe_v_min, safe_v_max), (safe_omega_min, safe_omega_max)
    ```
 
    **Note**: Computing exact safe bounds for a Beta policy from linear constraints requires solving linear programs. For each bound (v_min, v_max, omega_min, omega_max), solve an LP to find the tightest bound consistent with all constraints. This is fast for small numbers of constraints.
 
-3. **Scipy-based alternative (faster for real-time)**:
+3. **Analytical alternative (faster, no LP solver needed)**:
    ```python
-   from scipy.optimize import linprog
+   def compute_safe_bounds_analytical(constraints, v_bounds, omega_bounds, alpha):
+       """
+       Fast analytical bound computation for the common case of few constraints.
+       For each constraint: a_v * v + a_omega * omega >= -alpha * h
 
-   def compute_safe_v_bounds(constraints, omega_range, alpha):
+       For v_min: for each constraint, compute the tightest lower bound on v
+       by assuming omega takes its most helpful value (the one that maximizes
+       the LHS of the constraint, leaving the most room for v to be small).
        """
-       For each constraint: a_v * v + a_omega * omega + alpha * h >= 0
-       Find min/max v such that there EXISTS omega in omega_range satisfying all constraints.
-       """
-       # This is a projection of the polytope onto the v-axis
-       pass
+       v_lo, v_hi = v_bounds
+       omega_lo, omega_hi = omega_bounds
+
+       for h, a_v, a_omega in constraints:
+           rhs = -alpha * h  # constraint: a_v * v + a_omega * omega >= rhs
+
+           if abs(a_v) < 1e-10:
+               # Constraint does not involve v; check omega feasibility only
+               continue
+
+           # Best-case omega for minimizing v: pick omega that maximizes a_omega*omega
+           best_omega = omega_hi if a_omega >= 0 else omega_lo
+           slack = a_omega * best_omega
+
+           # a_v * v >= rhs - slack  =>  v >= (rhs - slack) / a_v  (if a_v > 0)
+           #                          =>  v <= (rhs - slack) / a_v  (if a_v < 0)
+           bound = (rhs - slack) / a_v
+           if a_v > 0:
+               v_lo = max(v_lo, bound)
+           else:
+               v_hi = min(v_hi, bound)
+
+       # Repeat for omega bounds (swap roles)
+       for h, a_v, a_omega in constraints:
+           rhs = -alpha * h
+           if abs(a_omega) < 1e-10:
+               continue
+           best_v = v_hi if a_v >= 0 else v_lo
+           slack = a_v * best_v
+           bound = (rhs - slack) / a_omega
+           if a_omega > 0:
+               omega_lo = max(omega_lo, bound)
+           else:
+               omega_hi = min(omega_hi, bound)
+
+       if v_lo > v_hi or omega_lo > omega_hi:
+           return v_bounds, omega_bounds  # Infeasible: fallback to nominal
+
+       return (v_lo, v_hi), (omega_lo, omega_hi)
    ```
+   **Note**: The analytical version is more conservative than the LP version because
+   it uses the best-case omega for EACH constraint independently, rather than finding
+   a single omega that satisfies ALL constraints simultaneously. In practice, with
+   ~5-8 constraints, the difference is small. Use the LP version for accuracy, the
+   analytical version for speed (<0.01ms vs ~0.1ms).
 
 **Validation**:
 - CBF-QP solver returns feasible solutions for normal states
@@ -1026,7 +1111,7 @@ where `w5 = 0.05` (small, to not dominate task reward).
 
 **Tasks**:
 
-1. **Run all ablation combinations** (3 seeds each):
+1. **Run all ablation combinations** (5 seeds each):
 
    | Config | CBF-Beta | CBF-QP | w5 | N13 Feasibility | Description |
    |--------|----------|--------|-----|-----------------|-------------|
@@ -1068,7 +1153,7 @@ where `w5 = 0.05` (small, to not dominate task reward).
 
    Create `ablation_{A-E}.yaml` for each config. Run all with:
    ```bash
-   # Run full ablation matrix: 5 configs x 3 seeds
+   # Run full ablation matrix: 5 configs x 5 seeds
    python scripts/train.py --multirun \
      experiment=ablation_A,ablation_B,ablation_C,ablation_D,ablation_E \
      seed=0,1,2
@@ -1108,8 +1193,8 @@ where `w5 = 0.05` (small, to not dominate task reward).
    - Recommendation for Phase 2.5 comparison
 
 **Validation**:
-- All ablation runs complete without errors (15 runs in wandb)
-- Results are reproducible (3 seeds)
+- All ablation runs complete without errors (25 runs in wandb)
+- Results are reproducible (5 seeds)
 - wandb comparison table populated with actual numbers
 - Hydra configs produce correct overrides (verify with `--cfg job`)
 - Clear story: safety comes at modest performance cost
@@ -1206,7 +1291,7 @@ wandb:
   ablation:
     group: "phase2-ablation"
     configs: [A, B, C, D, E]
-    seeds: [0, 1, 2]
+    seeds: [0, 1, 2, 3, 4]
 ```
 
 ---
@@ -1217,12 +1302,12 @@ wandb:
 
 | Criterion | Target | How to Measure | Protocol |
 |-----------|--------|---------------|----------|
-| Zero safety violations | 0 violations across ALL CBF-Beta training runs | `assert h_i(x) >= -1e-6` every timestep; log violations to W&B | Run 3 seeds x 300K steps each; any single violation = FAIL |
-| Task performance preserved | Capture rate within 10% of Phase 1 unconstrained baseline (e.g., if Phase 1 = 82%, Phase 2 >= 72%) | Compare mean capture rate over 100 eval episodes, 3 seeds | Use identical eval config (same initial positions via fixed eval seed) |
+| Zero safety violations | 0 violations across ALL CBF-Beta training runs | `assert h_i(x) >= -1e-6` every timestep; log violations to W&B | Run 5 seeds x 300K steps each; any single violation = FAIL |
+| Task performance preserved | Capture rate within 10% of Phase 1 unconstrained baseline (e.g., if Phase 1 = 82%, Phase 2 >= 72%) | Compare mean capture rate over 100 eval episodes, 5 seeds | Use identical eval config (same initial positions via fixed eval seed) |
 | CBF-QP feasibility rate | > 99% after N13 iterative training (3 iterations) | Count infeasible QP solves / total QP solves per training run | Report per-iteration improvement: expect ~8% -> ~2% -> <1% |
 | Backup controller activation | < 1% of total timesteps | Count Tier 3 activations / total timesteps | If >1%, increase N13 data collection episodes or tune SVM C |
 | CBF intervention decreasing | Intervention rate in last 50K steps < 50% of first 50K steps | `intervention = (action != safe_action).any()` per step; moving average | Plot intervention rate vs training step; should show clear downtrend |
-| Ablation complete | 5 configs x 3 seeds = 15 runs | All runs converge (reward plateau) or reach 300K step budget | Log to W&B with group tags for easy comparison |
+| Ablation complete | 5 configs x 5 seeds = 25 runs | All runs converge (reward plateau) or reach 300K step budget | Log to W&B with group tags for easy comparison |
 | Beta policy matches Gaussian | Beta policy (no CBF) within 5% of Gaussian policy on Phase 1 task | Train both on identical Phase 1 env; compare capture rate at convergence | Establishes Beta distribution is not the bottleneck |
 | CBF visualization works | CBF overlay renders danger zones + intervention flash in `PERenderer` | `render_mode="human"` shows CBF margins; `render_mode="rgb_array"` produces valid video | Visual check + `RecordVideo` produces .mp4 with CBF overlay |
 | wandb tracking operational | All training runs logged with safety metrics and group tags | wandb dashboard shows `safety/*` metrics for all 15 ablation runs | Verify `wandb.run` is not None; check logged keys |
@@ -1242,7 +1327,7 @@ wandb:
 
 > **Phase 2 is COMPLETE when:**
 > 1. Deliverables D1-D10 are implemented and tested
-> 2. ALL must-pass criteria in Section 7.1 are met (3 seeds each)
+> 2. ALL must-pass criteria in Section 7.1 are met (5 seeds each)
 > 3. Ablation results table (Section 5, Session 8) is filled with actual numbers
 > 4. Minimum test suite (Section 7.4) passes: 18+ tests, all green
 > 5. Safety metrics are logged to wandb with correct group tags; CBF visualization active in PERenderer
@@ -1504,12 +1589,18 @@ Step 2: Sample
   Beta(2.0, 2.0) has mode at 0.5
   omega_sample = -2.84 + 5.68 * 0.5 = 0.0 rad/s
 
-Step 3: Compute log probability
+Step 3: Compute log probability (with Jacobian correction for change of variables)
   x_v = (0.30 - 0) / (0.45 - 0) = 0.667
-  log_prob_v = Beta(3.0, 2.0).log_prob(0.667)
+  log_prob_v = Beta(3.0, 2.0).log_prob(0.667) - log(0.45 - 0)
+             = Beta(3.0, 2.0).log_prob(0.667) - log(0.45)
   x_omega = (0.0 - (-2.84)) / (2.84 - (-2.84)) = 0.5
-  log_prob_omega = Beta(2.0, 2.0).log_prob(0.5)
+  log_prob_omega = Beta(2.0, 2.0).log_prob(0.5) - log(2.84 - (-2.84))
+                 = Beta(2.0, 2.0).log_prob(0.5) - log(5.68)
   total_log_prob = log_prob_v + log_prob_omega
+
+  NOTE: The Jacobian correction (subtracting log(high - low) per dimension) is
+  essential for correct policy gradients. Without it, the rescaling from [0,1]
+  to [low, high] distorts the probability density, causing biased gradients.
 
 Key insight: No probability mass is wasted outside the safe set.
 Compare with Gaussian: would need to clip/reject samples, distorting gradients.
@@ -1609,7 +1700,7 @@ line-profiler==4.2.0       # Profile CBF computation bottlenecks
 | Beta policy | Same as PPO | Minimal overhead |
 | N13 classifier | CPU (SVM) | Train periodically (~30s per retrain) |
 | Training | GPU recommended | 2-5x slower than Phase 1 due to CBF |
-| Full ablation (15 runs) | ~30-75 GPU-hours | Based on Phase 1 estimates x 2-5x overhead |
+| Full ablation (25 runs) | ~50-125 GPU-hours | Based on Phase 1 estimates x 2-5x overhead |
 
 ### 9.3 Reproducibility Protocol
 
@@ -1624,7 +1715,7 @@ Follow Phase 1's reproducibility protocol (Appendix B) for all Phase 2 runs. Add
 from sklearn.svm import SVC
 classifier = SVC(kernel='rbf', C=1.0, random_state=seed)
 
-# Ablation runs: use seeds [0, 1, 2] consistently across all configs
+# Ablation runs: use seeds [0, 1, 2, 3, 4] consistently across all configs
 # Log seed in W&B config for every run
 ```
 
