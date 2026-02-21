@@ -1,0 +1,8 @@
+# Baseline experiment overrides
+# Usage: python scripts/train.py +experiment=baseline
+defaults:
+  - override /algorithm: ppo
+
+total_timesteps: 1_000_000
+n_envs: 4
+experiment_group: "phase1_baselines"

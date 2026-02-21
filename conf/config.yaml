@@ -1,0 +1,14 @@
+defaults:
+  - env: pursuit_evasion
+  - algorithm: ppo
+  - safety: cbf
+  - wandb: default
+  - _self_
+
+seed: 42
+total_timesteps: 1_000_000
+eval_freq: 10_000
+n_eval_episodes: 20
+save_freq: 50_000
+n_envs: 4
+experiment_group: "default"

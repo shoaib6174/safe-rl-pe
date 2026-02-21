@@ -1,0 +1,5 @@
+# VCP-CBF parameters (Phase 1: validation only, Phase 2: active)
+enabled: false
+d: 0.05
+alpha: 1.0
+safety_margin: 0.1
