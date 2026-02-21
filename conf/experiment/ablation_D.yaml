@@ -1,0 +1,34 @@
+# Ablation D: CBF-Beta without safety reward (w5 ablation)
+# Usage: python scripts/train.py +experiment=ablation_D
+defaults:
+  - override /algorithm: ppo_beta
+  - override /safety: cbf
+
+total_timesteps: 3_000_000
+n_envs: 4
+experiment_group: "phase2-ablation"
+
+# Environment with obstacles
+env:
+  n_obstacles: 4
+  obstacle_radius_range: [0.3, 1.0]
+  obstacle_margin: 0.5
+  n_obstacle_obs: 3
+
+# Safety: CBF-Beta but no safety reward
+safety:
+  enabled: true
+  cbf_beta: true
+  cbf_qp_filter: false
+  safety_reward_w5: 0.0
+  n13_feasibility: true
+  n_feasibility_iterations: 3
+
+# Self-play
+self_play:
+  n_phases: 10
+  timesteps_per_phase: 300_000
+
+# Tracking
+wandb:
+  tags: ["phase2", "ablation", "config_D", "no_safety_reward"]

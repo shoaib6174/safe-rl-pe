@@ -1,0 +1,34 @@
+# Ablation A: Full safe training (CBF-Beta + obstacles + w5 + N13 feasibility)
+# Usage: python scripts/train.py +experiment=ablation_A
+defaults:
+  - override /algorithm: ppo_beta
+  - override /safety: cbf
+
+total_timesteps: 3_000_000
+n_envs: 4
+experiment_group: "phase2-ablation"
+
+# Environment with obstacles
+env:
+  n_obstacles: 4
+  obstacle_radius_range: [0.3, 1.0]
+  obstacle_margin: 0.5
+  n_obstacle_obs: 3
+
+# Safety: full CBF-Beta system
+safety:
+  enabled: true
+  cbf_beta: true
+  cbf_qp_filter: false
+  safety_reward_w5: 0.05
+  n13_feasibility: true
+  n_feasibility_iterations: 3
+
+# Self-play
+self_play:
+  n_phases: 10
+  timesteps_per_phase: 300_000
+
+# Tracking
+wandb:
+  tags: ["phase2", "ablation", "config_A", "full_safe"]

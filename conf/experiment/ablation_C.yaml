@@ -1,0 +1,33 @@
+# Ablation C: QP filter only (post-hoc safety, no Beta policy)
+# Usage: python scripts/train.py +experiment=ablation_C
+defaults:
+  - override /algorithm: ppo
+  - override /safety: cbf
+
+total_timesteps: 3_000_000
+n_envs: 4
+experiment_group: "phase2-ablation"
+
+# Environment with obstacles
+env:
+  n_obstacles: 4
+  obstacle_radius_range: [0.3, 1.0]
+  obstacle_margin: 0.5
+  n_obstacle_obs: 3
+
+# Safety: QP filter only (no Beta policy, no safety reward, no feasibility)
+safety:
+  enabled: true
+  cbf_beta: false
+  cbf_qp_filter: true
+  safety_reward_w5: 0.0
+  n13_feasibility: false
+
+# Self-play
+self_play:
+  n_phases: 10
+  timesteps_per_phase: 300_000
+
+# Tracking
+wandb:
+  tags: ["phase2", "ablation", "config_C", "qp_filter_only"]

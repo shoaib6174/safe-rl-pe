@@ -35,6 +35,7 @@
 | 22 | 2026-02-22 | **Phase 2 Session 5**: Obstacles, obstacle obs, safety reward, CBF overlay, 40 tests, 195 total | [S22](worklogs/2026-02-22_S22.md) |
 | 23 | 2026-02-22 | **Phase 2 Session 6**: 3-Tier infeasibility (backup ctrl, hierarchical relaxation, SVM classifier), 33 tests | [S23](worklogs/2026-02-22_S23.md) |
 | 24 | 2026-02-22 | **Phase 2 Session 7**: Safe self-play training, safety metrics, 4 comparison runs, 34 tests, 262 total | [S24](worklogs/2026-02-22_S24.md) |
+| 25 | 2026-02-22 | **Phase 2 Session 8**: Ablation configs A-E, runner script, results compilation, 43 tests, 290 total — Phase 2 complete! | [S25](worklogs/2026-02-22_S25.md) |
 
 ## Paper Reading Status
 
