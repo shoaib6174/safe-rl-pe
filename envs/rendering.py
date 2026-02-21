@@ -8,7 +8,7 @@ Design:
 - Separate renderer class (composition, not inheritance)
 - Lazy pygame initialization (training without render never imports pygame)
 - Trail buffers for trajectory visualization
-- CBF overlay stub for Phase 2+
+- CBF overlay for Phase 2+ (danger zones, intervention flash, margin HUD)
 """
 
 from collections import deque
@@ -32,9 +32,11 @@ class PERenderer:
         "trail_pursuer": (0, 60, 130),
         "trail_evader": (130, 40, 40),
         "obstacle": (100, 100, 100),
+        "obstacle_danger": (180, 50, 50),
         "cbf_safe": (0, 200, 0),
         "cbf_warning": (255, 165, 0),
         "cbf_danger": (255, 50, 50),
+        "cbf_intervention": (255, 140, 0),
         "hud_text": (200, 200, 200),
     }
 
@@ -105,7 +107,8 @@ class PERenderer:
             env_state: Dict with keys:
                 pursuer_pos, pursuer_heading, evader_pos, evader_heading,
                 step, dt, distance, reward, obstacles (optional),
-                cbf_values (optional).
+                cbf_margins (optional), min_cbf_margin (optional),
+                cbf_intervened (optional), cbf_feasible (optional).
 
         Returns:
             numpy array (H, W, 3) if rgb_array mode, else None.
@@ -120,7 +123,7 @@ class PERenderer:
         self._draw_arena(canvas)
         # Layer 2: Obstacles (if any)
         self._draw_obstacles(canvas, env_state.get("obstacles", []))
-        # Layer 3: CBF safety boundaries (Phase 2+)
+        # Layer 3: CBF safety overlays
         self._draw_cbf_overlay(canvas, env_state)
         # Layer 4: Trajectory trails
         self._draw_trails(canvas, env_state)
@@ -196,35 +199,45 @@ class PERenderer:
                 pg.draw.lines(canvas, color, False, points, width=1)
 
     def _draw_obstacles(self, canvas, obstacles):
-        """Draw circular obstacles."""
+        """Draw circular obstacles with danger zone outline."""
         pg = self._pygame
         for obs in obstacles:
             center = self._world_to_pixel(obs["x"], obs["y"])
-            r = int(obs["radius"] * self.scale)
+            r = max(int(obs["radius"] * self.scale), 3)
             pg.draw.circle(canvas, self.COLORS["obstacle"], center, r)
+            # Danger zone ring (obstacle radius + safety margin)
+            r_danger = int((obs["radius"] + 0.15) * self.scale)  # +robot_radius
+            pg.draw.circle(canvas, self.COLORS["obstacle_danger"], center, r_danger, width=1)
 
     def _draw_cbf_overlay(self, canvas, env_state):
-        """Visualize CBF safety margins. Stub for Phase 1, active Phase 2+."""
-        cbf_values = env_state.get("cbf_values", None)
-        if cbf_values is None:
-            return
+        """Visualize CBF safety margins and intervention status.
 
+        Shows:
+        - Danger zones around obstacles (colored by margin)
+        - Intervention flash when CBF modifies action
+        """
         pg = self._pygame
-        for pos, h_min in cbf_values:
-            center = self._world_to_pixel(pos[0], pos[1])
-            if h_min < 0.5:
-                color = self.COLORS["cbf_danger"] + (120,)
-            elif h_min < 2.0:
-                color = self.COLORS["cbf_warning"] + (80,)
-            else:
-                color = self.COLORS["cbf_safe"] + (40,)
-            surf = pg.Surface(
-                (self.window_size, self.window_size), pg.SRCALPHA,
-            )
-            pg.draw.circle(
-                surf, color, center,
-                int(h_min * self.scale * 0.3), width=2,
-            )
+
+        # Intervention flash overlay
+        if env_state.get("cbf_intervened", False):
+            surf = pg.Surface((self.window_size, self.window_size), pg.SRCALPHA)
+            surf.fill((*self.COLORS["cbf_intervention"], 30))
+            canvas.blit(surf, (0, 0))
+
+        # CBF margin visualization around obstacles
+        cbf_margins = env_state.get("cbf_margins", None)
+        if cbf_margins is not None:
+            surf = pg.Surface((self.window_size, self.window_size), pg.SRCALPHA)
+            for pos, h_val in cbf_margins:
+                center = self._world_to_pixel(pos[0], pos[1])
+                if h_val <= 0.1:
+                    color = (*self.COLORS["cbf_danger"], 120)
+                elif h_val <= 0.3:
+                    color = (*self.COLORS["cbf_warning"], 80)
+                else:
+                    color = (*self.COLORS["cbf_safe"], 40)
+                r = max(int(abs(h_val) * self.scale * 0.3), 3)
+                pg.draw.circle(surf, color, center, r, width=2)
             canvas.blit(surf, (0, 0))
 
     def _draw_hud(self, canvas, env_state):
@@ -234,13 +247,36 @@ class PERenderer:
             f"dist={env_state.get('distance', 0):.2f}m",
             f"reward={env_state.get('reward', 0):.3f}",
         ]
-        cbf_val = env_state.get("min_cbf_value", None)
-        if cbf_val is not None:
-            lines.append(f"h_cbf={cbf_val:.3f}")
+
+        # CBF margin with color coding
+        cbf_margin = env_state.get("min_cbf_margin", None)
+        if cbf_margin is not None:
+            if cbf_margin > 0.3:
+                color = self.COLORS["cbf_safe"]
+            elif cbf_margin > 0.1:
+                color = self.COLORS["cbf_warning"]
+            else:
+                color = self.COLORS["cbf_danger"]
+            margin_text = f"h_cbf={cbf_margin:.3f}"
+            surf = self._font.render(margin_text, True, color)
+            canvas.blit(surf, (10, 10 + len(lines) * 18))
+            lines.append("")  # placeholder for spacing
+
+        # Infeasibility indicator
+        if env_state.get("cbf_feasible") is False:
+            surf = self._font.render("INFEASIBLE", True, self.COLORS["cbf_danger"])
+            canvas.blit(surf, (10, 10 + len(lines) * 18))
+            lines.append("")
+
+        # Obstacles count
+        n_obs = len(env_state.get("obstacles", []))
+        if n_obs > 0:
+            lines.append(f"obstacles={n_obs}")
 
         for i, line in enumerate(lines):
-            surf = self._font.render(line, True, self.COLORS["hud_text"])
-            canvas.blit(surf, (10, 10 + i * 18))
+            if line:  # skip empty placeholders
+                surf = self._font.render(line, True, self.COLORS["hud_text"])
+                canvas.blit(surf, (10, 10 + i * 18))
 
     def reset_trails(self):
         """Call on env.reset() to clear trail buffers."""

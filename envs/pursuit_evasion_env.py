@@ -6,6 +6,12 @@ Two-player zero-sum differential game:
 - Capture: ||p_P - p_E|| <= r_capture
 - Timeout: episode ends at T_max if no capture
 
+Phase 2 additions:
+- Static circular obstacles (configurable count, random placement)
+- Obstacle collision detection
+- Obstacle observation features (nearest K obstacles)
+- Safety reward shaping via CBF margin
+
 The environment exposes a dual-action step API:
     step(pursuer_action, evader_action) -> obs, rewards, terminated, truncated, info
 
@@ -49,6 +55,12 @@ class PursuitEvasionEnv(gym.Env):
         capture_bonus: float = 100.0,
         timeout_penalty: float = -50.0,
         render_mode: str | None = None,
+        # Phase 2: Obstacle parameters
+        n_obstacles: int = 0,
+        obstacle_radius_range: tuple[float, float] = (0.3, 1.0),
+        obstacle_margin: float = 0.5,
+        n_obstacle_obs: int = 0,
+        reward_computer: RewardComputer | None = None,
     ):
         super().__init__()
 
@@ -71,22 +83,31 @@ class PursuitEvasionEnv(gym.Env):
         self.evader_v_max = evader_v_max
         self.evader_omega_max = evader_omega_max
 
-        # Reward computer
-        arena_diagonal = np.sqrt(arena_width**2 + arena_height**2)
-        self.reward_computer = RewardComputer(
-            distance_scale=distance_scale,
-            capture_bonus=capture_bonus,
-            timeout_penalty=timeout_penalty,
-            d_max=arena_diagonal,
-        )
+        # Obstacle parameters
+        self.n_obstacles = n_obstacles
+        self.obstacle_radius_range = obstacle_radius_range
+        self.obstacle_margin = obstacle_margin
+        self.obstacles: list[dict] = []
 
-        # Observation builder (uses pursuer's v_max/omega_max for normalization;
-        # since both agents have same limits in Phase 1, this is fine)
+        # Reward computer (allow injection for SafetyRewardComputer)
+        arena_diagonal = np.sqrt(arena_width**2 + arena_height**2)
+        if reward_computer is not None:
+            self.reward_computer = reward_computer
+        else:
+            self.reward_computer = RewardComputer(
+                distance_scale=distance_scale,
+                capture_bonus=capture_bonus,
+                timeout_penalty=timeout_penalty,
+                d_max=arena_diagonal,
+            )
+
+        # Observation builder
         self.obs_builder = ObservationBuilder(
             arena_width=arena_width,
             arena_height=arena_height,
             v_max=pursuer_v_max,
             omega_max=pursuer_omega_max,
+            n_obstacle_obs=n_obstacle_obs,
         )
 
         # Action spaces: [v, omega] for each agent
@@ -103,7 +124,7 @@ class PursuitEvasionEnv(gym.Env):
         # For Gymnasium compatibility, action_space is pursuer's (wrapper overrides)
         self.action_space = self.pursuer_action_space
 
-        # Observation space: 14D per agent
+        # Observation space: obs_dim per agent (14 base + 2*n_obstacle_obs)
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
@@ -146,6 +167,12 @@ class PursuitEvasionEnv(gym.Env):
             info: Dict with initial state information.
         """
         super().reset(seed=seed)
+
+        # Generate obstacles first (agents must avoid them)
+        if self.n_obstacles > 0:
+            self.obstacles = self._generate_obstacles(self.n_obstacles)
+        else:
+            self.obstacles = []
 
         # Generate initial positions with minimum separation constraint
         self.pursuer_state, self.evader_state = self._random_initial_states()
@@ -225,6 +252,10 @@ class PursuitEvasionEnv(gym.Env):
         # Update step counter
         self.current_step += 1
 
+        # Check obstacle collisions
+        p_obs_collision = self._check_obstacle_collision(self.pursuer_state)
+        e_obs_collision = self._check_obstacle_collision(self.evader_state)
+
         # Compute distance and check termination
         d_curr = self._compute_distance()
         self.min_distance_this_ep = min(self.min_distance_this_ep, d_curr)
@@ -250,6 +281,10 @@ class PursuitEvasionEnv(gym.Env):
         obs = self._get_obs()
         rewards = {"pursuer": r_p, "evader": r_e}
         info = self._get_info()
+
+        # Add collision info
+        info["pursuer_obstacle_collision"] = p_obs_collision
+        info["evader_obstacle_collision"] = e_obs_collision
 
         # Add episode metrics at termination
         if terminated or truncated:
@@ -278,8 +313,81 @@ class PursuitEvasionEnv(gym.Env):
         if self.renderer is not None:
             self.renderer.close()
 
+    def _generate_obstacles(self, n: int) -> list[dict]:
+        """Generate n non-overlapping circular obstacles within the arena.
+
+        Obstacles are placed with margin from arena walls and from each other.
+        Uses rejection sampling with a maximum number of attempts.
+
+        Args:
+            n: Number of obstacles to generate.
+
+        Returns:
+            List of obstacle dicts with 'x', 'y', 'radius' keys.
+        """
+        obstacles = []
+        half_w = self.arena_width / 2.0
+        half_h = self.arena_height / 2.0
+        r_min, r_max = self.obstacle_radius_range
+        margin = self.obstacle_margin
+
+        for _ in range(n):
+            placed = False
+            for _attempt in range(500):
+                radius = self.np_random.uniform(r_min, r_max)
+
+                # Obstacle center must be within arena minus radius minus margin
+                x_range = half_w - radius - margin
+                y_range = half_h - radius - margin
+
+                if x_range <= 0 or y_range <= 0:
+                    continue
+
+                ox = self.np_random.uniform(-x_range, x_range)
+                oy = self.np_random.uniform(-y_range, y_range)
+
+                # Check no overlap with existing obstacles (min gap = margin)
+                overlap = False
+                for existing in obstacles:
+                    dist = np.sqrt((ox - existing["x"])**2 + (oy - existing["y"])**2)
+                    if dist < radius + existing["radius"] + margin:
+                        overlap = True
+                        break
+
+                if not overlap:
+                    obstacles.append({"x": float(ox), "y": float(oy), "radius": float(radius)})
+                    placed = True
+                    break
+
+            if not placed:
+                # Could not place obstacle — skip it
+                break
+
+        return obstacles
+
+    def _check_obstacle_collision(self, state: np.ndarray) -> bool:
+        """Check if robot at given state collides with any obstacle.
+
+        Collision occurs when the robot center is within obstacle_radius + robot_radius.
+
+        Args:
+            state: Robot state [x, y, theta].
+
+        Returns:
+            True if collision with any obstacle.
+        """
+        x, y = state[0], state[1]
+        for obs in self.obstacles:
+            dist = np.sqrt((x - obs["x"])**2 + (y - obs["y"])**2)
+            if dist <= obs["radius"] + self.robot_radius:
+                return True
+        return False
+
     def _random_initial_states(self) -> tuple[np.ndarray, np.ndarray]:
-        """Generate random initial states with minimum separation."""
+        """Generate random initial states with minimum separation.
+
+        Agents must not overlap with obstacles and must satisfy min/max distance.
+        """
         half_w = self.arena_width / 2.0 - self.robot_radius
         half_h = self.arena_height / 2.0 - self.robot_radius
 
@@ -288,9 +396,17 @@ class PursuitEvasionEnv(gym.Env):
             py = self.np_random.uniform(-half_h, half_h)
             ptheta = self.np_random.uniform(-np.pi, np.pi)
 
+            # Check pursuer not inside any obstacle
+            if self._check_obstacle_collision(np.array([px, py, ptheta])):
+                continue
+
             ex = self.np_random.uniform(-half_w, half_w)
             ey = self.np_random.uniform(-half_h, half_h)
             etheta = self.np_random.uniform(-np.pi, np.pi)
+
+            # Check evader not inside any obstacle
+            if self._check_obstacle_collision(np.array([ex, ey, etheta])):
+                continue
 
             dist = np.sqrt((px - ex) ** 2 + (py - ey) ** 2)
             if self.min_init_distance <= dist <= self.max_init_distance:
@@ -318,12 +434,14 @@ class PursuitEvasionEnv(gym.Env):
             self_action=self.pursuer_action,
             opp_state=self.evader_state,
             opp_action=self.evader_action,
+            obstacles=self.obstacles,
         )
         obs_evader = self.obs_builder.build(
             self_state=self.evader_state,
             self_action=self.evader_action,
             opp_state=self.pursuer_state,
             opp_action=self.pursuer_action,
+            obstacles=self.obstacles,
         )
         return {"pursuer": obs_pursuer, "evader": obs_evader}
 
@@ -334,6 +452,7 @@ class PursuitEvasionEnv(gym.Env):
             "pursuer_state": self.pursuer_state.copy(),
             "evader_state": self.evader_state.copy(),
             "step": self.current_step,
+            "obstacles": self.obstacles,
         }
 
     def _get_render_state(self) -> dict:
@@ -347,7 +466,7 @@ class PursuitEvasionEnv(gym.Env):
             "dt": self.dt,
             "distance": self._compute_distance(),
             "reward": self.last_reward_pursuer,
-            "obstacles": [],
+            "obstacles": self.obstacles,
         }
 
     def _render_frame(self) -> np.ndarray | None:
