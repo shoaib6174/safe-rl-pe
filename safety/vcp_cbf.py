@@ -297,6 +297,141 @@ def get_all_constraints(
     return constraints
 
 
+def compute_safe_bounds_lp(
+    constraints: list[tuple[float, float, float]],
+    alpha: float,
+    v_bounds: tuple[float, float] = (0.0, 1.0),
+    omega_bounds: tuple[float, float] = (-2.84, 2.84),
+) -> tuple[tuple[float, float], tuple[float, float], bool]:
+    """Compute tightest safe box bounds via linear programming.
+
+    For each bound (v_min, v_max, omega_min, omega_max), solves an LP to find
+    the tightest value consistent with all CBF constraints. This gives the
+    smallest axis-aligned box containing the safe polytope.
+
+    This is the accurate version — use for correctness-critical scenarios.
+    For speed-critical scenarios (training), use compute_safe_bounds_analytical.
+
+    Args:
+        constraints: List of (h, a_v, a_omega) from CBF functions.
+        alpha: CBF class-K parameter.
+        v_bounds: Nominal velocity bounds (v_min, v_max).
+        omega_bounds: Nominal angular velocity bounds (omega_min, omega_max).
+
+    Returns:
+        ((v_min_safe, v_max_safe), (omega_min_safe, omega_max_safe), feasible):
+        Safe bounds and feasibility flag. If infeasible, returns nominal bounds.
+    """
+    from scipy.optimize import linprog
+
+    v_lo, v_hi = v_bounds
+    omega_lo, omega_hi = omega_bounds
+
+    if not constraints:
+        return v_bounds, omega_bounds, True
+
+    # Build constraint matrix: A_ub @ x <= b_ub (linprog uses <= form)
+    # Each CBF: a_v * v + a_omega * omega >= -alpha * h
+    # Negate:  -a_v * v - a_omega * omega <= alpha * h
+    n = len(constraints)
+    A_ub = np.zeros((n, 2))
+    b_ub = np.zeros(n)
+    for i, (h, a_v, a_omega) in enumerate(constraints):
+        A_ub[i, 0] = -a_v
+        A_ub[i, 1] = -a_omega
+        b_ub[i] = alpha * h
+
+    bounds_lp = [(v_lo, v_hi), (omega_lo, omega_hi)]
+
+    # Solve 4 LPs for tightest box bounds
+    results = {}
+    for name, c in [("v_min", [1, 0]), ("v_max", [-1, 0]),
+                     ("omega_min", [0, 1]), ("omega_max", [0, -1])]:
+        res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds_lp, method="highs")
+        results[name] = res
+
+    if not all(r.success for r in results.values()):
+        return v_bounds, omega_bounds, False
+
+    safe_v_min = results["v_min"].x[0]
+    safe_v_max = results["v_max"].x[0]
+    safe_omega_min = results["omega_min"].x[1]
+    safe_omega_max = results["omega_max"].x[1]
+
+    # Ensure bounds are valid (min <= max)
+    if safe_v_min > safe_v_max + 1e-10 or safe_omega_min > safe_omega_max + 1e-10:
+        return v_bounds, omega_bounds, False
+
+    return (safe_v_min, safe_v_max), (safe_omega_min, safe_omega_max), True
+
+
+def compute_safe_bounds_analytical(
+    constraints: list[tuple[float, float, float]],
+    alpha: float,
+    v_bounds: tuple[float, float] = (0.0, 1.0),
+    omega_bounds: tuple[float, float] = (-2.84, 2.84),
+) -> tuple[tuple[float, float], tuple[float, float], bool]:
+    """Compute safe box bounds analytically (no LP solver).
+
+    For each constraint, computes the tightest bound on one variable
+    assuming the other takes its most helpful value. This gives an
+    outer approximation of the LP-exact bounds — potentially wider
+    because each constraint picks its own best-case other variable.
+
+    Faster than LP (~0.01ms vs ~0.1ms) but may be wider. The QP solver
+    serves as backup to correct any samples outside the true safe set.
+
+    Args:
+        constraints: List of (h, a_v, a_omega) from CBF functions.
+        alpha: CBF class-K parameter.
+        v_bounds: Nominal velocity bounds.
+        omega_bounds: Nominal angular velocity bounds.
+
+    Returns:
+        ((v_min_safe, v_max_safe), (omega_min_safe, omega_max_safe), feasible):
+        Safe bounds and feasibility flag. If infeasible, returns nominal bounds.
+    """
+    v_lo, v_hi = v_bounds
+    omega_lo, omega_hi = omega_bounds
+
+    if not constraints:
+        return v_bounds, omega_bounds, True
+
+    # Tighten v bounds based on CBF constraints
+    for h, a_v, a_omega in constraints:
+        rhs = -alpha * h  # constraint: a_v * v + a_omega * omega >= rhs
+
+        if abs(a_v) > 1e-10:
+            # Best-case omega: pick omega that maximizes a_omega * omega
+            best_omega = omega_hi if a_omega >= 0 else omega_lo
+            slack = a_omega * best_omega
+            # a_v * v >= rhs - slack
+            bound = (rhs - slack) / a_v
+            if a_v > 0:
+                v_lo = max(v_lo, bound)
+            else:
+                v_hi = min(v_hi, bound)
+
+    # Tighten omega bounds based on CBF constraints
+    for h, a_v, a_omega in constraints:
+        rhs = -alpha * h
+
+        if abs(a_omega) > 1e-10:
+            # Best-case v: pick v that maximizes a_v * v
+            best_v = v_hi if a_v >= 0 else v_lo
+            slack = a_v * best_v
+            bound = (rhs - slack) / a_omega
+            if a_omega > 0:
+                omega_lo = max(omega_lo, bound)
+            else:
+                omega_hi = min(omega_hi, bound)
+
+    if v_lo > v_hi + 1e-10 or omega_lo > omega_hi + 1e-10:
+        return v_bounds, omega_bounds, False
+
+    return (v_lo, v_hi), (omega_lo, omega_hi), True
+
+
 def solve_cbf_qp(
     u_nominal: np.ndarray,
     constraints: list[tuple[float, float, float]],
@@ -506,6 +641,43 @@ class VCPCBFFilter:
         info["min_h"] = min(c.h for c in typed_constraints) if typed_constraints else float("inf")
 
         return u_safe, info
+
+
+    def compute_safe_bounds(
+        self,
+        state: np.ndarray,
+        obstacles: list[dict] | None = None,
+        opponent_state: np.ndarray | None = None,
+        method: str = "analytical",
+    ) -> tuple[tuple[float, float], tuple[float, float], bool]:
+        """Compute safe action bounds given current constraints.
+
+        Uses CBF constraints to compute the tightest axis-aligned box
+        within the safe polytope, giving the Beta policy its support bounds.
+
+        Args:
+            state: Robot state [x, y, theta].
+            obstacles: List of obstacle dicts with 'x', 'y', 'radius' keys.
+            opponent_state: Other robot state [x, y, theta], or None.
+            method: "lp" for exact bounds, "analytical" for fast conservative bounds.
+
+        Returns:
+            ((v_min, v_max), (omega_min, omega_max), feasible): Safe bounds.
+        """
+        typed_constraints = self.get_constraints(state, opponent_state, obstacles)
+        constraint_tuples = [c.as_tuple() for c in typed_constraints]
+
+        v_bounds = (0.0, self.v_max)
+        omega_bounds = (-self.omega_max, self.omega_max)
+
+        if method == "lp":
+            return compute_safe_bounds_lp(
+                constraint_tuples, self.alpha, v_bounds, omega_bounds,
+            )
+        else:
+            return compute_safe_bounds_analytical(
+                constraint_tuples, self.alpha, v_bounds, omega_bounds,
+            )
 
     def get_metrics(self) -> dict:
         """Return safety metrics."""
