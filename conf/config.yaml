@@ -3,6 +3,7 @@ defaults:
   - algorithm: ppo
   - safety: cbf
   - wandb: default
+  - self_play: default
   - _self_
 
 seed: 42
