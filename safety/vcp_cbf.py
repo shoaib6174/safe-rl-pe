@@ -16,11 +16,46 @@ weights (w_v >> w_omega). With equal weights, the solver prefers braking
 because a_v >> a_omega (by factor ~1/d). Weighted QP is standard in
 VCP-CBF literature to encode the steering preference.
 
+Phase 2 extensions:
+- Inter-robot collision constraint (vcp_cbf_collision)
+- Typed constraints for Tier 2 hierarchical relaxation
+- Multi-agent support in VCPCBFFilter
+
 Reference: Zhang & Yang 2025 — VCP-CBF for nonholonomic robots.
 """
 
+from dataclasses import dataclass
+from enum import Enum
+
 import numpy as np
 from scipy.optimize import minimize
+
+
+class ConstraintType(Enum):
+    """Constraint priority for Tier 2 relaxation (lowest priority relaxed first)."""
+    COLLISION = 3    # Highest priority: inter-robot collision
+    ARENA = 2        # Medium priority: arena boundaries
+    OBSTACLE = 1     # Lowest priority: obstacle avoidance
+
+
+@dataclass
+class CBFConstraint:
+    """Typed CBF constraint for hierarchical relaxation.
+
+    Attributes:
+        h: CBF value (positive = safe, negative = violated).
+        a_v: Coefficient on linear velocity in CBF constraint.
+        a_omega: Coefficient on angular velocity in CBF constraint.
+        ctype: Constraint type for Tier 2 relaxation priority.
+    """
+    h: float
+    a_v: float
+    a_omega: float
+    ctype: ConstraintType
+
+    def as_tuple(self) -> tuple[float, float, float]:
+        """Convert to (h, a_v, a_omega) tuple for backward compatibility."""
+        return (self.h, self.a_v, self.a_omega)
 
 
 def compute_vcp(x: float, y: float, theta: float, d: float = 0.1) -> tuple[float, float]:
@@ -152,6 +187,116 @@ def vcp_cbf_boundary(
     return constraints
 
 
+def vcp_cbf_collision(
+    state_ego: np.ndarray,
+    state_other: np.ndarray,
+    r_min: float,
+    d: float = 0.1,
+    alpha: float = 1.0,
+) -> tuple[float, float, float]:
+    """VCP-CBF for inter-robot collision avoidance.
+
+    h(x) = ||q_ego - q_other||^2 - r_min^2
+
+    where q_ego and q_other are VCPs for ego and other robot respectively.
+    The constraint is w.r.t. ego's controls only — other's motion is treated
+    as an uncontrolled disturbance (worst-case in adversarial PE).
+
+    Note: r_min should be set to collision_radius (NOT capture_radius).
+    The game ends at capture_radius > r_min, so the CBF does not prevent
+    capture, only physical collision.
+
+    Args:
+        state_ego: Ego robot state [x, y, theta].
+        state_other: Other robot state [x, y, theta].
+        r_min: Minimum separation distance (collision_radius + margin).
+        d: VCP offset distance.
+        alpha: CBF class-K function parameter.
+
+    Returns:
+        (h, a_v, a_omega): CBF value and constraint coefficients for ego.
+    """
+    x_e, y_e, theta_e = state_ego[0], state_ego[1], state_ego[2]
+    x_o, y_o, theta_o = state_other[0], state_other[1], state_other[2]
+
+    # Compute VCPs for both robots
+    qx_e, qy_e = compute_vcp(x_e, y_e, theta_e, d)
+    qx_o, qy_o = compute_vcp(x_o, y_o, theta_o, d)
+
+    # CBF value
+    dx = qx_e - qx_o
+    dy = qy_e - qy_o
+    h = dx**2 + dy**2 - r_min**2
+
+    # Constraint coefficients for ego's controls [v_ego, omega_ego]
+    # h_dot = 2*dx*(q_dot_x_ego - q_dot_x_other) + 2*dy*(q_dot_y_ego - q_dot_y_other)
+    # Ego terms (controllable):
+    #   q_dot_x_ego = v_ego * cos(theta_ego) - d * omega_ego * sin(theta_ego)
+    #   q_dot_y_ego = v_ego * sin(theta_ego) + d * omega_ego * cos(theta_ego)
+    # Other terms (uncontrolled, treated as zero for constraint — worst case handled by alpha)
+    cos_e = np.cos(theta_e)
+    sin_e = np.sin(theta_e)
+
+    a_v = 2.0 * dx * cos_e + 2.0 * dy * sin_e
+    a_omega = 2.0 * dx * (-d * sin_e) + 2.0 * dy * (d * cos_e)
+
+    return float(h), float(a_v), float(a_omega)
+
+
+def get_all_constraints(
+    state_ego: np.ndarray,
+    state_other: np.ndarray | None,
+    arena_half_w: float,
+    arena_half_h: float,
+    robot_radius: float,
+    obstacles: list[dict] | None = None,
+    r_min: float = 0.35,
+    d: float = 0.1,
+    alpha: float = 1.0,
+) -> list[CBFConstraint]:
+    """Aggregate all CBF constraints for one agent.
+
+    Combines arena boundary, obstacle, and inter-robot collision constraints
+    into a single list with type tags for Tier 2 relaxation.
+
+    Args:
+        state_ego: Ego robot state [x, y, theta].
+        state_other: Other robot state [x, y, theta], or None if no opponent.
+        arena_half_w: Half arena width.
+        arena_half_h: Half arena height.
+        robot_radius: Robot radius.
+        obstacles: List of obstacle dicts with 'x', 'y', 'radius' keys.
+        r_min: Minimum inter-robot separation (collision_radius + margin).
+        d: VCP offset distance.
+        alpha: CBF class-K parameter.
+
+    Returns:
+        List of typed CBFConstraint objects.
+    """
+    constraints = []
+
+    # Arena boundary constraints (4)
+    boundary = vcp_cbf_boundary(state_ego, arena_half_w, arena_half_h,
+                                robot_radius, d, alpha)
+    for h, a_v, a_omega in boundary:
+        constraints.append(CBFConstraint(h, a_v, a_omega, ConstraintType.ARENA))
+
+    # Obstacle constraints
+    if obstacles:
+        for obs in obstacles:
+            obs_pos = np.array([obs["x"], obs["y"]])
+            effective_radius = obs["radius"] + robot_radius
+            h, a_v, a_omega = vcp_cbf_obstacle(state_ego, obs_pos, effective_radius, d, alpha)
+            constraints.append(CBFConstraint(h, a_v, a_omega, ConstraintType.OBSTACLE))
+
+    # Inter-robot collision constraint
+    if state_other is not None:
+        h, a_v, a_omega = vcp_cbf_collision(state_ego, state_other, r_min, d, alpha)
+        constraints.append(CBFConstraint(h, a_v, a_omega, ConstraintType.COLLISION))
+
+    return constraints
+
+
 def solve_cbf_qp(
     u_nominal: np.ndarray,
     constraints: list[tuple[float, float, float]],
@@ -247,10 +392,16 @@ def solve_cbf_qp(
 
 
 class VCPCBFFilter:
-    """Safety filter using VCP-CBF for obstacle and boundary avoidance.
+    """Safety filter using VCP-CBF for obstacle, boundary, and collision avoidance.
 
-    Combines obstacle and boundary CBF constraints into a single QP.
-    Robot radius is automatically added to obstacle radii as a safety margin.
+    Combines obstacle, boundary, and inter-robot collision CBF constraints
+    into a single QP. Robot radius is automatically added to obstacle radii
+    as a safety margin.
+
+    Phase 2 extensions:
+    - Inter-robot collision constraint (via opponent_state parameter)
+    - Typed constraints for Tier 2 hierarchical relaxation
+    - CBF margin tracking for safety reward shaping
     """
 
     def __init__(
@@ -264,6 +415,7 @@ class VCPCBFFilter:
         robot_radius: float = 0.15,
         w_v: float = 150.0,
         w_omega: float = 1.0,
+        r_min_separation: float = 0.35,
     ):
         self.d = d
         self.alpha = alpha
@@ -274,16 +426,42 @@ class VCPCBFFilter:
         self.robot_radius = robot_radius
         self.w_v = w_v
         self.w_omega = w_omega
+        self.r_min_separation = r_min_separation
 
         # Tracking
         self.n_interventions = 0
         self.n_total = 0
+        self.n_infeasible = 0
+
+    def get_constraints(
+        self,
+        state: np.ndarray,
+        opponent_state: np.ndarray | None = None,
+        obstacles: list[dict] | None = None,
+    ) -> list[CBFConstraint]:
+        """Get all typed CBF constraints for the given state.
+
+        Args:
+            state: Ego robot state [x, y, theta].
+            opponent_state: Other robot state [x, y, theta], or None.
+            obstacles: List of obstacle dicts with 'x', 'y', 'radius' keys.
+
+        Returns:
+            List of typed CBFConstraint objects.
+        """
+        return get_all_constraints(
+            state, opponent_state,
+            self.arena_half_w, self.arena_half_h,
+            self.robot_radius, obstacles,
+            self.r_min_separation, self.d, self.alpha,
+        )
 
     def filter_action(
         self,
         action: np.ndarray,
         state: np.ndarray,
         obstacles: list[dict] | None = None,
+        opponent_state: np.ndarray | None = None,
     ) -> tuple[np.ndarray, dict]:
         """Filter nominal action through VCP-CBF-QP.
 
@@ -292,28 +470,16 @@ class VCPCBFFilter:
             state: Robot state [x, y, theta].
             obstacles: List of dicts with 'x', 'y', 'radius' keys.
                        Robot radius is added automatically as safety margin.
+            opponent_state: Other robot state [x, y, theta], or None.
 
         Returns:
             (safe_action, info): Filtered action and safety info.
         """
-        all_constraints = []
+        # Get typed constraints
+        typed_constraints = self.get_constraints(state, opponent_state, obstacles)
 
-        # Obstacle constraints (add robot_radius as safety margin)
-        if obstacles:
-            for obs in obstacles:
-                obs_pos = np.array([obs["x"], obs["y"]])
-                effective_radius = obs["radius"] + self.robot_radius
-                h, a_v, a_omega = vcp_cbf_obstacle(
-                    state, obs_pos, effective_radius, self.d, self.alpha,
-                )
-                all_constraints.append((h, a_v, a_omega))
-
-        # Boundary constraints
-        boundary_constraints = vcp_cbf_boundary(
-            state, self.arena_half_w, self.arena_half_h,
-            self.robot_radius, self.d, self.alpha,
-        )
-        all_constraints.extend(boundary_constraints)
+        # Convert to tuples for QP solver (backward compatible)
+        all_constraints = [c.as_tuple() for c in typed_constraints]
 
         # Solve QP
         u_safe, status, info = solve_cbf_qp(
@@ -326,8 +492,19 @@ class VCPCBFFilter:
         self.n_total += 1
         if info["intervention"]:
             self.n_interventions += 1
+        if not info["solver_success"]:
+            self.n_infeasible += 1
 
-        info["a_omega_values"] = [ao for _, _, ao in all_constraints]
+        # Enrich info with typed constraint data
+        info["a_omega_values"] = [c.a_omega for c in typed_constraints]
+        info["constraints"] = typed_constraints
+        info["h_values"] = {
+            "arena": [c.h for c in typed_constraints if c.ctype == ConstraintType.ARENA],
+            "obstacle": [c.h for c in typed_constraints if c.ctype == ConstraintType.OBSTACLE],
+            "collision": [c.h for c in typed_constraints if c.ctype == ConstraintType.COLLISION],
+        }
+        info["min_h"] = min(c.h for c in typed_constraints) if typed_constraints else float("inf")
+
         return u_safe, info
 
     def get_metrics(self) -> dict:
@@ -335,8 +512,12 @@ class VCPCBFFilter:
         return {
             "n_interventions": self.n_interventions,
             "n_total": self.n_total,
+            "n_infeasible": self.n_infeasible,
             "intervention_rate": (
                 self.n_interventions / self.n_total if self.n_total > 0 else 0
+            ),
+            "feasibility_rate": (
+                1.0 - self.n_infeasible / self.n_total if self.n_total > 0 else 1.0
             ),
         }
 
@@ -344,3 +525,4 @@ class VCPCBFFilter:
         """Reset tracking counters."""
         self.n_interventions = 0
         self.n_total = 0
+        self.n_infeasible = 0
