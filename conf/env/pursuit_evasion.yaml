@@ -1,0 +1,19 @@
+arena_width: 20.0
+arena_height: 20.0
+dt: 0.05
+max_steps: 1200
+capture_radius: 0.5
+collision_radius: 0.3
+robot_radius: 0.15
+min_init_distance: 3.0
+max_init_distance: 15.0
+pursuer:
+  v_max: 1.0
+  omega_max: 2.84
+evader:
+  v_max: 1.0
+  omega_max: 2.84
+reward:
+  capture_bonus: 100.0
+  timeout_penalty: -50.0
+  distance_scale: 1.0

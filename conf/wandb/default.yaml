@@ -1,0 +1,15 @@
+entity: null
+project: "pursuit-evasion"
+mode: "disabled"  # "online", "offline", "disabled"
+sync_tensorboard: true
+save_code: true
+tags:
+  - "phase1"
+log_frequency: 1024
+video:
+  enabled: true
+  record_every_n_episodes: 50
+  fps: 20
+model:
+  save_freq: 50000
+  save_best: true
