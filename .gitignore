@@ -1,0 +1,29 @@
+# PDF papers (too large for git)
+papers/original/*.pdf
+papers/supplementary/*.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+wandb/

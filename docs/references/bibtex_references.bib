@@ -1,0 +1,218 @@
+% ============================================================
+% BibTeX References for Safe RL + Pursuit-Evasion Research
+% Pathway A: Safe Deep RL for 1v1 Ground Robot PE
+% ============================================================
+
+% ---- CORE PAPERS FROM ORIGINAL REVIEW ----
+
+@article{wang2025rlsmccbf,
+  title={Reinforcement Learning in Pursuit-Evasion Differential Game: Safety, Stability and Robustness},
+  author={Wang, Xinyang and Zhang, Hongwei and Xu, Jun and Wang, Shimin and Guay, Martin},
+  journal={arXiv preprint arXiv:2507.19516},
+  year={2025},
+  note={Paper [01]}
+}
+
+@article{gonultas2024carlike,
+  title={1v1 Pursuit-Evasion on Car-like Ground Robots with Partial Observability},
+  author={Gonultas, Burak and Isler, Volkan},
+  year={2024},
+  note={Paper [02] - F1TENTH/JetRacer deployment, BiMDN belief encoder}
+}
+
+@article{yang2025cbfrl,
+  title={CBF-based Safety Filtering in Reinforcement Learning},
+  author={Yang, Various},
+  institution={Caltech},
+  year={2025},
+  note={Paper [05] - Closed-form CBF + reward shaping}
+}
+
+@article{emam2022robustcbf,
+  title={Robust Control Barrier Functions with GP Disturbance Estimation},
+  author={Emam, Various},
+  year={2022},
+  note={Paper [06] - RCBF-QP with GP for model uncertainty}
+}
+
+@inproceedings{bajcsy2024vision,
+  title={Vision-based Pursuit-Evasion with Privileged Learning},
+  author={Bajcsy, Andrea and others},
+  booktitle={IEEE International Conference on Robotics and Automation (ICRA)},
+  year={2024},
+  note={Paper [08] - DAGGER distillation, Unitree A1}
+}
+
+@inproceedings{kokolakis2022safe,
+  title={Safe Finite-Time Reinforcement Learning for Pursuit-Evasion Games},
+  author={Kokolakis, Nick-Marios and Vamvoudakis, Kyriakos},
+  booktitle={IEEE Conference on Decision and Control (CDC)},
+  year={2022},
+  note={Paper [13] - Barrier-augmented HJI cost}
+}
+
+@inproceedings{suttle2024cbfbeta,
+  title={CBF-Constrained Beta Policies for Safe Reinforcement Learning},
+  author={Suttle, Various},
+  booktitle={AISTATS},
+  year={2024},
+  note={Paper [16] - Truncated policy convergence theorem}
+}
+
+@article{xiao2024amsdrl,
+  title={AMS-DRL: Asynchronous Multi-Stage Self-Play for Deep Reinforcement Learning},
+  author={Xiao, Various and Feroskhan, Various},
+  year={2024},
+  note={Paper [18] - NE convergence, real drone validation}
+}
+
+@article{teoh2025madr,
+  title={MADR: Multi-Agent DeepReach for Pursuit-Evasion on TurtleBots},
+  author={Teoh, Various},
+  year={2025},
+  note={Paper [22] - Game-optimal PE on physical robots}
+}
+
+@article{ganai2024hjrl,
+  title={Hamilton-Jacobi Reachability and Reinforcement Learning: A Survey},
+  author={Ganai, Various},
+  year={2024},
+  note={Paper [25] - Complete HJ+RL roadmap}
+}
+
+@article{lagatta2025shadow,
+  title={SHADOW: Information-Aware Pursuit-Evasion with Unicycle Dynamics},
+  author={La Gatta, Various},
+  year={2025},
+  note={Paper [34] - Multi-headed TD3+PPO, PEEC formulation}
+}
+
+@article{salimpour2025sim2real,
+  title={Sim-to-Real Transfer for Mobile Robots: Isaac Sim to Gazebo to Real ROS2 Robots},
+  author={Salimpour, Various},
+  journal={arXiv preprint arXiv:2501.02902},
+  year={2025},
+  note={Paper [07]}
+}
+
+% ---- NEWLY IDENTIFIED PAPERS ----
+
+@article{guerrier2024cbfsurvey,
+  title={Learning Control Barrier Functions and their Application in Reinforcement Learning: A Survey},
+  author={Guerrier, Maeva and Fouad, Hassan and Beltrame, Giovanni},
+  journal={arXiv preprint arXiv:2404.16879},
+  year={2024},
+  note={N01 - Survey of data-driven CBF learning}
+}
+
+@article{so2024pncbf,
+  title={How to Train Your Neural Control Barrier Function: Learning Safety Filters for Complex Input-Constrained Systems},
+  author={So, Oswin and Serlin, Zachary and Mann, Makai and Gonzales, Jake and Rutledge, Kwesi and Roy, Nicholas and Fan, Chuchu},
+  journal={arXiv preprint arXiv:2310.15478},
+  year={2024},
+  note={N02 - PNCBF: value function of max-over-time cost is a CBF}
+}
+
+@article{gu2022macpo,
+  title={Multi-Agent Constrained Policy Optimisation},
+  author={Gu, Shangding and Kuba, Jakub Grudzien and Wen, Munning and Chen, Ruiqing and Wang, Ziyan and Tian, Zheng and Wang, Jun and Knoll, Alois and Yang, Yaodong},
+  journal={arXiv preprint arXiv:2110.02793},
+  year={2022},
+  note={N03 - MACPO/MAPPO-Lagrangian with constraint guarantees}
+}
+
+@article{xiao2023barriernet,
+  title={BarrierNet: Differentiable Control Barrier Functions for Learning of Safe Robot Control},
+  author={Xiao, Wei and Wang, Tsun-Hsuan and Hasani, Ramin and Chahine, Makram and Amini, Alexander and Li, Xiao and Rus, Daniela},
+  journal={IEEE Transactions on Robotics},
+  volume={39},
+  number={3},
+  pages={2289--2307},
+  year={2023},
+  note={N04 - End-to-end trainable dCBFs in differentiable QPs}
+}
+
+@article{zhang2024gcbfplus,
+  title={GCBF+: A Neural Graph Control Barrier Function Framework for Distributed Safe Multi-Agent Control},
+  author={Zhang, Songyuan and So, Oswin and Garg, Kunal and Fan, Chuchu},
+  journal={IEEE Transactions on Robotics},
+  year={2024},
+  note={N05 - Graph-structured CBFs, scales to 1024 agents, drone validation}
+}
+
+@article{benjabeur2025roboticpe,
+  title={Robotic Pursuit Evasion Problem in a Constrained Game Area using Deep Reinforcement Learning and Self-Play Training},
+  author={Ben Jabeur, Chiraz and Seddik, Hassene and Khnissi, Khaled and Hably, Ahmad},
+  journal={Research Square preprint rs-6279213/v1},
+  year={2025},
+  note={N06 - TD3 self-play for 1v1 PE, no safety; useful baseline}
+}
+
+@inproceedings{bouvier2024policed,
+  title={POLICEd RL: Learning Closed-Loop Robot Control Policies with Provable Satisfaction of Hard Constraints},
+  author={Bouvier, Jean-Baptiste and Nagpal, Kartik and Mehr, Negar},
+  booktitle={Robotics: Science and Systems (RSS)},
+  year={2024},
+  note={N07 - Affine policy near boundary for provable constraint satisfaction}
+}
+
+@article{jin2024statewise,
+  title={Constrained Reinforcement Learning with Statewise Projection: A Control Barrier Function Approach},
+  author={Jin, X. and Li, K. and Jia, Q.},
+  journal={Science China Information Sciences},
+  year={2024},
+  note={N08 - CBF projection-based safe RL}
+}
+
+@article{saferl2025survey,
+  title={A Survey of Safe Reinforcement Learning and Constrained MDPs: A Technical Survey on Single-Agent and Multi-Agent Safety},
+  journal={arXiv preprint arXiv:2505.17342},
+  year={2025},
+  note={N09 - Comprehensive safe RL + constrained MDP survey}
+}
+
+@article{salimpour2025isaac,
+  title={Sim-to-Real Transfer for Mobile Robots with Reinforcement Learning: from NVIDIA Isaac Sim to Gazebo and Real ROS 2 Robots},
+  author={Salimpour, Various},
+  journal={arXiv preprint arXiv:2501.02902},
+  year={2025},
+  note={N10 - Full Isaac Sim pipeline validation}
+}
+
+@article{isaaclabpaper2025,
+  title={Isaac Lab: A GPU-Accelerated Simulation Framework for Multi-Modal Robot Learning},
+  journal={arXiv preprint arXiv:2511.04831},
+  year={2025},
+  note={N11 - Isaac Lab framework details}
+}
+
+@article{zhang2025cbfclmr,
+  title={Dynamic obstacle avoidance for car-like mobile robots based on neurodynamic optimization with control barrier functions},
+  author={Zhang, Zheng and Yang, Guang-Hong},
+  journal={Neurocomputing},
+  volume={654},
+  pages={131252},
+  year={2025},
+  publisher={Elsevier},
+  doi={10.1016/j.neucom.2025.131252},
+  note={N12 - Virtual control point CBF + M-matrix auxiliary input for nonholonomic robots; uniform relative degree 1}
+}
+
+@article{sbtrpo2024,
+  title={Safety-Biased Policy Optimisation: Towards Hard-Constrained Reinforcement Learning via Trust Regions},
+  journal={arXiv preprint arXiv:2512.23770},
+  year={2024},
+  note={N14 - Trust-region hard-constrained RL}
+}
+
+@article{liu2025rmarlcbfsam,
+  title={Safe robust multi-agent reinforcement learning with neural control barrier functions and safety attention mechanism},
+  author={Liu, Shihan and Liu, Lijun and Yu, Zhen},
+  journal={Information Sciences},
+  volume={690},
+  pages={121567},
+  year={2025},
+  publisher={Elsevier},
+  doi={10.1016/j.ins.2024.121567},
+  note={N15 - RMARL-CBF-SAM: H-infinity robust MARL + decentralized neural CBFs + safety attention mechanism}
+}
