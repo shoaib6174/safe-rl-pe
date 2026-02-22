@@ -210,16 +210,14 @@ class SB3EvalAgent:
 
         if self.safety_filter is not None:
             action_pre = action.copy()
-            action = self.safety_filter.filter_action(
+            action, filter_info = self.safety_filter.filter_action(
                 action, state,
                 obstacles=obstacles,
                 opponent_state=opponent_state,
             )
             correction = float(np.linalg.norm(action - action_pre))
             eval_info["qp_correction"] = correction
-            # Check feasibility from filter metrics
-            metrics = self.safety_filter.get_metrics()
-            eval_info["qp_feasible"] = not metrics.get("last_infeasible", False)
+            eval_info["qp_feasible"] = filter_info.get("solver_success", True)
 
         return action, eval_info
 
