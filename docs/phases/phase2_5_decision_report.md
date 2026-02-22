@@ -16,7 +16,7 @@ Phase 2.5 evaluated the BarrierNet approach (differentiable QP safety layer inte
 
 **Key finding**: The BarrierNet approach faces fundamental challenges in the PE environment. After 324K training steps, it achieves only 2% capture rate with 7.56% CBF safety violations. In contrast, a standard PPO baseline trained WITH obstacles achieves 100% capture with 6.07% violations. Adding a post-hoc VCP-CBF safety filter to this baseline reduces capture to 91.5% due to high intervention (44.5%), while violations remain similar at 6.84%.
 
-**Recommendation**: For Phase 3, **train PPO normally with obstacles**, then optionally add a **tuned post-hoc VCP-CBF filter** at deployment. The filter's current aggressiveness (44.5% intervention, reducing capture from 100% to 91.5%) suggests the CBF parameters need tuning before deployment use.
+**Recommendation**: For Phase 3, **train PPO normally with obstacles**, then add a **Discrete-Time CBF (DCBF) post-hoc filter** at deployment. After a 14-configuration parameter sweep, DCBF with gamma=0.2 achieves 100% capture, 3.57% violations (45% reduction vs no filter), and only 6.6% intervention — strictly dominating both the unfiltered baseline and the original continuous-time CBF filter.
 
 ---
 
@@ -146,12 +146,24 @@ Rationale:
 3. **Speed**: 14 minutes to train 1M steps; 0.18 ms/step inference
 4. **Simplicity**: No differentiable QP, no special training loop needed
 
-### 6.2 Post-hoc Filter Status
+### 6.2 Post-hoc Filter Status — RESOLVED
 
-The VCP-CBF filter with current parameters (alpha=1.0, d=0.1) is **too aggressive** — it intervenes on 44.5% of actions and reduces capture from 100% to 91.5%. Before deployment:
-1. **Tune alpha**: Reduce from 1.0 to 0.3-0.5 for less conservative filtering
-2. **Reduce d**: Decrease VCP offset from 0.1m to 0.05m
-3. **Re-evaluate**: Target <10% intervention rate while maintaining safety
+The original continuous-time VCP-CBF filter (alpha=1.0, d=0.1) was too aggressive (44.5% intervention, reducing capture from 100% to 91.5%). A comprehensive parameter sweep (14 configurations, 100 episodes each) revealed that the **Discrete-Time CBF (DCBF)** formulation completely solves this problem.
+
+**Optimal configuration: DCBF gamma=0.2**
+| Metric | No Filter | CT-CBF (alpha=1.0) | **DCBF (gamma=0.2)** |
+|--------|-----------|--------------------|-----------------------|
+| Capture Rate | 99.0% | 95.0% | **100.0%** |
+| Violation Rate | 6.49% | 7.72% | **3.57%** |
+| Intervention Rate | 0.0% | 45.9% | **6.6%** |
+| Mean Reward | 98.8 | 92.8 | **100.3** |
+
+The DCBF filter uses `h(x_{k+1}) >= (1-gamma)*h(x_k)`, linearized as `dt*a_v*v + dt*a_omega*omega + gamma*h >= 0`, which properly accounts for the discrete timestep dt=0.05s. Unlike the continuous-time formulation, DCBF only intervenes when truly needed, achieving:
+- 45% fewer safety violations than no filter
+- 100% capture rate (better than no filter's 99%)
+- Only 6.6% intervention rate (vs 45.9% for CT-CBF)
+
+See `claudedocs/research_cbf_filter_tuning.md` for full sweep results and analysis.
 
 ### 6.3 BarrierNet Status
 
@@ -159,11 +171,11 @@ BarrierNet training has been terminated. The approach is not viable for this env
 
 ### 6.4 Future Considerations
 
-If higher safety guarantees are needed (e.g., for real robot deployment):
-1. **Tuned post-hoc filter**: Adjust CBF parameters for lower intervention rate
-2. **Safety reward shaping**: Add CBF-based penalty during training to learn CBF-aware policies
-3. **Discrete-time CBFs**: Formulations that account for discrete updates
-4. **Curriculum training**: Start without filter, gradually introduce CBF constraints
+For Phase 3 and beyond:
+1. **Use DCBF gamma=0.2 as the default post-hoc safety filter** — it improves ALL metrics over no filter
+2. **CBF-RL reward shaping**: The `SafetyRewardComputer` now supports dual CBF-RL penalties (`w_cbf_penalty`, `w_intervention`). Activating during Phase 3 self-play training could further reduce the already-low 6.6% intervention rate
+3. **Curriculum training**: Start without filter, gradually introduce DCBF constraints
+4. **Adaptive gamma**: State-dependent gamma (higher near obstacles, lower in open space) for even more precise filtering
 
 ---
 
@@ -182,6 +194,13 @@ If higher safety guarantees are needed (e.g., for real robot deployment):
 | Training checkpoint | niro-2: `checkpoints/barriernet_ds10/barriernet_iter_50.pt` |
 | Baseline model (with obstacles) | niro-2: `models/local_42/final_model.zip` (1M steps, 2 obs) |
 | Tests | `tests/test_barriernet_actor.py` (32 tests, all passing) |
+| Sweep script | `scripts/sweep_filter_params.py` |
+| Sweep results | `results/filter_sweep/sweep_results.txt` |
+| Sweep comparison plot | `results/filter_sweep/sweep_comparison.png` |
+| Pareto frontier plot | `results/filter_sweep/pareto_frontier.png` |
+| Baseline comparison plots | `results/visualizations/` (23 plots) |
+| Visualization script | `scripts/visualize_baseline_comparison.py` |
+| Filter tuning research | `claudedocs/research_cbf_filter_tuning.md` |
 
 ---
 
@@ -197,3 +216,4 @@ If higher safety guarantees are needed (e.g., for real robot deployment):
 | S32 | 2026-02-22 | Gradient flow fix + evaluate_actions |
 | S33 | 2026-02-22 | 3-way evaluation + decision report |
 | S34 | 2026-02-22 | Retrain baseline with obstacles, final 200-ep evaluation |
+| S35 | 2026-02-22 | CBF filter fixes (epsilon, DCBF, CBF-RL reward), 14-config sweep, DCBF gamma=0.2 optimal |

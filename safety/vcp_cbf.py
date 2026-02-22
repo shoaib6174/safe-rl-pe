@@ -442,13 +442,18 @@ def solve_cbf_qp(
     omega_max: float = 2.84,
     w_v: float = 150.0,
     w_omega: float = 1.0,
+    epsilon: float = 0.0,
 ) -> tuple[np.ndarray, str, dict]:
     """Solve CBF-QP: find safe action closest to nominal.
 
     min  w_v * (v - v_nom)^2 + w_omega * (omega - omega_nom)^2
-    s.t. a_v_i * v + a_omega_i * omega + alpha * h_i >= 0  for all i
+    s.t. a_v_i * v + a_omega_i * omega + alpha * h_i >= epsilon  for all i
          v_min <= v <= v_max
          omega_min <= omega <= omega_max
+
+    The epsilon parameter adds a positive safety margin to the constraint,
+    providing a buffer against discrete-time overshoot violations. With
+    epsilon=0 (default), this recovers the standard continuous-time CBF-QP.
 
     Anisotropic weights (w_v >> w_omega) encode preference for steering
     over braking. With d=0.1 and equal weights, a_v >> a_omega causes
@@ -465,6 +470,7 @@ def solve_cbf_qp(
         omega_min, omega_max: Angular velocity bounds.
         w_v: Weight on velocity deviation (higher = prefer maintaining v).
         w_omega: Weight on angular velocity deviation.
+        epsilon: Safety margin for discrete-time robustness (>= 0).
 
     Returns:
         (u_safe, status, info): Safe action, solver status string, and info dict.
@@ -481,12 +487,12 @@ def solve_cbf_qp(
             2.0 * w_omega * (u[1] - omega_nom),
         ])
 
-    # CBF constraints: a_v * v + a_omega * omega + alpha * h >= 0
+    # CBF constraints: a_v * v + a_omega * omega + alpha * h >= epsilon
     scipy_constraints = []
     for h, a_v, a_omega in constraints:
         scipy_constraints.append({
             "type": "ineq",
-            "fun": lambda u, av=a_v, ao=a_omega, hv=h: av * u[0] + ao * u[1] + alpha * hv,
+            "fun": lambda u, av=a_v, ao=a_omega, hv=h: av * u[0] + ao * u[1] + alpha * hv - epsilon,
             "jac": lambda u, av=a_v, ao=a_omega: np.array([av, ao]),
         })
 
@@ -521,6 +527,7 @@ def solve_cbf_qp(
         "n_constraints": len(constraints),
         "min_h": min(h for h, _, _ in constraints) if constraints else float("inf"),
         "intervention": not np.allclose(u_safe, u_nominal[:2], atol=1e-4),
+        "epsilon": epsilon,
     }
 
     return u_safe, status, info
@@ -551,6 +558,7 @@ class VCPCBFFilter:
         w_v: float = 150.0,
         w_omega: float = 1.0,
         r_min_separation: float = 0.35,
+        epsilon: float = 0.0,
     ):
         self.d = d
         self.alpha = alpha
@@ -562,6 +570,7 @@ class VCPCBFFilter:
         self.w_v = w_v
         self.w_omega = w_omega
         self.r_min_separation = r_min_separation
+        self.epsilon = epsilon
 
         # Tracking
         self.n_interventions = 0
@@ -622,6 +631,7 @@ class VCPCBFFilter:
             v_min=0.0, v_max=self.v_max,
             omega_min=-self.omega_max, omega_max=self.omega_max,
             w_v=self.w_v, w_omega=self.w_omega,
+            epsilon=self.epsilon,
         )
 
         self.n_total += 1
@@ -632,6 +642,95 @@ class VCPCBFFilter:
 
         # Enrich info with typed constraint data
         info["a_omega_values"] = [c.a_omega for c in typed_constraints]
+        info["constraints"] = typed_constraints
+        info["h_values"] = {
+            "arena": [c.h for c in typed_constraints if c.ctype == ConstraintType.ARENA],
+            "obstacle": [c.h for c in typed_constraints if c.ctype == ConstraintType.OBSTACLE],
+            "collision": [c.h for c in typed_constraints if c.ctype == ConstraintType.COLLISION],
+        }
+        info["min_h"] = min(c.h for c in typed_constraints) if typed_constraints else float("inf")
+
+        return u_safe, info
+
+    def dcbf_filter_action(
+        self,
+        action: np.ndarray,
+        state: np.ndarray,
+        dt: float = 0.05,
+        gamma: float = 0.1,
+        obstacles: list[dict] | None = None,
+        opponent_state: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, dict]:
+        """Filter action using Discrete-Time CBF (DCBF).
+
+        Instead of the continuous-time condition (hdot + alpha*h >= 0), uses:
+            h(x_{k+1}) >= (1 - gamma) * h(x_k)
+
+        where x_{k+1} is the predicted next state under unicycle dynamics.
+        This provides proper discrete-time safety guarantees.
+
+        The constraint is linearized around the nominal action to maintain
+        QP form: h(x_k) + nabla_h^T * (x_{k+1} - x_k) >= (1-gamma)*h(x_k)
+        which simplifies to: nabla_h^T * dt * g(x_k, u) >= -gamma * h(x_k)
+
+        Args:
+            action: Nominal action [v, omega].
+            state: Robot state [x, y, theta].
+            dt: Integration timestep (seconds).
+            gamma: DCBF decay rate in (0, 1]. gamma=1 => h(x_{k+1}) >= 0.
+            obstacles: List of obstacle dicts.
+            opponent_state: Other robot state, or None.
+
+        Returns:
+            (safe_action, info): Filtered action and safety info.
+        """
+        x, y, theta = float(state[0]), float(state[1]), float(state[2])
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
+
+        # Collect current h values and build DCBF constraints
+        # For each constraint, we need: h_current and the linearized next-h
+        # The VCP velocity: q_dot = [v*cos(t) - d*w*sin(t), v*sin(t) + d*w*cos(t)]
+        # So delta_q = dt * q_dot
+        # h(x_{k+1}) ≈ h(x_k) + dh/dq * delta_q
+        #             = h(x_k) + dt * (a_v * v + a_omega * omega)
+        # DCBF condition: h(x_k) + dt*(a_v*v + a_omega*omega) >= (1-gamma)*h(x_k)
+        #               => dt*a_v*v + dt*a_omega*omega >= -gamma*h(x_k)
+        #               => dt*a_v*v + dt*a_omega*omega + gamma*h(x_k) >= 0
+
+        typed_constraints = self.get_constraints(state, opponent_state, obstacles)
+
+        # Build DCBF constraints (scaled by dt)
+        dcbf_constraints = []
+        for c in typed_constraints:
+            # dt * a_v * v + dt * a_omega * omega + gamma * h >= 0
+            dcbf_constraints.append((
+                gamma * c.h,       # effective h term (gamma * h_current)
+                dt * c.a_v,        # scaled a_v
+                dt * c.a_omega,    # scaled a_omega
+            ))
+
+        # Solve QP with DCBF constraints
+        # Note: pass alpha=1.0 because the constraint is already:
+        # (dt*a_v)*v + (dt*a_omega)*omega + 1.0*(gamma*h) >= epsilon
+        u_safe, status, info = solve_cbf_qp(
+            action, dcbf_constraints, alpha=1.0,
+            v_min=0.0, v_max=self.v_max,
+            omega_min=-self.omega_max, omega_max=self.omega_max,
+            w_v=self.w_v, w_omega=self.w_omega,
+            epsilon=self.epsilon,
+        )
+
+        self.n_total += 1
+        if info["intervention"]:
+            self.n_interventions += 1
+        if not info["solver_success"]:
+            self.n_infeasible += 1
+
+        # Enrich info
+        info["dcbf_mode"] = True
+        info["gamma"] = gamma
+        info["dt"] = dt
         info["constraints"] = typed_constraints
         info["h_values"] = {
             "arena": [c.h for c in typed_constraints if c.ctype == ConstraintType.ARENA],

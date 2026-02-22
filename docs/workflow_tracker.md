@@ -44,6 +44,8 @@
 | 31 | 2026-02-22 | **Phase 2.5 Session 6**: CUDA optimization, hybrid CPU/GPU training (9x speedup: 40h→4.5h) | [S31](worklogs/2026-02-22_S31.md) |
 | 32 | 2026-02-22 | **Phase 2.5 Session 7**: Gradient flow fix, 3-way evaluation, decision report — recommend post-hoc VCP-CBF filter | [S32](worklogs/2026-02-22_S32.md) |
 | 33 | 2026-02-22 | **Phase 2.5 Final**: Retrained baseline with obstacles (100% capture), final 200-ep evaluation, decision report finalized | [S33](worklogs/2026-02-22_S33.md) |
+| 34 | 2026-02-22 | **Phase 2.5**: Baseline comparison visualizations (23 plots), 3-way eval monitoring | [S34](worklogs/2026-02-22_S34.md) |
+| 35 | 2026-02-22 | **Phase 2.5 Filter Tuning**: CBF filter fixes (epsilon, DCBF, CBF-RL reward), 14-config sweep — DCBF gamma=0.2 optimal | [S35](worklogs/2026-02-22_S35.md) |
 
 ## Paper Reading Status
 
