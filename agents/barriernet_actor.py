@@ -71,10 +71,10 @@ class BarrierNetActor(nn.Module):
         # Nominal action head: outputs raw values, squashed via tanh
         self.action_mean = nn.Linear(hidden_dim, 2)  # [v, omega]
 
-        # Learnable exploration noise (log std)
-        # Initialize with smaller std for meaningful exploration:
+        # Fixed exploration noise (not learnable — prevents std explosion
+        # when QP corrections create positive noise-reward correlation)
         # v std=0.3 (log=-1.2), omega std=0.5 (log=-0.7)
-        self.action_log_std = nn.Parameter(torch.tensor([-1.2, -0.7]))
+        self.register_buffer("action_log_std", torch.tensor([-1.2, -0.7]))
 
         # Differentiable QP safety layer
         self.qp_layer = DifferentiableVCPCBFQP(
@@ -198,6 +198,46 @@ class BarrierNetActor(nn.Module):
         }
 
         return u_safe, log_prob, entropy, info
+
+    def evaluate_actions(
+        self,
+        obs: torch.Tensor,
+        u_nom_stored: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Evaluate log probability of stored nominal actions under current policy.
+
+        Used during PPO update to compute log pi_new(u_nom_old | s). The
+        gradient flows through u_nom_mean (current MLP output) to backbone
+        parameters, enabling learning.
+
+        No QP call is needed here — we use Approach A (log pi of u_nom)
+        where the QP only runs during rollout for safe action execution.
+
+        Args:
+            obs: (B, obs_dim) observations.
+            u_nom_stored: (B, 2) nominal actions stored during rollout (detached).
+
+        Returns:
+            log_prob: (B,) log probability under current policy.
+            entropy: scalar entropy of the exploration distribution.
+        """
+        # Current nominal action mean from MLP (has gradient to backbone)
+        u_nom_mean = self.get_nominal_action(obs)
+
+        # Log probability: log N(u_nom_stored | u_nom_mean, std)
+        # Gradient flows through u_nom_mean since u_nom_stored is detached
+        std = torch.exp(self.action_log_std).expand(obs.shape[0], -1)
+        var = std ** 2
+        log_prob = -0.5 * (
+            ((u_nom_stored - u_nom_mean) ** 2 / var).sum(dim=-1)
+            + torch.log(var).sum(dim=-1)
+            + 2 * math.log(2 * math.pi)
+        )
+
+        # Entropy of exploration distribution
+        entropy = 0.5 * (1 + torch.log(2 * math.pi * std ** 2)).sum()
+
+        return log_prob, entropy
 
 
 class BarrierNetCritic(nn.Module):

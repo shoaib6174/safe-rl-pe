@@ -221,17 +221,31 @@ class TestGradientFlow:
 
         assert actor.action_mean.weight.grad is not None
 
-    def test_gradient_to_log_std(self, actor, sample_obs, sample_states):
-        """Gradient should reach log_std parameter (through log prob)."""
-        u_safe, log_prob, _, _ = actor(sample_obs, sample_states, deterministic=False)
-        loss = log_prob.sum()
-        loss.backward()
+    def test_log_std_is_fixed_buffer(self, actor, sample_obs, sample_states):
+        """action_log_std should be a non-learnable buffer (prevents std explosion).
 
-        assert actor.action_log_std.grad is not None
+        When action_log_std is a learnable Parameter, policy gradients push it
+        higher because QP corrections create a positive correlation between
+        noise magnitude and reward. Making it a buffer prevents this.
+        """
+        assert not actor.action_log_std.requires_grad
+        assert "action_log_std" not in dict(actor.named_parameters())
+        assert "action_log_std" in dict(actor.named_buffers())
 
     def test_ppo_style_loss_gradient(self, actor, sample_obs, sample_states):
-        """PPO-style loss should produce valid gradients."""
-        u_safe, log_prob, entropy, _ = actor(sample_obs, sample_states)
+        """PPO-style loss via evaluate_actions should produce valid gradients.
+
+        During PPO update, evaluate_actions computes log_prob of stored
+        nominal actions under the current policy. Gradient flows through
+        u_nom_mean (current MLP output) to backbone parameters.
+        """
+        # Simulate rollout: get nominal actions (detached, as stored in buffer)
+        with torch.no_grad():
+            u_safe, _, _, info = actor(sample_obs, sample_states)
+        u_nom_stored = info["u_nom"]  # already detached
+
+        # Simulate PPO update: evaluate stored actions under current policy
+        log_prob, entropy = actor.evaluate_actions(sample_obs, u_nom_stored)
 
         # Simulate PPO loss
         advantages = torch.randn(4)
@@ -397,7 +411,7 @@ class TestBarrierNetPPO:
         """PPO update should run without errors on synthetic data."""
         agent = BarrierNetPPO(ppo_config)
 
-        # Create synthetic rollout
+        # Create synthetic rollout with u_nom
         buf = RolloutBuffer()
         for i in range(16):
             obs = torch.randn(14)
@@ -412,6 +426,7 @@ class TestBarrierNetPPO:
                 log_prob=torch.tensor(-1.0),
                 value=torch.tensor(0.5),
                 done=(i == 15),
+                u_nom=torch.rand(2),
             )
 
         metrics = agent.update(buf)
@@ -431,7 +446,7 @@ class TestBarrierNetPPO:
             for name, param in agent.actor.named_parameters()
         }
 
-        # Create synthetic rollout
+        # Create synthetic rollout with u_nom
         buf = RolloutBuffer()
         for i in range(16):
             buf.add(
@@ -442,6 +457,7 @@ class TestBarrierNetPPO:
                 log_prob=torch.tensor(-1.0),
                 value=torch.tensor(0.5),
                 done=(i == 15),
+                u_nom=torch.rand(2),
             )
 
         agent.update(buf)

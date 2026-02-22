@@ -107,11 +107,6 @@ class BarrierNetTrainer:
             cpu_critic_state = {k: v.cpu() for k, v in gpu_critic_state.items()}
             self._cpu_agent.critic.load_state_dict(cpu_critic_state)
 
-            # Sync action_log_std
-            self._cpu_agent.actor.action_log_std.data = (
-                self.agent.actor.action_log_std.data.cpu()
-            )
-
     @staticmethod
     def _unwrap_env(env):
         """Unwrap to get the base PursuitEvasionEnv."""
@@ -198,6 +193,7 @@ class BarrierNetTrainer:
                 log_prob=log_prob.squeeze(0).detach(),
                 value=value.squeeze(0).detach(),
                 done=done,
+                u_nom=act_info["u_nom"].squeeze(0),
                 obstacles=obstacles,
                 opponent_state=opp_t.squeeze(0),
             )

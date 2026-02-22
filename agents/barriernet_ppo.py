@@ -92,6 +92,7 @@ class RolloutBuffer:
         self.obs = []
         self.states = []
         self.actions = []
+        self.u_noms = []
         self.rewards = []
         self.log_probs = []
         self.values = []
@@ -108,6 +109,7 @@ class RolloutBuffer:
         log_prob: torch.Tensor,
         value: torch.Tensor,
         done: bool,
+        u_nom: torch.Tensor | None = None,
         obstacles: list[dict] | None = None,
         opponent_state: torch.Tensor | None = None,
     ):
@@ -115,6 +117,7 @@ class RolloutBuffer:
         self.obs.append(obs)
         self.states.append(state)
         self.actions.append(action)
+        self.u_noms.append(u_nom)
         self.rewards.append(reward)
         self.log_probs.append(log_prob)
         self.values.append(value)
@@ -166,25 +169,30 @@ class RolloutBuffer:
         obs_t = torch.stack(self.obs)
         states_t = torch.stack(self.states)
         actions_t = torch.stack(self.actions)
+        u_noms_t = torch.stack(self.u_noms) if self.u_noms[0] is not None else None
         log_probs_t = torch.stack(self.log_probs) if isinstance(self.log_probs[0], torch.Tensor) else torch.tensor(self.log_probs)
 
         for start in range(0, T, batch_size):
             end = min(start + batch_size, T)
             batch_idx = indices[start:end]
 
-            yield {
+            batch = {
                 "obs": obs_t[batch_idx],
                 "states": states_t[batch_idx],
                 "actions": actions_t[batch_idx],
                 "log_probs": log_probs_t[batch_idx],
                 "batch_idx": batch_idx,
             }
+            if u_noms_t is not None:
+                batch["u_noms"] = u_noms_t[batch_idx]
+            yield batch
 
     def clear(self):
         """Clear the buffer."""
         self.obs.clear()
         self.states.clear()
         self.actions.clear()
+        self.u_noms.clear()
         self.rewards.clear()
         self.log_probs.clear()
         self.values.clear()
@@ -315,45 +323,29 @@ class BarrierNetPPO:
         total_policy_loss = 0.0
         total_critic_loss = 0.0
         total_entropy = 0.0
-        total_correction = 0.0
         n_updates = 0
 
         for epoch in range(cfg.n_epochs):
             for batch in buffer.get_batches(cfg.batch_size):
                 idx = batch["batch_idx"]
                 obs = batch["obs"].to(self.device)
-                states = batch["states"].to(self.device)
                 log_probs_old = batch["log_probs"].to(self.device)
                 batch_adv = advantages[idx].to(self.device)
                 batch_ret = returns[idx].to(self.device)
 
-                # Collect opponent states for this batch
-                batch_opponents = None
-                if any(buffer.opponent_states[i] is not None for i in idx):
-                    opp_list = []
-                    for i in idx:
-                        if buffer.opponent_states[i] is not None:
-                            opp_list.append(buffer.opponent_states[i])
-                        else:
-                            opp_list.append(torch.zeros(3))
-                    batch_opponents = torch.stack(opp_list).to(self.device)
+                # Get stored nominal actions for evaluate_actions
+                u_noms = batch["u_noms"].to(self.device) if "u_noms" in batch else None
 
-                # Use per-step obstacles from buffer if available
-                batch_obstacles = obstacles
-                if buffer.obstacles and buffer.obstacles[idx[0]] is not None:
-                    batch_obstacles = buffer.obstacles[idx[0]]
-
-                # Forward pass through BarrierNet actor
-                u_safe, log_probs_new, entropy, info = self.actor(
-                    obs, states,
-                    obstacles=batch_obstacles,
-                    opponent_states=batch_opponents,
-                    arena_half_w=cfg.arena_half_w,
-                    arena_half_h=cfg.arena_half_h,
-                    robot_radius=cfg.robot_radius,
-                    r_min_separation=cfg.r_min_separation,
-                    deterministic=False,
-                )
+                if u_noms is not None:
+                    # Proper PPO: evaluate log_prob of stored nominal actions
+                    # under current policy. Gradient flows: log_prob → u_nom_mean → backbone
+                    log_probs_new, entropy = self.actor.evaluate_actions(obs, u_noms)
+                else:
+                    # Fallback for buffers without u_nom (backward compat)
+                    states = batch["states"].to(self.device)
+                    _, log_probs_new, entropy, _ = self.actor(
+                        obs, states, deterministic=False,
+                    )
 
                 # PPO clipped objective
                 ratio = torch.exp(log_probs_new - log_probs_old)
@@ -366,7 +358,7 @@ class BarrierNetPPO:
                 # Entropy bonus
                 entropy_loss = -cfg.entropy_coeff * entropy
 
-                # Actor loss: gradient flows through QP layer
+                # Actor loss: gradient flows through evaluate_actions → backbone
                 actor_loss = policy_loss + entropy_loss
                 self.optimizer_actor.zero_grad()
                 actor_loss.backward()
@@ -385,7 +377,6 @@ class BarrierNetPPO:
                 total_policy_loss += policy_loss.item()
                 total_critic_loss += critic_loss.item()
                 total_entropy += entropy.item()
-                total_correction += info["qp_correction"].mean().item()
                 n_updates += 1
 
         # Get current action std for monitoring
@@ -395,7 +386,7 @@ class BarrierNetPPO:
             "policy_loss": total_policy_loss / max(n_updates, 1),
             "critic_loss": total_critic_loss / max(n_updates, 1),
             "entropy": total_entropy / max(n_updates, 1),
-            "mean_qp_correction": total_correction / max(n_updates, 1),
+            "mean_qp_correction": 0.0,  # QP not called during update (Approach A)
             "n_updates": n_updates,
             "action_std_v": float(action_std[0]),
             "action_std_omega": float(action_std[1]),
