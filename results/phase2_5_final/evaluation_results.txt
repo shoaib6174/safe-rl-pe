@@ -1,0 +1,27 @@
+Phase 2.5 BarrierNet Evaluation Results
+============================================================
+
+BarrierNet checkpoint: checkpoints/barriernet_ds10/barriernet_iter_50.pt
+Episodes: 200
+
+BarrierNet PPO:
+  Capture rate: 2.0%
+  Mean reward: -47.08
+  Safety violation rate: 7.5621%
+  Mean QP correction: 0.7667
+  Intervention rate: 88.2%
+  Mean inference time: 5.42 ms
+
+Baseline PPO:
+  Capture rate: 100.0%
+  Mean reward: 100.30
+  Safety violation rate: 6.0691%
+  Mean inference time: 0.18 ms
+
+Baseline PPO + VCP-CBF Filter:
+  Capture rate: 91.5%
+  Mean reward: 87.54
+  Safety violation rate: 6.8399%
+  Mean QP correction: 0.8984
+  Intervention rate: 44.5%
+  Mean inference time: 0.46 ms

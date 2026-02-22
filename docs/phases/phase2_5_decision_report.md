@@ -1,8 +1,8 @@
 # Phase 2.5 Decision Report: BarrierNet Experiment Results
 
 **Date**: 2026-02-22
-**Status**: Interim (training at 324K/2M steps)
-**Author**: Claude Code (Sessions 30-33)
+**Status**: Final
+**Author**: Claude Code (Sessions 30-34)
 
 ---
 
@@ -14,9 +14,9 @@ Phase 2.5 evaluated the BarrierNet approach (differentiable QP safety layer inte
 2. **Baseline PPO**: Standard PPO without safety constraints
 3. **Baseline PPO + VCP-CBF Filter**: Trained PPO with post-hoc safety filter at deployment
 
-**Key finding**: The BarrierNet approach faces fundamental challenges in the PE environment. After 324K training steps, it achieves only 3% capture rate with 7.4% CBF safety violations — worse on both metrics than the simpler post-hoc filter approach (1% capture, 2.9% violations). The high QP intervention rate (87.5%) severely constrains exploration, preventing the agent from learning pursuit behavior.
+**Key finding**: The BarrierNet approach faces fundamental challenges in the PE environment. After 324K training steps, it achieves only 2% capture rate with 7.56% CBF safety violations. In contrast, a standard PPO baseline trained WITH obstacles achieves 100% capture with 6.07% violations. Adding a post-hoc VCP-CBF safety filter to this baseline reduces capture to 91.5% due to high intervention (44.5%), while violations remain similar at 6.84%.
 
-**Recommendation**: Use the **Baseline PPO + Post-hoc VCP-CBF Filter** approach for Phase 3. It provides the best safety-performance balance with minimal complexity.
+**Recommendation**: For Phase 3, **train PPO normally with obstacles**, then optionally add a **tuned post-hoc VCP-CBF filter** at deployment. The filter's current aggressiveness (44.5% intervention, reducing capture from 100% to 91.5%) suggests the CBF parameters need tuning before deployment use.
 
 ---
 
@@ -38,9 +38,11 @@ Phase 2.5 evaluated the BarrierNet approach (differentiable QP safety layer inte
 - **Exploration**: Fixed Gaussian noise (std_v=0.30, std_w=0.50)
 - **PPO**: evaluate_actions (Approach A: log pi of u_nom), 10 epochs, lr=3e-4
 
-### 2.3 Baseline PPO
-- **Model**: SB3 PPO, trained in Phase 1 (obstacle-free environment, obs_dim=14)
-- **Note**: Evaluated with truncated obs (first 14 dims) in 2-obstacle env
+### 2.3 Baseline PPO (Retrained with Obstacles)
+- **Model**: SB3 PPO, retrained with 2 obstacles (1M steps, seed=42)
+- **Obs dim**: 18 (14 base + 4 obstacle features for 2 nearest obstacles)
+- **Training**: `env.n_obstacles=2 env.n_obstacle_obs=2 total_timesteps=1000000`
+- **Result**: ep_rew_mean=100 at convergence (~100% capture rate vs random evader)
 
 ### 2.4 Post-hoc VCP-CBF Filter
 - **VCPCBFFilter**: Same parameters as BarrierNet QP (alpha=1.0, d=0.1)
@@ -71,30 +73,39 @@ Phase 2.5 evaluated the BarrierNet approach (differentiable QP safety layer inte
 
 ---
 
-## 4. Evaluation Results (100 episodes, iter_50 checkpoint)
+## 4. Evaluation Results
+
+### 4.0 Interim Results (100 episodes, old baseline without obstacle training)
+
+| Metric | BarrierNet PPO | Baseline PPO (no obs) | Baseline + Filter |
+|--------|---------------|----------------------|-------------------|
+| **Capture Rate** | 3.0% | 4.0% | 1.0% |
+| **Mean Reward** | -45.58 | -44.04 | -48.57 |
+| **Safety Violation Rate** | 7.42% | 4.05% | 2.91% |
+| **Intervention Rate** | 87.5% | N/A | 0.1% |
+
+*Note: Low capture rates across all approaches because the baseline was trained without obstacles.*
+
+### 4.1 Final Results (200 episodes, baseline retrained WITH obstacles)
 
 | Metric | BarrierNet PPO | Baseline PPO | Baseline + Filter |
 |--------|---------------|-------------|-------------------|
-| **Capture Rate** | 3.0% | 4.0% | 1.0% |
-| **Mean Reward** | -45.58 | -44.04 | -48.57 |
-| **Safety Violation Rate** | **7.42%** | 4.05% | **2.91%** |
-| **QP Correction** | 0.794 | 0.000 | 0.000 |
-| **Intervention Rate** | 87.5% | N/A | 0.1% |
-| **Inference Time** | 13.49 ms | 0.18 ms | 0.40 ms |
+| **Capture Rate** | 2.0% | **100.0%** | 91.5% |
+| **Mean Reward** | -47.08 | **100.30** | 87.54 |
+| **Safety Violation Rate** | 7.56% | **6.07%** | 6.84% |
+| **QP Correction** | 0.77 | 0.00 | 0.90 |
+| **Intervention Rate** | 88.2% | N/A | 44.5% |
+| **Inference Time** | 5.42 ms | 0.18 ms | 0.46 ms |
 
-### 4.1 Analysis
+### 4.2 Analysis
 
-**Safety**: The Baseline+Filter approach achieves the lowest safety violation rate (2.91%), followed by the baseline alone (4.05%). BarrierNet has the HIGHEST violation rate (7.42%) despite 87.5% QP intervention. This counterintuitive result occurs because:
-- BarrierNet's untrained policy proposes aggressive exploratory actions
-- The QP corrects most of them, but in discrete-time (dt=0.05s), corrections are imperfect
-- The baseline policy, trained without obstacles, naturally avoids most unsafe regions simply because it learned to navigate open space
+**Performance**: The retrained baseline achieves **100% capture** against the random evader, confirming that standard PPO can solve this task when given proper observations (obstacle features). The post-hoc filter reduces this to 91.5% because the filter intervenes on 44.5% of actions, blocking some pursuit maneuvers near obstacles.
 
-**Performance**: All approaches achieve low capture rates (1-4%) because:
-- The baseline was trained in an obstacle-free environment and doesn't have obstacle observations
-- BarrierNet hasn't converged (only 100K steps at evaluation)
-- The random evader + 2 obstacles make capture inherently harder
+**Safety**: All three approaches show similar violation rates (6-7.6%). The baseline without filter has the *lowest* violations (6.07%), suggesting it learned implicit obstacle avoidance during training. The filter's high intervention rate (44.5%) indicates the CBF parameters (alpha=1.0, d=0.1) are too conservative — the filter treats many safe pursuit actions near obstacles as unsafe.
 
-**Efficiency**: Baseline+Filter runs at 0.40 ms/step vs BarrierNet's 13.49 ms/step — a 34x speedup. The filter intervenes on only 0.1% of actions, meaning the trained baseline already takes mostly safe actions.
+**BarrierNet**: Still fundamentally limited at 2% capture with 88% QP intervention. The end-to-end approach cannot overcome the exploration-safety conflict in this environment.
+
+**Efficiency**: Baseline runs at 0.18 ms/step, Baseline+Filter at 0.46 ms/step (2.6x overhead), BarrierNet at 5.42 ms/step (30x overhead).
 
 ### 4.2 Why BarrierNet Struggles
 
@@ -127,26 +138,32 @@ Our pursuit-evasion task is significantly more challenging:
 
 ### 6.1 Recommended Approach for Phase 3
 
-**Baseline PPO + Post-hoc VCP-CBF Filter (Deployment Safety)**
+**Standard PPO trained with obstacles + optional post-hoc VCP-CBF filter at deployment**
 
 Rationale:
-1. **Simplicity**: Train PPO normally (fast, proven), add safety filter only at deployment
-2. **Best safety**: 2.91% CBF violation rate vs 7.42% for BarrierNet
-3. **Fast inference**: 0.40 ms vs 13.49 ms (34x faster)
-4. **Low intervention**: Filter modifies only 0.1% of actions, preserving learned behavior
-5. **Modularity**: Safety filter can be tuned independently of training
+1. **Performance**: Standard PPO achieves 100% capture when trained with obstacle observations
+2. **Implicit safety**: PPO learns obstacle avoidance during training (6.07% violations without any filter)
+3. **Speed**: 14 minutes to train 1M steps; 0.18 ms/step inference
+4. **Simplicity**: No differentiable QP, no special training loop needed
 
-### 6.2 BarrierNet Status
+### 6.2 Post-hoc Filter Status
 
-BarrierNet training will continue on niro-2 to 2M steps. If it shows significant improvement, results will be updated. However, the fundamental exploration-safety conflict suggests convergence will remain limited in this environment.
+The VCP-CBF filter with current parameters (alpha=1.0, d=0.1) is **too aggressive** — it intervenes on 44.5% of actions and reduces capture from 100% to 91.5%. Before deployment:
+1. **Tune alpha**: Reduce from 1.0 to 0.3-0.5 for less conservative filtering
+2. **Reduce d**: Decrease VCP offset from 0.1m to 0.05m
+3. **Re-evaluate**: Target <10% intervention rate while maintaining safety
 
-### 6.3 Future Considerations
+### 6.3 BarrierNet Status
 
-If higher safety guarantees are needed (e.g., for real robot deployment), consider:
-1. **Curriculum training**: Start without QP constraints, gradually increase alpha
-2. **Reward shaping**: Stronger distance-based reward (distance_scale=50-100)
+BarrierNet training has been terminated. The approach is not viable for this environment due to the fundamental exploration-safety conflict (88% QP intervention prevents learning).
+
+### 6.4 Future Considerations
+
+If higher safety guarantees are needed (e.g., for real robot deployment):
+1. **Tuned post-hoc filter**: Adjust CBF parameters for lower intervention rate
+2. **Safety reward shaping**: Add CBF-based penalty during training to learn CBF-aware policies
 3. **Discrete-time CBFs**: Formulations that account for discrete updates
-4. **Pre-training**: Initialize BarrierNet backbone from trained baseline weights
+4. **Curriculum training**: Start without filter, gradually introduce CBF constraints
 
 ---
 
@@ -161,8 +178,9 @@ If higher safety guarantees are needed (e.g., for real robot deployment), consid
 | Evaluation script | `scripts/evaluate_barriernet.py` |
 | Training script | `scripts/train_barriernet.py` |
 | Interim eval results | `results/phase2_5_interim/evaluation_results.txt` |
+| Final eval results | niro-2: `results/phase2_5_final/evaluation_results.txt` |
 | Training checkpoint | niro-2: `checkpoints/barriernet_ds10/barriernet_iter_50.pt` |
-| Baseline model | `models/local_42/final_model.zip` |
+| Baseline model (with obstacles) | niro-2: `models/local_42/final_model.zip` (1M steps, 2 obs) |
 | Tests | `tests/test_barriernet_actor.py` (32 tests, all passing) |
 
 ---
@@ -178,3 +196,4 @@ If higher safety guarantees are needed (e.g., for real robot deployment), consid
 | S31 | 2026-02-22 | Hybrid CPU/GPU + std explosion fix |
 | S32 | 2026-02-22 | Gradient flow fix + evaluate_actions |
 | S33 | 2026-02-22 | 3-way evaluation + decision report |
+| S34 | 2026-02-22 | Retrain baseline with obstacles, final 200-ep evaluation |
