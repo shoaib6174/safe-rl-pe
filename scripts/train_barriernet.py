@@ -60,6 +60,8 @@ def main():
     parser.add_argument("--save-dir", type=str, default="checkpoints/barriernet", help="Save dir")
     parser.add_argument("--arena-size", type=float, default=20.0, help="Arena size")
     parser.add_argument("--device", type=str, default="auto", help="Device: auto, cpu, cuda")
+    parser.add_argument("--entropy-coeff", type=float, default=0.001, help="Entropy bonus coefficient")
+    parser.add_argument("--n-epochs", type=int, default=10, help="PPO epochs per update")
     args = parser.parse_args()
 
     # Determine device
@@ -88,6 +90,7 @@ def main():
     print(f"  obstacles={args.obstacles}, arena={args.arena_size}x{args.arena_size}")
     print(f"  timesteps={args.timesteps}, rollout_length={args.rollout_length}")
     print(f"  hidden_dim={args.hidden_dim}, lr={args.lr}")
+    print(f"  entropy_coeff={args.entropy_coeff}, n_epochs={args.n_epochs}")
     print(f"  device={device}")
 
     # Create agent
@@ -97,6 +100,8 @@ def main():
         n_constraints_max=n_constraints_max,
         lr_actor=args.lr,
         lr_critic=args.lr,
+        entropy_coeff=args.entropy_coeff,
+        n_epochs=args.n_epochs,
         v_max=1.0,
         omega_max=2.84,
         arena_half_w=args.arena_size / 2,

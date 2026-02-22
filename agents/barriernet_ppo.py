@@ -388,12 +388,17 @@ class BarrierNetPPO:
                 total_correction += info["qp_correction"].mean().item()
                 n_updates += 1
 
+        # Get current action std for monitoring
+        action_std = torch.exp(self.actor.action_log_std).detach().cpu().numpy()
+
         return {
             "policy_loss": total_policy_loss / max(n_updates, 1),
             "critic_loss": total_critic_loss / max(n_updates, 1),
             "entropy": total_entropy / max(n_updates, 1),
             "mean_qp_correction": total_correction / max(n_updates, 1),
             "n_updates": n_updates,
+            "action_std_v": float(action_std[0]),
+            "action_std_omega": float(action_std[1]),
         }
 
     def save(self, path: str):
