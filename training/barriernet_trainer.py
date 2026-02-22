@@ -300,7 +300,8 @@ class BarrierNetTrainer:
             f"qp_corr={metrics['mean_qp_correction']:.4f}, "
             f"qp_time={metrics['mean_qp_time_ms']:.1f}ms, "
             f"interv={metrics['intervention_rate']:.3f}, "
-            f"infeas={metrics['infeasibility_rate']:.4f}"
+            f"infeas={metrics['infeasibility_rate']:.4f}, "
+            f"entropy={metrics.get('entropy', 0):.3f}"
         )
 
     def _save_checkpoint(self):

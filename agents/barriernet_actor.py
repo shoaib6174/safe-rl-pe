@@ -72,7 +72,9 @@ class BarrierNetActor(nn.Module):
         self.action_mean = nn.Linear(hidden_dim, 2)  # [v, omega]
 
         # Learnable exploration noise (log std)
-        self.action_log_std = nn.Parameter(torch.zeros(2))
+        # Initialize with smaller std for meaningful exploration:
+        # v std=0.3 (log=-1.2), omega std=0.5 (log=-0.7)
+        self.action_log_std = nn.Parameter(torch.tensor([-1.2, -0.7]))
 
         # Differentiable QP safety layer
         self.qp_layer = DifferentiableVCPCBFQP(
