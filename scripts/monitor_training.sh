@@ -7,9 +7,8 @@
 REPO_DIR="$HOME/Codes/safe-rl-pe"
 VENV="$REPO_DIR/.venv/bin/activate"
 SEED42_LOG="$REPO_DIR/results/phase2_5/barriernet/training_log.txt"
-SEED123_LOG="$REPO_DIR/results/phase2_5/barriernet/training_log_seed123.txt"
 CHECKPOINT_42="$REPO_DIR/checkpoints/barriernet/barriernet_final.pt"
-CHECKPOINT_123="$REPO_DIR/checkpoints/barriernet_seed123/barriernet_final.pt"
+BASELINE_MODEL="$REPO_DIR/models/local_42/final_model.zip"
 
 check_training_done() {
     local log_file=$1
@@ -36,53 +35,51 @@ while true; do
         echo "  Seed 42: $LAST_42"
     fi
 
-    if [ -f "$SEED123_LOG" ]; then
-        LAST_123=$(tail -1 "$SEED123_LOG")
-        echo "  Seed 123: $LAST_123"
-    fi
-
-    # Check if both done
-    DONE_42=false
-    DONE_123=false
-    check_training_done "$SEED42_LOG" && DONE_42=true
-    check_training_done "$SEED123_LOG" && DONE_123=true
-
-    if $DONE_42 && $DONE_123; then
+    # Check if seed 42 is done
+    if check_training_done "$SEED42_LOG"; then
         echo ""
-        echo "=== Both training runs complete! ==="
+        echo "=== Training complete! ==="
         echo "Running evaluation..."
 
         cd "$REPO_DIR"
         source "$VENV"
 
-        # Evaluate seed 42
+        # Evaluate BarrierNet
         if [ -f "$CHECKPOINT_42" ]; then
-            echo "Evaluating seed 42..."
+            echo "Evaluating BarrierNet..."
             python3 -u scripts/evaluate_comparison.py \
                 --barriernet "$CHECKPOINT_42" \
                 --barriernet-only \
                 --n-episodes 200 \
                 --obstacles 2 \
                 --seed 0 \
-                --output-dir results/phase2_5/comparison/seed42 \
-                > results/phase2_5/barriernet/eval_log_seed42.txt 2>&1
-            echo "Seed 42 evaluation done."
+                --output-dir results/phase2_5/comparison \
+                > results/phase2_5/barriernet/eval_log_barriernet.txt 2>&1
+            echo "BarrierNet evaluation done."
+            cat results/phase2_5/barriernet/eval_log_barriernet.txt
+        else
+            echo "WARNING: Checkpoint not found at $CHECKPOINT_42"
         fi
 
-        # Evaluate seed 123
-        if [ -f "$CHECKPOINT_123" ]; then
-            echo "Evaluating seed 123..."
+        # Evaluate baseline PPO (with and without safety filter)
+        if [ -f "$BASELINE_MODEL" ]; then
+            echo ""
+            echo "Evaluating baseline PPO..."
             python3 -u scripts/evaluate_comparison.py \
-                --barriernet "$CHECKPOINT_123" \
-                --barriernet-only \
+                --barriernet "$CHECKPOINT_42" \
+                --cbf-beta "$BASELINE_MODEL" \
                 --n-episodes 200 \
                 --obstacles 2 \
-                --seed 1000 \
-                --output-dir results/phase2_5/comparison/seed123 \
-                > results/phase2_5/barriernet/eval_log_seed123.txt 2>&1
-            echo "Seed 123 evaluation done."
+                --seed 0 \
+                --output-dir results/phase2_5/comparison \
+                > results/phase2_5/barriernet/eval_log_comparison.txt 2>&1
+            echo "Full comparison done."
+            cat results/phase2_5/barriernet/eval_log_comparison.txt
+        else
+            echo "WARNING: Baseline model not found at $BASELINE_MODEL"
         fi
 
+        echo ""
         echo "=== All done at $(date) ==="
         break
     fi
