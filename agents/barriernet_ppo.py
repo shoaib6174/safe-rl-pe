@@ -303,7 +303,7 @@ class BarrierNetPPO:
 
         # Compute returns and advantages
         with torch.no_grad():
-            last_obs = buffer.obs[-1]
+            last_obs = buffer.obs[-1].to(self.device)
             last_value = self.critic(last_obs).item()
 
         returns, advantages = buffer.compute_returns_and_advantages(
