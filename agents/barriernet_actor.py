@@ -234,8 +234,9 @@ class BarrierNetActor(nn.Module):
             + 2 * math.log(2 * math.pi)
         )
 
-        # Entropy of exploration distribution
-        entropy = 0.5 * (1 + torch.log(2 * math.pi * std ** 2)).sum()
+        # Entropy of exploration distribution (sum over action dim only, not batch)
+        std_1d = torch.exp(self.action_log_std)
+        entropy = 0.5 * (1 + torch.log(2 * math.pi * std_1d ** 2)).sum()
 
         return log_prob, entropy
 
