@@ -26,6 +26,7 @@ def setup_reproducibility(seed: int, use_cuda: bool = False):
 
 def make_pe_env(cfg, role="pursuer", opponent_policy=None, render_mode=None, seed=None):
     """Create a SingleAgentPEWrapper from Hydra config."""
+    n_obs = getattr(cfg.env, "n_obstacles", 0)
     base_env = PursuitEvasionEnv(
         arena_width=cfg.env.arena_width,
         arena_height=cfg.env.arena_height,
@@ -43,6 +44,13 @@ def make_pe_env(cfg, role="pursuer", opponent_policy=None, render_mode=None, see
         distance_scale=cfg.env.reward.distance_scale,
         capture_bonus=cfg.env.reward.capture_bonus,
         timeout_penalty=cfg.env.reward.timeout_penalty,
+        n_obstacles=n_obs,
+        obstacle_radius_range=(
+            getattr(cfg.env, "obstacle_radius_min", 0.3),
+            getattr(cfg.env, "obstacle_radius_max", 1.0),
+        ),
+        obstacle_margin=getattr(cfg.env, "obstacle_margin", 0.5),
+        n_obstacle_obs=getattr(cfg.env, "n_obstacle_obs", min(n_obs, 3)),
         render_mode=render_mode,
     )
     wrapped = SingleAgentPEWrapper(base_env, role=role, opponent_policy=opponent_policy)

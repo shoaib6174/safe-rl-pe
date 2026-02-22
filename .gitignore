@@ -16,7 +16,7 @@ build/
 *.egg
 .venv/
 venv/
-env/
+/env/
 
 # IDE
 .vscode/

@@ -7,6 +7,11 @@ collision_radius: 0.3
 robot_radius: 0.15
 min_init_distance: 3.0
 max_init_distance: 15.0
+n_obstacles: 0
+obstacle_radius_min: 0.3
+obstacle_radius_max: 1.0
+obstacle_margin: 0.5
+n_obstacle_obs: 0
 pursuer:
   v_max: 1.0
   omega_max: 2.84
