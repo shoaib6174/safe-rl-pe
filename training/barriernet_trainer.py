@@ -8,6 +8,10 @@ Key differences from standard PPO training:
 2. PPO update backprops through the differentiable QP layer
 3. Additional logging for QP-specific metrics (correction, solve time, infeasibility)
 
+Performance note: When the agent is on CUDA, a separate CPU copy is used for
+rollout inference (batch=1) to avoid GPU transfer overhead. The GPU agent
+handles batched PPO updates where the 34x QP speedup matters.
+
 Usage:
     from training.barriernet_trainer import BarrierNetTrainer, BarrierNetTrainerConfig
     from agents.barriernet_ppo import BarrierNetPPO, BarrierNetPPOConfig
@@ -18,6 +22,7 @@ Usage:
 
 from __future__ import annotations
 
+import copy
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,12 +82,35 @@ class BarrierNetTrainer:
         # Unwrap to access PE env internals
         self._pe_env = self._unwrap_env(env)
 
+        # Create CPU inference copy if agent is on GPU
+        # (avoids CPU↔GPU transfer overhead for batch=1 rollout steps)
+        self._cpu_agent = None
+        if agent.device.type == "cuda":
+            self._cpu_agent = copy.deepcopy(agent)
+            self._cpu_agent.to(torch.device("cpu"))
+
         # Training metrics
         self.total_timesteps = 0
         self.iteration = 0
         self.episode_rewards = []
         self.episode_lengths = []
         self.training_log = []
+
+    def _sync_cpu_agent(self):
+        """Sync CPU inference agent weights from GPU agent after update."""
+        if self._cpu_agent is not None:
+            gpu_state = self.agent.actor.state_dict()
+            cpu_state = {k: v.cpu() for k, v in gpu_state.items()}
+            self._cpu_agent.actor.load_state_dict(cpu_state)
+
+            gpu_critic_state = self.agent.critic.state_dict()
+            cpu_critic_state = {k: v.cpu() for k, v in gpu_critic_state.items()}
+            self._cpu_agent.critic.load_state_dict(cpu_critic_state)
+
+            # Sync action_log_std
+            self._cpu_agent.actor.action_log_std.data = (
+                self.agent.actor.action_log_std.data.cpu()
+            )
 
     @staticmethod
     def _unwrap_env(env):
@@ -127,24 +155,25 @@ class BarrierNetTrainer:
         episode_rewards = []
         episode_lengths = []
 
-        device = self.agent.device
+        # Use CPU agent for rollout (avoids GPU transfer overhead for batch=1)
+        infer_agent = self._cpu_agent if self._cpu_agent is not None else self.agent
 
         for step in range(self.config.rollout_length):
             # Get current state from env
             p_state, e_state, obstacles = self._get_env_state()
 
-            # Convert to tensors (CPU for buffer storage)
+            # Convert to tensors (CPU)
             obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
             state_t = torch.tensor(p_state, dtype=torch.float32).unsqueeze(0)
             opp_t = torch.tensor(e_state, dtype=torch.float32).unsqueeze(0)
 
-            # Get action from BarrierNet actor (on agent device)
+            # Get action from BarrierNet actor (CPU inference)
             t0 = time.perf_counter()
             with torch.no_grad():
-                u_safe, log_prob, value, act_info = self.agent.get_action(
-                    obs_t.to(device), state_t.to(device),
+                u_safe, log_prob, value, act_info = infer_agent.get_action(
+                    obs_t, state_t,
                     obstacles=obstacles,
-                    opponent_states=opp_t.to(device),
+                    opponent_states=opp_t,
                 )
             qp_time = time.perf_counter() - t0
             total_qp_time += qp_time
@@ -155,19 +184,19 @@ class BarrierNetTrainer:
             if not act_info["qp_feasible"]:
                 n_infeasible += 1
 
-            # Step environment (needs CPU numpy)
-            action = u_safe.squeeze(0).cpu().numpy()
+            # Step environment
+            action = u_safe.squeeze(0).numpy()
             next_obs, reward, terminated, truncated, next_info = self.env.step(action)
             done = terminated or truncated
 
-            # Store in buffer (CPU tensors — moved to device during PPO update)
+            # Store in buffer (CPU tensors)
             buffer.add(
                 obs=obs_t.squeeze(0),
                 state=state_t.squeeze(0),
-                action=u_safe.squeeze(0).detach().cpu(),
+                action=u_safe.squeeze(0).detach(),
                 reward=float(reward),
-                log_prob=log_prob.squeeze(0).detach().cpu(),
-                value=value.squeeze(0).detach().cpu(),
+                log_prob=log_prob.squeeze(0).detach(),
+                value=value.squeeze(0).detach(),
                 done=done,
                 obstacles=obstacles,
                 opponent_state=opp_t.squeeze(0),
@@ -189,7 +218,7 @@ class BarrierNetTrainer:
         # Compute returns and advantages
         with torch.no_grad():
             last_obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-            last_value = self.agent.critic(last_obs_t.to(device)).item()
+            last_value = infer_agent.critic(last_obs_t).item()
 
         buffer.compute_returns_and_advantages(
             last_value,
@@ -226,7 +255,7 @@ class BarrierNetTrainer:
         all_metrics = []
 
         while self.total_timesteps < target:
-            # Collect rollout
+            # Collect rollout (CPU inference)
             buffer, rollout_info = self.collect_rollout()
             self.total_timesteps += rollout_info["n_steps"]
             self.iteration += 1
@@ -234,8 +263,11 @@ class BarrierNetTrainer:
             # Get obstacles from buffer for PPO update
             obstacles = buffer.obstacles[0] if buffer.obstacles else None
 
-            # PPO update (gradients flow through QP)
+            # PPO update on GPU (gradients flow through QP)
             update_info = self.agent.update(buffer, obstacles=obstacles)
+
+            # Sync CPU agent weights after GPU update
+            self._sync_cpu_agent()
 
             # Combine metrics
             metrics = {
