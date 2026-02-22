@@ -1,5 +1,10 @@
 """Evaluate trained BarrierNet PPO and compare with baseline PPO.
 
+Compares three approaches:
+  1. BarrierNet PPO: MLP + differentiable QP safety layer (end-to-end trained)
+  2. Baseline PPO: Standard PPO without safety constraints
+  3. Baseline PPO + VCP-CBF Filter: Standard PPO with post-hoc safety filter
+
 Usage:
     python scripts/evaluate_barriernet.py --barriernet-path checkpoints/barriernet_ds10/barriernet_final.pt
     python scripts/evaluate_barriernet.py --barriernet-path checkpoints/barriernet_fixed/barriernet_final.pt --baseline-path models/local_42/final_model.zip
@@ -117,36 +122,92 @@ def main():
             print(f"  Mean reward: {baseline_result.mean_episode_reward:.2f}")
             print(f"  Safety violation rate: {baseline_result.safety_violation_rate:.4%}")
             print(f"  Mean inference time: {baseline_result.mean_inference_time_ms:.2f} ms")
+            # --- Evaluate Baseline PPO + VCP-CBF Post-hoc Filter ---
+            print(f"\n{'='*60}")
+            print(f"Evaluating Baseline PPO + VCP-CBF Filter")
+            print(f"{'='*60}")
+
+            from safety.vcp_cbf import VCPCBFFilter
+            safety_filter = VCPCBFFilter(
+                d=0.1,
+                alpha=1.0,
+                v_max=1.0,
+                omega_max=2.84,
+                robot_radius=0.15,
+                arena_half_w=arena_half,
+                arena_half_h=arena_half,
+            )
+            baseline_filtered_model = PPO.load(args.baseline_path)
+            filtered_eval = SB3EvalAgent(baseline_filtered_model, safety_filter=safety_filter)
+            filtered_result = evaluate_approach(
+                filtered_eval, env,
+                n_episodes=args.n_episodes,
+                approach_name="Baseline+Filter",
+                arena_half_w=arena_half,
+                arena_half_h=arena_half,
+                seed=args.seed,
+            )
+
+            print(f"\nBaseline PPO + VCP-CBF Filter Results:")
+            print(f"  Capture rate: {filtered_result.capture_rate:.1%}")
+            print(f"  Mean reward: {filtered_result.mean_episode_reward:.2f}")
+            print(f"  Safety violation rate: {filtered_result.safety_violation_rate:.4%}")
+            print(f"  Mean QP correction: {filtered_result.mean_qp_correction:.4f}")
+            print(f"  Intervention rate: {filtered_result.intervention_rate:.1%}")
+            print(f"  Mean inference time: {filtered_result.mean_inference_time_ms:.2f} ms")
+
         except ImportError:
             print("  SB3 not available, skipping baseline evaluation")
 
     # --- Comparison Summary ---
+    filtered_result = locals().get("filtered_result")
     print(f"\n{'='*60}")
     print("COMPARISON SUMMARY")
     print(f"{'='*60}")
-    print(f"{'Metric':<30} {'BarrierNet':>15}", end="")
+    print(f"{'Metric':<25} {'BarrierNet':>14}", end="")
     if baseline_result:
-        print(f" {'Baseline PPO':>15}", end="")
+        print(f" {'Baseline':>14}", end="")
+    if filtered_result:
+        print(f" {'Base+Filter':>14}", end="")
     print()
-    print("-" * 60)
+    print("-" * 67)
 
     metrics = [
-        ("Capture Rate", f"{bn_result.capture_rate:.1%}",
-         f"{baseline_result.capture_rate:.1%}" if baseline_result else None),
-        ("Mean Reward", f"{bn_result.mean_episode_reward:.2f}",
-         f"{baseline_result.mean_episode_reward:.2f}" if baseline_result else None),
-        ("Safety Violations", f"{bn_result.safety_violation_rate:.4%}",
-         f"{baseline_result.safety_violation_rate:.4%}" if baseline_result else None),
-        ("QP Correction", f"{bn_result.mean_qp_correction:.4f}",
-         f"{baseline_result.mean_qp_correction:.4f}" if baseline_result else None),
-        ("Inference Time (ms)", f"{bn_result.mean_inference_time_ms:.2f}",
-         f"{baseline_result.mean_inference_time_ms:.2f}" if baseline_result else None),
+        ("Capture Rate",
+         f"{bn_result.capture_rate:.1%}",
+         f"{baseline_result.capture_rate:.1%}" if baseline_result else None,
+         f"{filtered_result.capture_rate:.1%}" if filtered_result else None),
+        ("Mean Reward",
+         f"{bn_result.mean_episode_reward:.2f}",
+         f"{baseline_result.mean_episode_reward:.2f}" if baseline_result else None,
+         f"{filtered_result.mean_episode_reward:.2f}" if filtered_result else None),
+        ("Safety Violations",
+         f"{bn_result.safety_violation_rate:.4%}",
+         f"{baseline_result.safety_violation_rate:.4%}" if baseline_result else None,
+         f"{filtered_result.safety_violation_rate:.4%}" if filtered_result else None),
+        ("QP Correction",
+         f"{bn_result.mean_qp_correction:.4f}",
+         f"{baseline_result.mean_qp_correction:.4f}" if baseline_result else None,
+         f"{filtered_result.mean_qp_correction:.4f}" if filtered_result else None),
+        ("Intervention Rate",
+         f"{bn_result.intervention_rate:.1%}",
+         "N/A",
+         f"{filtered_result.intervention_rate:.1%}" if filtered_result else None),
+        ("Inference Time (ms)",
+         f"{bn_result.mean_inference_time_ms:.2f}",
+         f"{baseline_result.mean_inference_time_ms:.2f}" if baseline_result else None,
+         f"{filtered_result.mean_inference_time_ms:.2f}" if filtered_result else None),
     ]
 
-    for name, bn_val, base_val in metrics:
-        print(f"{name:<30} {bn_val:>15}", end="")
+    for row in metrics:
+        name, bn_val = row[0], row[1]
+        base_val = row[2] if len(row) > 2 else None
+        filt_val = row[3] if len(row) > 3 else None
+        print(f"{name:<25} {bn_val:>14}", end="")
         if base_val:
-            print(f" {base_val:>15}", end="")
+            print(f" {base_val:>14}", end="")
+        if filt_val:
+            print(f" {filt_val:>14}", end="")
         print()
 
     # Save results
@@ -171,6 +232,15 @@ def main():
             f.write(f"  Mean reward: {baseline_result.mean_episode_reward:.2f}\n")
             f.write(f"  Safety violation rate: {baseline_result.safety_violation_rate:.4%}\n")
             f.write(f"  Mean inference time: {baseline_result.mean_inference_time_ms:.2f} ms\n")
+
+        if filtered_result:
+            f.write(f"\nBaseline PPO + VCP-CBF Filter:\n")
+            f.write(f"  Capture rate: {filtered_result.capture_rate:.1%}\n")
+            f.write(f"  Mean reward: {filtered_result.mean_episode_reward:.2f}\n")
+            f.write(f"  Safety violation rate: {filtered_result.safety_violation_rate:.4%}\n")
+            f.write(f"  Mean QP correction: {filtered_result.mean_qp_correction:.4f}\n")
+            f.write(f"  Intervention rate: {filtered_result.intervention_rate:.1%}\n")
+            f.write(f"  Mean inference time: {filtered_result.mean_inference_time_ms:.2f} ms\n")
 
     print(f"\nResults saved to: {results_path}")
     env.close()
