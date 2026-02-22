@@ -27,6 +27,7 @@ def make_env(
     dt: float = 0.05,
     max_steps: int = 600,
     seed: int = 42,
+    distance_scale: float = 1.0,
 ) -> SingleAgentPEWrapper:
     """Create the PE environment with SingleAgentPEWrapper."""
     env = PursuitEvasionEnv(
@@ -45,6 +46,7 @@ def make_env(
         obstacle_radius_range=(0.3, 1.0),
         obstacle_margin=0.5,
         n_obstacle_obs=min(n_obstacles, 3),
+        distance_scale=distance_scale,
     )
     return SingleAgentPEWrapper(env, role="pursuer", opponent_policy=None)
 
@@ -62,6 +64,7 @@ def main():
     parser.add_argument("--device", type=str, default="auto", help="Device: auto, cpu, cuda")
     parser.add_argument("--entropy-coeff", type=float, default=0.001, help="Entropy bonus coefficient")
     parser.add_argument("--n-epochs", type=int, default=10, help="PPO epochs per update")
+    parser.add_argument("--distance-scale", type=float, default=1.0, help="Distance reward scale")
     args = parser.parse_args()
 
     # Determine device
@@ -79,6 +82,7 @@ def main():
         n_obstacles=args.obstacles,
         arena_size=args.arena_size,
         seed=args.seed,
+        distance_scale=args.distance_scale,
     )
 
     # Determine obs_dim
@@ -91,6 +95,7 @@ def main():
     print(f"  timesteps={args.timesteps}, rollout_length={args.rollout_length}")
     print(f"  hidden_dim={args.hidden_dim}, lr={args.lr}")
     print(f"  entropy_coeff={args.entropy_coeff}, n_epochs={args.n_epochs}")
+    print(f"  distance_scale={args.distance_scale}")
     print(f"  device={device}")
 
     # Create agent
