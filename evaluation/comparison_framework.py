@@ -191,6 +191,8 @@ class SB3EvalAgent:
         """
         self.model = model
         self.safety_filter = safety_filter
+        # Determine expected obs dim from model's observation space
+        self._expected_obs_dim = model.observation_space.shape[0]
 
     def get_eval_action(
         self,
@@ -201,7 +203,9 @@ class SB3EvalAgent:
         arena_half_w: float,
         arena_half_h: float,
     ) -> tuple[np.ndarray, dict]:
-        action, _ = self.model.predict(obs, deterministic=True)
+        # Truncate obs if model expects fewer dims (e.g. baseline without obstacles)
+        model_obs = obs[:self._expected_obs_dim] if len(obs) > self._expected_obs_dim else obs
+        action, _ = self.model.predict(model_obs, deterministic=True)
         eval_info = {"qp_correction": 0.0, "qp_feasible": True}
 
         if self.safety_filter is not None:
