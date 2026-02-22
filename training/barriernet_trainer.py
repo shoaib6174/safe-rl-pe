@@ -127,22 +127,24 @@ class BarrierNetTrainer:
         episode_rewards = []
         episode_lengths = []
 
+        device = self.agent.device
+
         for step in range(self.config.rollout_length):
             # Get current state from env
             p_state, e_state, obstacles = self._get_env_state()
 
-            # Convert to tensors
+            # Convert to tensors (CPU for buffer storage)
             obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
             state_t = torch.tensor(p_state, dtype=torch.float32).unsqueeze(0)
             opp_t = torch.tensor(e_state, dtype=torch.float32).unsqueeze(0)
 
-            # Get action from BarrierNet actor
+            # Get action from BarrierNet actor (on agent device)
             t0 = time.perf_counter()
             with torch.no_grad():
                 u_safe, log_prob, value, act_info = self.agent.get_action(
-                    obs_t, state_t,
+                    obs_t.to(device), state_t.to(device),
                     obstacles=obstacles,
-                    opponent_states=opp_t,
+                    opponent_states=opp_t.to(device),
                 )
             qp_time = time.perf_counter() - t0
             total_qp_time += qp_time
@@ -153,19 +155,19 @@ class BarrierNetTrainer:
             if not act_info["qp_feasible"]:
                 n_infeasible += 1
 
-            # Step environment
-            action = u_safe.squeeze(0).numpy()
+            # Step environment (needs CPU numpy)
+            action = u_safe.squeeze(0).cpu().numpy()
             next_obs, reward, terminated, truncated, next_info = self.env.step(action)
             done = terminated or truncated
 
-            # Store in buffer
+            # Store in buffer (CPU tensors — moved to device during PPO update)
             buffer.add(
                 obs=obs_t.squeeze(0),
                 state=state_t.squeeze(0),
-                action=u_safe.squeeze(0).detach(),
+                action=u_safe.squeeze(0).detach().cpu(),
                 reward=float(reward),
-                log_prob=log_prob.squeeze(0).detach(),
-                value=value.squeeze(0).detach(),
+                log_prob=log_prob.squeeze(0).detach().cpu(),
+                value=value.squeeze(0).detach().cpu(),
                 done=done,
                 obstacles=obstacles,
                 opponent_state=opp_t.squeeze(0),
@@ -187,7 +189,7 @@ class BarrierNetTrainer:
         # Compute returns and advantages
         with torch.no_grad():
             last_obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-            last_value = self.agent.critic(last_obs_t).item()
+            last_value = self.agent.critic(last_obs_t.to(device)).item()
 
         buffer.compute_returns_and_advantages(
             last_value,

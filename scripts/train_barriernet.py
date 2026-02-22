@@ -59,7 +59,14 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--save-dir", type=str, default="checkpoints/barriernet", help="Save dir")
     parser.add_argument("--arena-size", type=float, default=20.0, help="Arena size")
+    parser.add_argument("--device", type=str, default="auto", help="Device: auto, cpu, cuda")
     args = parser.parse_args()
+
+    # Determine device
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
 
     # Set seeds
     torch.manual_seed(args.seed)
@@ -81,6 +88,7 @@ def main():
     print(f"  obstacles={args.obstacles}, arena={args.arena_size}x{args.arena_size}")
     print(f"  timesteps={args.timesteps}, rollout_length={args.rollout_length}")
     print(f"  hidden_dim={args.hidden_dim}, lr={args.lr}")
+    print(f"  device={device}")
 
     # Create agent
     ppo_config = BarrierNetPPOConfig(
@@ -95,6 +103,7 @@ def main():
         arena_half_h=args.arena_size / 2,
     )
     agent = BarrierNetPPO(ppo_config)
+    agent.to(device)
 
     # Create trainer
     trainer_config = BarrierNetTrainerConfig(
