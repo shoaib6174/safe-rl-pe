@@ -21,7 +21,7 @@
 4. Validate in Gazebo/ROS2 as an intermediate step (catches ~80% of sim-to-real issues)
 5. Implement the real-time RCBF-QP safety filter in C++ for deployment
 6. Implement GP disturbance estimation with cold-start protocol for online adaptation
-7. Deploy on physical robots (TurtleBot4 or F1TENTH) and achieve <10% performance gap vs simulation
+7. Deploy on physical robots (TurtleBot3 Burger) and achieve <10% performance gap vs simulation
 8. Achieve zero safety violations on the real robot at 20Hz control
 
 ### 1.3 Prerequisites (from Phases 1-3)
@@ -80,17 +80,17 @@ The sim-to-real gap refers to the performance degradation when transferring poli
 
 **What to randomize and how much:**
 
-| Parameter | Nominal | Range | Distribution | Rationale |
-|-----------|---------|-------|--------------|-----------|
+| Parameter | Nominal (TB3) | Range | Distribution | Rationale |
+|-----------|---------------|-------|--------------|-----------|
 | Robot mass | 1.0 kg | [0.8, 1.2] kg | Uniform | Battery, payload variation |
 | Wheel friction | 0.5 | [0.3, 0.8] | Uniform | Floor surface variation |
 | Motor gain | 1.0 | [0.8, 1.2] | Uniform | Motor aging, voltage variation |
-| Sensor noise (lidar) | 0.0 m | N(0, 0.02m) | Gaussian per ray | Lidar measurement noise |
-| Sensor noise (odom) | 0.0 | N(0, 0.01m) pos, N(0, 0.5 deg) heading | Gaussian per step | Odometry drift |
+| Sensor noise (lidar) | 0.0 m | N(0, 0.015m) | Gaussian per ray | LDS-01 measurement noise |
+| Sensor noise (odom) | 0.0 | N(0, 0.005m) pos, N(0, 0.5 deg) heading | Gaussian per step | Odometry drift |
 | Control delay | 0 ms | [0, 50] ms | Uniform integer | Communication + compute |
-| Obstacle positions | fixed | +/- 0.5m | Uniform per axis | Placement uncertainty |
-| Arena size | 20 m | [18, 22] m | Uniform | Arena calibration error |
-| v_max | 1.0 m/s | [0.85, 1.15] m/s | Uniform | Motor capability variation |
+| Obstacle positions | fixed | +/- 0.1m | Uniform per axis | Placement uncertainty (scaled arena) |
+| Arena size | 4.4 m | [4.0, 4.8] m | Uniform | Arena calibration error |
+| v_max | 0.22 m/s | [0.18, 0.26] m/s | Uniform | Motor capability variation |
 
 **Key papers:**
 - [07] Salimpour 2025: DR for TurtleBot sim-to-real with Isaac Sim
@@ -248,18 +248,49 @@ The RCBF-QP must solve within the 50ms control budget (20Hz). Two candidate solv
 4. Target: 95th percentile < 50ms (should be achievable with large margin)
 5. Test on target hardware (RPi4 for TurtleBot, Jetson for F1TENTH)
 
-### 2.10 Hardware Platforms
+### 2.10 Hardware Platform: TurtleBot3 Burger
 
-| Platform | Dynamics | Max Speed | Compute | Cost | Pros | Cons |
-|----------|----------|-----------|---------|------|------|------|
-| TurtleBot3 Burger | Diff-drive | 0.22 m/s | RPi 4 (4GB) | ~$600 | Cheap, well-documented, ROS2 native | Very slow, limited compute |
-| TurtleBot4 | Diff-drive | 0.3 m/s | RPi 4 + iRobot Create3 | ~$1,200 | Better sensors, Create3 base, ROS2 native | Still slow, moderate cost |
-| F1TENTH | Ackermann | 3+ m/s | Jetson Xavier NX | ~$3,000 | Fast, powerful compute, active community | Expensive, Ackermann (not diff-drive), safety risk at speed |
-| Custom diff-drive | Diff-drive | 1.0 m/s | Jetson Nano (4GB) | ~$500 | Matched to training v_max, budget-friendly | Requires custom build, no warranty |
+**Selected platform**: TurtleBot3 Burger (user-owned)
 
-**Recommendation:** TurtleBot4 for initial deployment (safest, best documented, ROS2 native). F1TENTH for high-speed demonstration if budget allows. The v_max mismatch (training: 1.0 m/s, TurtleBot4: 0.3 m/s) requires re-scaling velocity commands or re-training with matched v_max.
+| Spec | TurtleBot3 Burger |
+|------|-------------------|
+| Dynamics | Differential-drive |
+| Max linear velocity | 0.22 m/s |
+| Max angular velocity | 2.84 rad/s |
+| Compute | Raspberry Pi 4 (4GB) |
+| Lidar | LDS-01 (360 deg, 12cm-3.5m range) |
+| Depth camera | None (LiDAR-only perception) |
+| Dimensions | 138mm × 178mm × 192mm |
+| Weight | 1.0 kg (with battery) |
+| Cost | ~$600 |
+| ROS2 support | Native (Humble) via `turtlebot3` packages |
 
-**Velocity matching strategy:** Re-train in Isaac Lab with v_max = 0.3 m/s (TurtleBot4) or v_max = 3.0 m/s (F1TENTH) during domain randomization. The DR range for v_max should center on the real robot's capability.
+**Arena scaling** (time-matched to Phase 3 training):
+- Phase 3 used 20×20m at v_max=1.0 m/s → time-to-cross = 20s
+- TurtleBot3: v_max = 0.22 m/s → arena = 4.4×4.4m at 0.22 m/s → time-to-cross = 20s (matched)
+- This preserves the same strategic time horizon as simulation
+
+**Parameter scaling from Phase 3 to TurtleBot3 deployment**:
+
+| Parameter | Phase 3 (simulation) | TurtleBot3 (deployment) | Scale factor |
+|-----------|---------------------|------------------------|--------------|
+| v_max | 1.0 m/s | 0.22 m/s | 0.22× |
+| omega_max | 2.0 rad/s | 2.84 rad/s | 1.42× (TB3 native) |
+| Arena size | 20×20m | 4.4×4.4m | 0.22× |
+| Capture radius | 0.5m | 0.11m | 0.22× |
+| VCP offset d | 0.1m | 0.022m | 0.22× |
+| Safety margin | 0.1m | 0.022m | 0.22× |
+| Obstacle radius | 0.5m | 0.11m | 0.22× |
+| FOV range | 10.0m | 2.2m | 0.22× |
+| Lidar range | 5.0m | 1.1m (or max 3.5m if arena larger) | 0.22× |
+
+**Opponent detection**: TurtleBot3 Burger has no depth camera. Opponent detection will use **LiDAR clustering**:
+- LDS-01 provides 360-degree scan at ~5Hz
+- Detect opponent as a cluster of points not matching the static arena map
+- Use simple background subtraction: known wall/obstacle positions → remaining points = opponent
+- This is simpler than camera-based detection and sufficient for the arena scale
+
+**Velocity matching strategy**: Re-train in Isaac Lab with v_max = 0.22 m/s and scaled arena (4.4×4.4m). The DR range for v_max should center on 0.22 m/s.
 
 ### 2.11 ROS2 Integration
 
@@ -496,21 +527,20 @@ class DomainRandomizer:
 
 **Instructions:**
 
-1. **Match dynamics to target robot** (critical change from Phase 3):
-   - For TurtleBot4: set `v_max = 0.3 m/s`, `omega_max = 1.82 rad/s`
-   - For F1TENTH: set `v_max = 3.0 m/s`, `omega_max = 3.14 rad/s`
+1. **Match dynamics to TurtleBot3 Burger** (critical change from Phase 3):
+   - Set `v_max = 0.22 m/s`, `omega_max = 2.84 rad/s`
    - Scale arena to maintain similar time-to-cross ratio:
-     - Phase 3 used 20m x 20m at 1.0 m/s → time-to-cross = 20s
-     - TurtleBot4: 6m x 6m at 0.3 m/s → time-to-cross = 20s (matched)
-     - F1TENTH: 20m x 20m at 3.0 m/s → time-to-cross = 6.7s (faster game)
+     - Phase 3 used 20m × 20m at 1.0 m/s → time-to-cross = 20s
+     - TurtleBot3: 4.4m × 4.4m at 0.22 m/s → time-to-cross = 20s (matched)
    - Update VCP-CBF parameters: `d_vcp` and `safety_margin` scale with v_max
-     - `d_vcp = 0.05 * (v_max / 1.0)` → 0.015m for TurtleBot4
-     - `safety_margin = 0.1 * (v_max / 1.0)` → 0.03m for TurtleBot4
+     - `d_vcp = 0.1 * (0.22 / 1.0)` → 0.022m for TurtleBot3
+     - `safety_margin = 0.1 * (0.22 / 1.0)` → 0.022m for TurtleBot3
+   - Update capture radius: `0.5 * (0.22 / 1.0)` → 0.11m for TurtleBot3
    - Update `max_steps` to preserve similar episode duration:
      - `max_steps = int(60.0 / dt)` = 1200 at 20Hz (same as Phase 1-3)
    - **DR center the v_max range on the REAL robot's v_max, not 1.0 m/s**:
      ```python
-     dr_config['v_max'] = {'mean': 0.3, 'std': 0.06, 'distribution': 'normal'}  # TurtleBot4
+     dr_config['v_max'] = {'mean': 0.22, 'std': 0.04, 'distribution': 'normal'}  # TurtleBot3
      ```
 
 2. Set up the training pipeline:
@@ -705,7 +735,7 @@ print(f"Max:  {np.max(latencies):.2f}ms")
 **Objectives:**
 - Install Gazebo Fortress and ROS2 Humble
 - Create a PE arena world file matching the training environment
-- Spawn TurtleBot3/4 models in the arena
+- Spawn TurtleBot3 Burger models in the arena
 - Verify basic teleop control works
 
 **Files to create/modify:**
@@ -735,11 +765,11 @@ ros2 pkg create pe_inference --build-type ament_python  # ONNX inference
    - Appropriate lighting and physics settings
    - Ground friction matching DR nominal (0.5)
 
-3. Configure TurtleBot3/4 model:
-   - Use the official turtlebot3_gazebo or turtlebot4_simulator package
-   - Verify lidar publishes to `/scan`
+3. Configure TurtleBot3 Burger model:
+   - Use the official `turtlebot3_gazebo` package (`export TURTLEBOT3_MODEL=burger`)
+   - Verify LDS-01 lidar publishes to `/scan` (360 deg, 5Hz)
    - Verify odometry publishes to `/odom`
-   - Verify cmd_vel controls the robot
+   - Verify cmd_vel controls the robot (v_max=0.22, omega_max=2.84)
 
 4. Launch and verify:
 ```bash
@@ -1221,7 +1251,7 @@ class GPColdStartManager:
 ### Session 14: Real Robot Setup
 
 **Objectives:**
-- Hardware bringup of the selected robot platform (TurtleBot4 recommended)
+- Hardware bringup of TurtleBot3 Burger
 - Sensor calibration (lidar, odometry)
 - Verify all ROS2 topics publish correctly
 - Set up the arena in the physical lab space
@@ -1235,11 +1265,12 @@ class GPColdStartManager:
 **Instructions:**
 
 1. Robot bringup:
-   - Power on TurtleBot4, connect to WiFi network
+   - Power on TurtleBot3 Burger, connect to WiFi network
    - SSH into robot: `ssh ubuntu@<robot_ip>`
+   - Set model: `export TURTLEBOT3_MODEL=burger`
    - Verify ROS2 topics: `ros2 topic list`
    - Expected: `/scan`, `/odom`, `/cmd_vel`, `/tf`, `/joint_states`
-   - Test basic teleop: `ros2 run teleop_twist_keyboard teleop_twist_keyboard`
+   - Test basic teleop: `ros2 run turtlebot3_teleop teleop_keyboard`
 
 2. Lidar calibration:
    - Place robot at known positions relative to walls
@@ -1255,7 +1286,7 @@ class GPColdStartManager:
 
 4. Arena setup:
    - Mark a rectangular arena on the floor matching the training arena from Session 4
-   - For TurtleBot4: 6m x 6m arena (matched to v_max=0.3 m/s re-training in Session 4)
+   - For TurtleBot3 Burger: 4.4m × 4.4m arena (matched to v_max=0.22 m/s re-training in Session 4)
    - Arena size preserves the same time-to-cross ratio as simulation (20s at robot v_max)
    - Place physical obstacles (cardboard cylinders, boxes) matching training layout
    - Set up external tracking if available (OptiTrack, AprilTag ceiling) for ground truth
@@ -1927,7 +1958,7 @@ with negligible accuracy loss for our small policy network.
 Setup:
   kappa_nominal = 1.0, kappa_init = 2.0, tau = 50
   Pre-fill data: 1000 points from DR simulation
-  Robot: TurtleBot4, arena: 6m x 6m
+  Robot: TurtleBot3 Burger, arena: 4.4m x 4.4m
 
 Step 0: Initialize GP with pre-fill data
   GP initialized with 1000 (state, residual) pairs

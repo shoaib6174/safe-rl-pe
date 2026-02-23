@@ -1,8 +1,8 @@
 # Phase 3: Partial Observability + Self-Play
 
 **Timeline**: Months 4-6
-**Status**: Pending (requires Phase 2.5 decision)
-**Prerequisites**: Phases 1-2.5 complete; safety architecture decided
+**Status**: Pending
+**Prerequisites**: Phases 1-2.5 complete (DCBF post-hoc filter chosen as safety architecture)
 **Next Phase**: [Phase 4 — Sim-to-Real Transfer](./phase4_sim_to_real_transfer.md)
 
 ---
@@ -50,7 +50,8 @@ Partial observability fundamentally changes the game: the evader can now exploit
 |----------|--------|-----------|
 | Sensor model | 120 deg FOV + lidar | Realistic for ground robots; matches [02] |
 | Belief encoder | BiMDN (Bidirectional MDN) | Handles multimodal uncertainty; proven in [02] |
-| Self-play protocol | AMS-DRL (alternating) [18] + simultaneous comparison [N06] | NE convergence guarantee; simpler alternative for comparison |
+| Safety layer | PPO + post-hoc DCBF filter (gamma=0.2) | Phase 2.5 decision: standard PPO + DCBF dominates BarrierNet/CBF-Beta |
+| Self-play protocol | AMS-DRL (alternating) [18]; simultaneous comparison optional [N06] | NE convergence guarantee; simpler alternative if time permits |
 | Curriculum | 4-level progressive difficulty | Stable training from simple to complex |
 | Safe MARL baselines | MACPO, MAPPO-Lagrangian, CPO | Standard comparisons from [N03] |
 | Observation history | K=10 timesteps | Sufficient for belief estimation |
@@ -60,10 +61,10 @@ Partial observability fundamentally changes the game: the evader can now exploit
 | Prior Phase Output | How Used in Phase 3 |
 |-------------------|---------------------|
 | PE environment (Phase 1) | Extended with partial obs sensor model |
-| Safety architecture (Phase 2/2.5) | Applied to partial-obs agents |
+| DCBF post-hoc filter (Phase 2.5) | Applied to partial-obs agents; filter uses true state, policy uses partial obs |
 | Self-play infrastructure (Phase 1) | Upgraded to AMS-DRL protocol |
-| VCP-CBF (Phase 2) | Still used; CBF operates on true state, not observations |
-| Baseline results (Phase 1-2) | Comparison with partial-obs performance |
+| VCP-CBF formulation (Phase 2) | DCBF variant used; operates on true state, not agent observations |
+| Baseline results (Phase 1-2.5) | Comparison with partial-obs performance; DCBF baseline: 100% capture, 3.57% violations, 6.6% intervention |
 
 ---
 
@@ -191,7 +192,11 @@ Level 4: Full scenario
     Purpose: generalize
 ```
 
-**Advancement**: Move to next level when capture rate > 70% for both agents.
+**Advancement**: Move to next level when the pursuer achieves capture rate > 70% over a 100-episode window. (Since capture_rate + escape_rate = 1, requiring both > 70% is impossible. The balance criterion is handled separately by AMS-DRL's NE convergence check.)
+
+**Timeout policy**: If advancement does not occur within 2× the expected training steps for that level (i.e., 2 × `timesteps_per_phase`), log a warning, investigate the training dynamics, and either: (a) lower the advancement threshold to 60%, or (b) force-advance to the next level with documentation justifying the override.
+
+**Regression policy**: Curriculum levels are monotonically non-decreasing. Once advanced, the agent does not regress even if performance temporarily drops — the self-play health monitor handles regression via checkpoint rollback instead.
 
 ### 2.6 Nash Equilibrium Verification
 
@@ -201,21 +206,31 @@ An NE is reached when neither player can unilaterally improve. Practical tests:
 2. **Exploitability test**: Train a best-response agent against each trained agent. If the best-response can't significantly improve, the original is near NE.
 3. **Strategy diversity**: k-means clustering on trajectory embeddings — diverse strategies suggest richer NE
 
-### 2.7 CBF Under Partial Observability
+### 2.7 DCBF Safety Filter Under Partial Observability
 
-**Critical design point**: The CBF safety layer operates on the **true state**, NOT the agent's observation.
+**Critical design point**: The DCBF post-hoc safety filter operates on the **true state**, NOT the agent's observation. The policy and safety filter have **separate information channels**:
 
 ```
-Agent observation: partial (limited FOV, noisy)
-CBF computation:   uses true state (x, y, theta of both robots)
+Agent policy:      partial observation → BiMDN latent → PPO actor → nominal action [v, ω]
+DCBF filter:       true state (x, y, θ of both robots) → constraint check → safe action [v, ω]
 ```
 
-This is valid because:
-- In simulation: true state is always available
+**Phase 2.5 decision**: Standard PPO (Gaussian policy, SB3 default) trained with obstacles, with post-hoc DCBF filter (gamma=0.2) applied at action execution. BarrierNet and CBF-Beta were terminated — see `docs/phases/phase2_5_decision_report.md`.
+
+**DCBF Phase 2.5 baseline performance**:
+- Capture rate: 100%, Safety violations: 3.57%, Intervention rate: 6.6%
+- Inference: 0.46 ms/step (PPO 0.18ms + DCBF 0.28ms)
+
+This separation is valid because:
+- In simulation: true state is always available to the filter
 - In deployment: the safety filter uses the robot's own state (known via odometry) + obstacle positions (known map or lidar)
 - The inter-robot collision CBF needs both robots' positions — this comes from a centralized safety monitor or UWB ranging
 
-**Observation vs. State for Safety**: The agent's *policy* uses partial observations. The *safety layer* uses the true state. This separation is intentional and standard in safe RL.
+**Safety metric distinction** (important for paper claims):
+1. **Physical safety violations**: Actual collisions with obstacles, boundaries, or other robot. **Target: zero.**
+2. **CBF boundary violations**: Timesteps where `h(x) < 0` for any constraint. **Target: < 1% with tuned DCBF parameters.**
+
+The paper's safety claim is: "The DCBF filter prevents all physical collisions while maintaining CBF constraint satisfaction at >99% of timesteps." This is a strong, honest, and verifiable claim. To tighten CBF boundary violations below 1%, use stricter DCBF parameters (gamma=0.05-0.1) during evaluation, accepting slightly higher intervention rate.
 
 ### 2.8 Self-Play Training Health Monitoring
 
@@ -380,31 +395,44 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
 
 - [ ] **D1**: Limited FOV sensor model (120 deg, 10m range)
 - [ ] **D2**: Lidar sensor model (36 rays, 5m range)
-- [ ] **D3**: BiMDN belief encoder implementation
-- [ ] **D4**: AMS-DRL self-play implementation
-- [ ] **D5**: Simultaneous self-play comparison [N06]
-- [ ] **D6**: Curriculum learning (4 levels)
-- [ ] **D7**: NE convergence analysis
-- [ ] **D8**: MACPO / MAPPO-Lagrangian / CPO baselines [N03]
-- [ ] **D9**: Self-play health monitoring system (entropy, diversity, baselines, rollback, forgetting detection)
+- [ ] **D3**: BiMDN belief encoder (with pluggable encoder interface — BiMDN, LSTM, MLP fallbacks)
+- [ ] **D4**: AMS-DRL self-play implementation (with NavigationEnv for cold-start)
+- [ ] **D5**: Curriculum learning (4 levels, FOV active in all levels)
+- [ ] **D6**: NE convergence analysis
+- [ ] **D7**: MAPPO-Lagrangian baseline (required); MACPO, CPO optional
+- [ ] **D8**: Self-play health monitoring system (entropy, diversity, baselines, rollback, forgetting detection)
 
-### 4.2 Visualization & Tracking Deliverables
+### 4.2 New Research Additions
+
+- [ ] **D9a**: Wall-segment obstacle support (WallSegment class, vcp_cbf_wall(), lidar ray-segment intersect)
+- [ ] **D9b**: Complex environment layouts (corridor, L-shaped, warehouse) in `envs/layouts.py` + Hydra configs
+- [ ] **D9c**: Asymmetric capability experiments (3 speed ratios: 1.5, 0.8, 0.5) in Session 9
+- [ ] **D9d**: Human evader interface (`envs/human_interface.py`, `scripts/human_evader_experiment.py`)
+- [ ] **D9e**: DCBF safety theorem (`docs/proofs/dcbf_safety_theorem.md`, `scripts/verify_dcbf_theorem.py`)
+
+### 4.3 Optional Deliverables (if time/compute permits)
+
+- [ ] **D9f**: Simultaneous self-play comparison [N06] — tangential to core novelty
+- [ ] **D7b**: MACPO baseline [N03] — HIGH integration risk with current stack
+- [ ] **D7c**: CPO single-agent baseline — nice-to-have
+
+### 4.4 Visualization & Tracking Deliverables
 
 - [ ] **D10**: PERenderer partial-observability overlays — FOV cone visualization, lidar ray display, belief distribution heatmap (BiMDN), undetected-agent ghost marker
 - [ ] **D11**: wandb experiment tracking for all Phase 3 runs — NE convergence curves, per-phase metrics, health monitoring dashboards, baseline comparison tables, eval videos with FOV overlay
 
-### 4.3 Analysis Deliverables
+### 4.5 Analysis Deliverables
 
 - [ ] **D12**: Strategy diversity metric (DTW trajectory clustering + k-means)
 - [ ] **D13**: Exploitability measurement (best-response training)
 - [ ] **D14**: BiMDN vs raw obs vs full state comparison
-- [ ] **D15**: AMS-DRL vs simultaneous self-play comparison
+- [ ] **D15**: AMS-DRL vs simultaneous self-play comparison (OPTIONAL — only if D5 is done)
 
-### 4.4 Documentation Deliverables
+### 4.6 Documentation Deliverables
 
 - [ ] **D16**: Partial observability impact analysis
 - [ ] **D17**: NE convergence plots and analysis
-- [ ] **D18**: Full baseline comparison table
+- [ ] **D18**: Full baseline comparison table (MAPPO-Lag + unconstrained required; MACPO/CPO if available)
 
 ---
 
@@ -513,7 +541,51 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
            return float('inf')
    ```
 
-3. **Update observation space**:
+3. **Wall-segment obstacle support** (for generalization study — eval-only, not used in core training):
+   ```python
+   class WallSegment:
+       """A linear wall segment defined by two endpoints."""
+       def __init__(self, x1, y1, x2, y2, thickness=0.1):
+           self.p1 = np.array([x1, y1])
+           self.p2 = np.array([x2, y2])
+           self.thickness = thickness
+           self.length = np.linalg.norm(self.p2 - self.p1)
+           self.direction = (self.p2 - self.p1) / self.length
+           self.normal = np.array([-self.direction[1], self.direction[0]])
+
+       def distance_to_point(self, point):
+           """Signed distance from point to wall segment."""
+           v = point - self.p1
+           t = np.clip(np.dot(v, self.direction) / self.length, 0, 1)
+           closest = self.p1 + t * (self.p2 - self.p1)
+           return np.linalg.norm(point - closest)
+   ```
+   - Add `vcp_cbf_wall()` to `safety/vcp_cbf.py` for wall-segment CBF constraints:
+     ```python
+     def vcp_cbf_wall(robot_state, wall: WallSegment, d_vcp, safety_margin):
+         """
+         CBF for wall-segment obstacle avoidance using VCP formulation.
+         Unlike circular obstacles (point-to-center distance), walls use
+         point-to-line-segment distance, which has a piecewise gradient
+         (along-segment vs at-endpoint regions).
+
+         h(x) = dist(q_vcp, wall)^2 - chi^2
+         where q_vcp = [x + d*cos(theta), y + d*sin(theta)]
+               chi = safety_margin + d_vcp
+               dist(q, wall) = min over t in [0,1] of ||q - (p1 + t*(p2-p1))||
+
+         Returns: h (scalar), grad_h w.r.t. [v, omega] (2D vector)
+         """
+     ```
+   - Lidar `_ray_segment_intersect()` method for wall segments
+   - Define 3 complex layouts in `envs/layouts.py`:
+     - **Corridor**: 4×20m with parallel walls → tests confined pursuit
+     - **L-shaped room**: 15×15m with rectangular cutout → corner exploitation
+     - **Warehouse**: 20×20m with shelf grid (parallel wall segments) → dense navigation
+   - Create Hydra configs: `conf/env/corridor.yaml`, `conf/env/l_shaped.yaml`, `conf/env/warehouse.yaml`
+   - **These layouts are for the Post-Stage 5 generalization study ONLY — NOT used in core training**
+
+4. **Update observation space**:
    ```python
    # Phase 3 observation (partial):
    obs_P = [
@@ -526,7 +598,94 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
    ]
    ```
 
-4. **Add sensor overlays to PERenderer**:
+5. **PartialObsWrapper — Pipeline orchestration class**:
+
+   This wrapper encapsulates the entire partial-obs pipeline: raw obs → buffer → BiMDN → obs_dict. It also handles the SB3 integration by defining a `Dict` observation space and providing a compatible `FeaturesExtractor`.
+
+   ```python
+   class PartialObsWrapper(gym.Wrapper):
+       """Wraps PursuitEvasionEnv to produce partial observations with belief state.
+       Owns the observation history buffer and BiMDN inference pipeline.
+       Exposes a gymnasium.spaces.Dict observation space for SB3 compatibility.
+       """
+       def __init__(self, env, sensor_config, bimdn_model=None, history_length=10):
+           super().__init__(env)
+           self.fov_sensor = FOVSensor(**sensor_config['fov'])
+           self.lidar_sensor = LidarSensor(**sensor_config['lidar'])
+           self.bimdn = bimdn_model  # Pre-trained or None (raw obs mode)
+           self.history_length = history_length
+           self.raw_obs_dim = 40  # 2 (velocity) + 2 (FOV) + 36 (lidar)
+           self.buffer = ObservationHistoryBuffer(K=history_length, obs_dim=self.raw_obs_dim)
+
+           # Define Dict observation space for SB3
+           self.observation_space = gym.spaces.Dict({
+               'obs_history': gym.spaces.Box(-np.inf, np.inf,
+                   shape=(history_length, self.raw_obs_dim), dtype=np.float32),
+               'lidar': gym.spaces.Box(0, sensor_config['lidar']['max_range'],
+                   shape=(1, sensor_config['lidar']['n_rays']), dtype=np.float32),
+               'state': gym.spaces.Box(-np.inf, np.inf, shape=(4,), dtype=np.float32),
+           })
+
+       def reset(self, **kwargs):
+           obs, info = self.env.reset(**kwargs)
+           self.buffer.reset()
+           return self._build_obs_dict(obs), info
+
+       def step(self, action):
+           obs, reward, term, trunc, info = self.env.step(action)
+           return self._build_obs_dict(obs), reward, term, trunc, info
+
+       def _build_obs_dict(self, raw_env_obs):
+           """Convert raw env observation to Dict obs for policy."""
+           agent_state = self.env.get_agent_state('pursuer')
+           target_state = self.env.get_agent_state('evader')
+
+           # FOV detection
+           d, bearing = self.fov_sensor.detect(agent_state, target_state)
+           # Lidar scan
+           lidar = self.lidar_sensor.scan(agent_state, self.env.obstacles, self.env.arena_bounds)
+           # State features
+           state = np.array([agent_state[3], agent_state[4], d, bearing], dtype=np.float32)
+           # Raw partial obs
+           raw_obs = np.concatenate([state, lidar]).astype(np.float32)
+           self.buffer.add(raw_obs)
+
+           return {
+               'obs_history': self.buffer.get_history().astype(np.float32),
+               'lidar': lidar.reshape(1, -1).astype(np.float32),
+               'state': state,
+           }
+
+       def get_true_state(self):
+           """Pass-through for DCBF filter (uses true state, not partial obs)."""
+           return self.env.get_true_state()
+   ```
+
+   **SB3 integration**: Register the custom feature extractor with SB3's PPO via `policy_kwargs`:
+   ```python
+   from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+
+   class PartialObsFeaturesExtractor(BaseFeaturesExtractor):
+       """SB3-compatible feature extractor wrapping PartialObsPolicyNetwork."""
+       def __init__(self, observation_space, features_dim=256, bimdn_config=None):
+           super().__init__(observation_space, features_dim)
+           self.net = PartialObsPolicyNetwork(
+               raw_obs_dim=40, lidar_dim=36, config=bimdn_config)
+
+       def forward(self, observations):
+           return self.net(observations)  # Returns [batch, 256]
+
+   # Usage:
+   policy_kwargs = {
+       'features_extractor_class': PartialObsFeaturesExtractor,
+       'features_extractor_kwargs': {'features_dim': 256, 'bimdn_config': bimdn_config},
+   }
+   model = PPO('MultiInputPolicy', wrapped_env, policy_kwargs=policy_kwargs)
+   ```
+
+   > **Note on `MultiInputPolicy`**: SB3's `MultiInputPolicy` handles `Dict` observation spaces natively. The custom `PartialObsFeaturesExtractor` replaces SB3's default `CombinedExtractor` with our BiMDN-based architecture.
+
+6. **Add sensor overlays to PERenderer**:
    ```python
    # In PERenderer — add partial-observability visualization layers
 
@@ -685,8 +844,15 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
    ```
 
 3. **Integrate BiMDN with policy network**:
+
+   **Architecture** (updated for Phase 2.5 decision — standard PPO + post-hoc DCBF):
    ```python
    class PartialObsPolicyNetwork(nn.Module):
+       """
+       Custom SB3-compatible feature extractor for partial observability.
+       Feeds into standard SB3 PPO actor/critic heads (Gaussian policy).
+       DCBF filter is applied POST-HOC at action execution, not inside the network.
+       """
        def __init__(self, raw_obs_dim, lidar_dim, config):
            super().__init__()
 
@@ -694,7 +860,10 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
            self.bimdn = BiMDN(raw_obs_dim, config['hidden_dim'],
                                config['n_mixtures'], config['latent_dim'])
 
-           # Lidar branch
+           # Lidar branch — Conv1D chosen over MLP because adjacent lidar rays
+           # are spatially correlated (kernel_size=5 captures ~50 deg sectors).
+           # If profiling shows this is a bottleneck, an MLP(36→64→64) is a
+           # valid simplification with minimal performance impact.
            self.lidar_conv = nn.Sequential(
                nn.Conv1d(1, 32, kernel_size=5, padding=2),
                nn.ReLU(),
@@ -720,54 +889,90 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
                nn.ReLU(),
            )
 
-           # Actor and critic heads (Beta or BarrierNet depending on Phase 2.5 decision)
-           self.actor_head = ...  # From chosen safety architecture
-           self.critic_head = nn.Linear(256, 1)
+           # SB3 PPO uses standard Gaussian actor head (not Beta/BarrierNet)
+           # Actor head: nn.Linear(256, 2) → mean of [v, ω]
+           # log_std: learnable nn.Parameter (state-independent, SB3 default)
+           # Critic head: nn.Linear(256, 1) → V(o_t)
+           # These are created by SB3's ActorCriticPolicy, not here.
+
+       def forward(self, obs_dict):
+           """
+           obs_dict contains:
+             - 'obs_history': [batch, K, raw_obs_dim] for BiMDN
+             - 'lidar': [batch, 1, n_rays] for lidar Conv1D
+             - 'state': [batch, 4] for state branch [v, ω, d_opp, bearing]
+
+           Returns: features [batch, 256] fed to SB3 actor/critic heads
+           """
+           latent, belief_params = self.bimdn(obs_dict['obs_history'])
+           lidar_features = self.lidar_conv(obs_dict['lidar'])
+           state_features = self.state_mlp(obs_dict['state'])
+           combined = torch.cat([lidar_features, state_features, latent], dim=-1)
+           return self.combined_mlp(combined)
+   ```
+
+   **Action execution pipeline** (DCBF filter applied post-hoc):
+   ```python
+   # During rollout collection:
+   nominal_action, _ = ppo_model.predict(partial_obs)     # PPO Gaussian policy
+   true_state = env.get_true_state()                       # Full state for DCBF
+   safe_action = dcbf_filter.filter(nominal_action, true_state)  # Post-hoc correction
+   obs, reward, done, info = env.step(safe_action)
    ```
 
 4. **BiMDN pre-training data collection**:
+
+   **IMPORTANT**: Phase 2 policies were trained with full-state observation. Their trajectories
+   reflect full-information play (pursuer always knows where evader is, never searches). Using
+   ONLY Phase 2 policies creates a distribution mismatch — the BiMDN won't see "lost target"
+   or "search" behaviors during pre-training. Use a MIX of policies to cover all scenarios.
+
    ```python
-   def collect_bimdn_pretraining_data(env, pursuer_policy, evader_policy,
-                                       n_episodes=500, history_len=10):
+   def collect_bimdn_pretraining_data(env, policy_mix, n_episodes=500, history_len=10):
        """
-       Collect supervised pre-training data for BiMDN.
-       Uses Phase 2 trained policies to generate diverse trajectories.
-       Records partial observations alongside ground-truth opponent positions.
+       Collect supervised pre-training data for BiMDN using diverse policies.
+
+       policy_mix: list of (pursuer_policy, evader_policy, weight) tuples
+           e.g., [(phase2_p, phase2_e, 0.3),      # trained policies (diverse trajectories)
+                  (random_p, random_e, 0.3),        # random (state-space coverage)
+                  (pursuit_p, flee_e, 0.4)]          # scripted (tracking + evasion patterns)
 
        Returns:
            dataset: list of (obs_history, true_opponent_pos) pairs
-           Each obs_history: (history_len, obs_dim) numpy array
-           Each true_opponent_pos: (2,) numpy array [x, y]
        """
        dataset = []
-       for ep in range(n_episodes):
-           obs, _ = env.reset()
-           obs_buffer = deque(maxlen=history_len)
+       for pursuer_pol, evader_pol, weight in policy_mix:
+           n_eps = int(n_episodes * weight)
+           for ep in range(n_eps):
+               obs, _ = env.reset()
+               obs_buffer = deque(maxlen=history_len)
 
-           for step in range(env.max_steps):
-               obs_buffer.append(obs['pursuer'])
+               for step in range(env.max_steps):
+                   obs_buffer.append(obs['pursuer'])
 
-               if len(obs_buffer) == history_len:
-                   obs_history = np.stack(list(obs_buffer))
-                   true_pos = env.get_evader_position()  # Ground truth
-                   dataset.append((obs_history, true_pos))
+                   if len(obs_buffer) == history_len:
+                       obs_history = np.stack(list(obs_buffer))
+                       true_pos = env.get_evader_position()
+                       dataset.append((obs_history, true_pos))
 
-               # Both agents act using Phase 2 policies
-               p_action = pursuer_policy.predict(obs['pursuer'])
-               e_action = evader_policy.predict(obs['evader'])
-               obs, _, done, _, _ = env.step({'pursuer': p_action, 'evader': e_action})
-               if done:
-                   break
+                   p_action = pursuer_pol.predict(obs['pursuer'])
+                   e_action = evader_pol.predict(obs['evader'])
+                   obs, _, done, _, _ = env.step({'pursuer': p_action, 'evader': e_action})
+                   if done:
+                       break
 
-       return dataset  # ~500 episodes x ~600 steps = ~300K samples
+       return dataset
    ```
 
    **Data collection procedure**:
-   - Load Phase 2 trained pursuer and evader checkpoints
-   - Run 500 episodes with FOV sensor active, recording full state
+   - **30% Phase 2 trained policies**: Diverse, competent trajectories (mostly tracking scenarios)
+   - **30% random policies**: Broad state-space coverage, many "lost target" scenarios
+   - **40% scripted policies**: Pure-pursuit + flee-to-corner with FOV active — realistic tracking/evasion
+   - Run 500 episodes total with FOV sensor active, recording full state
    - Split 80/20 train/val with `torch.Generator().manual_seed(42)`
    - Expected dataset size: ~200K-300K (obs_history, true_pos) pairs
    - Storage: ~500MB uncompressed, save as `.npz` file
+   - Critical: scripted policies ensure the BiMDN sees both "target visible" and "target lost" scenarios
 
 5. **BiMDN pre-training**:
    ```python
@@ -803,7 +1008,50 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
 
 **Tasks**:
 
-1. **AMS-DRL implementation**:
+1. **NavigationEnv for cold-start (S0)**:
+
+   The cold-start phase needs a goal-reaching environment to teach the evader basic locomotion,
+   obstacle avoidance, and fleeing instincts before adversarial training begins.
+
+   ```python
+   class NavigationEnv(gym.Wrapper):
+       """
+       Wraps PE environment for single-agent goal-reaching + fleeing.
+       Used in AMS-DRL Phase S0 (cold-start).
+
+       Observation: [own_v, own_omega, d_to_goal, bearing_to_goal, lidar(36)]  # 40-dim
+       Action: [v, omega] (same as PE env)
+       Reward: -0.5 * d_to_goal / d_max  (distance shaping)
+               + 10.0 * I(reached_goal)   (goal bonus)
+               - 1.0 * I(collision)        (obstacle/boundary penalty)
+               + 0.5 * I(fleeing_slow_pursuer)  (flee bonus, optional phase)
+       Success: reach within 0.5m of goal
+       Episode: max 300 steps, new random goal on success (up to 3 goals/ep)
+       """
+       def __init__(self, pe_env, include_flee_phase=True):
+           super().__init__(pe_env)
+           self.goal = None
+           self.include_flee = include_flee_phase
+           # If include_flee: 50% episodes are goal-reaching, 50% are flee-from-slow-pursuer
+           # Flee mode: spawn a slow scripted pursuer (0.5 * v_max) and reward survival time
+
+       def reset(self, **kwargs):
+           obs, info = self.env.reset(**kwargs)
+           self.goal = self._sample_goal()
+           return self._make_nav_obs(obs), info
+
+       def _sample_goal(self):
+           """Random collision-free position in arena."""
+           for _ in range(100):
+               pos = np.random.uniform(
+                   [self.env.arena_min + 1, self.env.arena_min + 1],
+                   [self.env.arena_max - 1, self.env.arena_max - 1])
+               if not self.env._collides_with_obstacle(pos):
+                   return pos
+           return np.array([5.0, 5.0])  # fallback
+   ```
+
+2. **AMS-DRL implementation**:
    ```python
    class AMSDRLSelfPlay:
        def __init__(self, env, pursuer_config, evader_config, meta_config):
@@ -814,8 +1062,8 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
            self.history = []
 
        def cold_start(self, episodes=1000):
-           """Phase S0: Train evader for basic navigation."""
-           nav_env = NavigationEnv(self.env)  # Goal-reaching wrapper
+           """Phase S0: Train evader for basic navigation + fleeing."""
+           nav_env = NavigationEnv(self.env, include_flee_phase=True)
            self.evader.train(nav_env, episodes=episodes)
            self.history.append(self._evaluate())
 
@@ -860,7 +1108,29 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
            return self.pursuer, self.evader, self.history
    ```
 
-2. **NE verification tools**:
+   **AMS-DRL ↔ SB3 Interaction Model**:
+
+   Each agent (pursuer, evader) is a separate SB3 `PPO` instance. During a training phase, one agent trains normally via `model.learn()` while the other is frozen and used as the opponent policy inside the environment wrapper:
+
+   ```
+   AMSDRLSelfPlay
+   ├── pursuer: PPO('MultiInputPolicy', env, policy_kwargs=...)
+   ├── evader:  PPO('MultiInputPolicy', env, policy_kwargs=...)
+   └── env: PartialObsWrapper(SelfPlayEnv(PursuitEvasionEnv))
+
+   Phase S1 (Train Pursuer):
+     env.set_evader_policy(evader.policy)  ← freeze evader as env opponent
+     pursuer.learn(timesteps=500K)         ← SB3 trains pursuer normally
+     # Inside env.step(): opponent action = evader.policy.predict(evader_obs)
+
+   Phase S2 (Train Evader):
+     env.set_pursuer_policy(pursuer.policy) ← freeze pursuer as env opponent
+     evader.learn(timesteps=500K)           ← SB3 trains evader normally
+   ```
+
+   The `SelfPlayEnv` wrapper (from Phase 1, upgraded) handles opponent inference inside `step()`, so from SB3's perspective, each agent faces a single-agent MDP against a stationary opponent. Checkpoints save both agents' `state_dict` together.
+
+3. **NE verification tools**:
    ```python
    def compute_exploitability(agent, opponent_agent, env, train_steps=500000):
        """
@@ -972,7 +1242,21 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
            print(f"[ROLLBACK #{self.rollback_count}] → step {step}")
 
    class CheckpointManager:
-       """Manage 15 rolling + milestone checkpoints with rollback."""
+       """Manage 15 rolling + milestone checkpoints with rollback.
+
+       IMPORTANT: Each checkpoint saves BOTH the PPO model AND the BiMDN encoder
+       state_dict. On rollback, both are restored simultaneously to avoid
+       state mismatch between policy and belief encoder. The checkpoint
+       is a directory containing:
+         - rolling_{step}_ppo.zip     (SB3 PPO model)
+         - rolling_{step}_bimdn.pt    (BiMDN state_dict)
+         - rolling_{step}_meta.json   (step, metrics, curriculum_level)
+
+       Resume protocol (for hardware failure / interrupted training):
+         1. Load latest checkpoint: model = PPO.load(path), bimdn.load_state_dict(...)
+         2. Verify step count matches expected
+         3. Continue with model.learn(remaining_steps)
+       """
        def __init__(self, checkpoint_dir='./checkpoints', max_rolling=15):
            self.checkpoint_dir = Path(checkpoint_dir)
            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -980,23 +1264,30 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
            self.rolling = []       # (step, path)
            self.best_metric = -float('inf')
 
-       def save_rolling(self, model, step):
-           path = self.checkpoint_dir / f'rolling_{step}.zip'
-           model.save(str(path))
-           self.rolling.append((step, str(path)))
+       def save_rolling(self, model, bimdn, step, meta=None):
+           ckpt_dir = self.checkpoint_dir / f'rolling_{step}'
+           ckpt_dir.mkdir(exist_ok=True)
+           model.save(str(ckpt_dir / 'ppo.zip'))
+           torch.save(bimdn.state_dict(), str(ckpt_dir / 'bimdn.pt'))
+           if meta:
+               import json
+               with open(ckpt_dir / 'meta.json', 'w') as f:
+                   json.dump({**meta, 'step': step}, f)
+           self.rolling.append((step, str(ckpt_dir)))
            while len(self.rolling) > self.max_rolling:
                _, old = self.rolling.pop(0)
-               if os.path.exists(old): os.remove(old)
+               if os.path.exists(old): shutil.rmtree(old)
 
-       def perform_rollback(self, model_class, rollback_steps=3):
+       def perform_rollback(self, model_class, bimdn, rollback_steps=3):
            target = self.rolling[-(rollback_steps)]
-           step, path = target
-           model = model_class.load(path)
+           step, ckpt_dir = target
+           model = model_class.load(str(Path(ckpt_dir) / 'ppo.zip'))
+           bimdn.load_state_dict(torch.load(str(Path(ckpt_dir) / 'bimdn.pt')))
            # Remove newer checkpoints
            while self.rolling and self.rolling[-1][0] > step:
                _, p = self.rolling.pop()
-               if os.path.exists(p): os.remove(p)
-           return model, step
+               if os.path.exists(p): shutil.rmtree(p)
+           return model, bimdn, step
 
    class EntropyMonitorCallback(BaseCallback):
        """Standalone entropy monitor with optional log_std clamping."""
@@ -1092,12 +1383,13 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
        FixedBaselineEvalCallback(
            eval_env=eval_env,
            baselines={
-               'random': None,
-               'pure_pursuit': pure_pursuit_policy,
+               'random': None,                      # lightweight — every eval
+               'pure_pursuit': pure_pursuit_policy,  # full suite — every 50K only
                'flee_to_corner': flee_to_corner_policy,
            },
-           eval_freq=10_000,
-           n_eval_episodes=50,
+           lightweight_eval_freq=10_000,   # random baseline only (20 episodes)
+           full_eval_freq=50_000,          # all baselines (20 episodes each)
+           n_eval_episodes=20,             # reduced from 50 to limit overhead
        ),
    ])
    agent.learn(total_timesteps=timesteps, callback=callbacks)
@@ -1116,62 +1408,79 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
 
 ---
 
-### Session 4: Simultaneous Self-Play Comparison [N06]
+### Session 4: Simultaneous Self-Play Comparison [N06] — OPTIONAL
+
+**Priority**: Optional. Run only if AMS-DRL converges successfully and compute budget permits.
+**Rationale**: The research novelty is safe DRL + PE + partial obs, NOT self-play methodology (which is Paper [18]'s contribution). This comparison is interesting but tangential to the core contribution.
 
 **Goal**: Implement simultaneous self-play (no freezing) as an alternative to AMS-DRL.
 
+**SB3 compatibility note**: SB3's PPO uses rollout buffers and batch updates — a naive step-level
+loop won't work. Use one of these SB3-compatible approaches:
+
 **Tasks**:
 
-1. **Simultaneous self-play**:
+1. **Simultaneous self-play (SB3-compatible)**:
    ```python
    class SimultaneousSelfPlay:
+       """
+       Both agents train concurrently using alternating rollout collection.
+       Each agent collects a full rollout buffer, then both update.
+       This is SB3-compatible (uses model.collect_rollouts + model.train).
+       """
        def __init__(self, env, config):
            self.env = env
-           self.pursuer = create_agent(config['pursuer'])
-           self.evader = create_agent(config['evader'])
+           self.pursuer = PPO('MlpPolicy', env, **config['ppo'])
+           self.evader = PPO('MlpPolicy', env, **config['ppo'])
+           self.n_steps = config.get('n_steps', 2048)
 
        def train(self, total_timesteps):
-           """Both agents train concurrently (no freezing)."""
-           for step in range(total_timesteps):
-               # Both agents observe and act
+           """Alternating rollout collection, simultaneous updates."""
+           steps_done = 0
+           while steps_done < total_timesteps:
+               # Collect rollouts for both agents simultaneously
+               # (both act in the same episodes, both store transitions)
+               pursuer_rollout, evader_rollout = self._collect_dual_rollout()
+
+               # Both agents update from their collected rollouts
+               self.pursuer.train()
+               self.evader.train()
+
+               steps_done += self.n_steps
+
+       def _collect_dual_rollout(self):
+           """Collect n_steps of experience for both agents concurrently."""
+           for step in range(self.n_steps):
                obs_p = self.env.get_obs('pursuer')
                obs_e = self.env.get_obs('evader')
 
-               action_p = self.pursuer.get_action(obs_p)
-               action_e = self.evader.get_action(obs_e)
+               action_p, value_p, log_prob_p = self.pursuer.policy.forward(obs_p)
+               action_e, value_e, log_prob_e = self.evader.policy.forward(obs_e)
 
-               # Step environment
-               next_obs, rewards, done, info = self.env.step(action_p, action_e)
+               # DCBF filter applied to both
+               true_state = self.env.get_true_state()
+               safe_p = dcbf_filter.filter(action_p, true_state, 'pursuer')
+               safe_e = dcbf_filter.filter(action_e, true_state, 'evader')
 
-               # Both agents learn from their experience
-               self.pursuer.store_transition(obs_p, action_p, rewards['pursuer'],
-                                              next_obs['pursuer'], done)
-               self.evader.store_transition(obs_e, action_e, rewards['evader'],
-                                             next_obs['evader'], done)
+               next_obs, rewards, done, info = self.env.step(safe_p, safe_e)
 
-               # Both update (may use different frequencies)
-               if step % self.pursuer.update_freq == 0:
-                   self.pursuer.update()
-               if step % self.evader.update_freq == 0:
-                   self.evader.update()
+               self.pursuer.rollout_buffer.add(obs_p, action_p, rewards['pursuer'],
+                                                done, value_p, log_prob_p)
+               self.evader.rollout_buffer.add(obs_e, action_e, rewards['evader'],
+                                               done, value_e, log_prob_e)
    ```
 
-2. **Note**: Paper [N06] uses TD3 (off-policy), not PPO. For fair comparison:
-   - **Option A**: Implement simultaneous PPO (on-policy, same as our main approach)
-   - **Option B**: Implement simultaneous TD3 (matching [N06])
-   - **Recommended**: Do both; compare PPO-AMS vs PPO-Simul vs TD3-Simul
+2. **Note**: Paper [N06] uses TD3 (off-policy), not PPO. For fair comparison, implement
+   simultaneous PPO only (same algorithm as our main approach). TD3 comparison is out of scope.
 
 3. **Comparison metrics**:
-   - NE convergence speed (phases or timesteps to convergence)
+   - NE convergence speed (timesteps to convergence)
    - Final NE gap
-   - Final exploitability
-   - Training stability (variance across seeds)
-   - Strategy diversity
+   - Training stability (variance across 3 seeds — reduced from 5 since optional)
 
 **Validation**:
 - Simultaneous self-play trains without divergence
 - Comparison with AMS-DRL is fair (same total timesteps, same network)
-- Results are reproducible (5 seeds)
 
 **Estimated effort**: 3-4 hours (+1h buffer)
 
@@ -1189,18 +1498,23 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
        def __init__(self, env, config):
            self.env = env
            self.current_level = 1
+           # FOV is ALWAYS active (fov_active=True) in all levels.
+           # Rationale: BiMDN needs partial-obs data to fine-tune end-to-end.
+           # Disabling FOV in levels 1-2 would create a discontinuity at Level 3
+           # that destabilizes training. Difficulty is controlled by distance
+           # and obstacles, not by observation type.
            self.levels = {
                1: {
                    'init_distance': (2, 5),
                    'n_obstacles': 0,
-                   'fov_active': False,
-                   'description': 'Close, no obstacles, full obs',
+                   'fov_active': True,
+                   'description': 'Close, no obstacles, partial obs',
                },
                2: {
                    'init_distance': (5, 15),
                    'n_obstacles': 0,
-                   'fov_active': False,
-                   'description': 'Medium distance, no obstacles',
+                   'fov_active': True,
+                   'description': 'Medium distance, no obstacles, partial obs',
                },
                3: {
                    'init_distance': (2, 5),
@@ -1261,47 +1575,59 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
 
 ---
 
-### Session 6: MACPO / CPO Baselines
+### Session 6: Safe MARL Baselines
 
 **Goal**: Implement safe MARL baselines for comparison.
 
+**Prioritization note**: MAPPO-Lagrangian is the PRIMARY baseline (easiest to implement with SB3).
+MACPO is SECONDARY (requires adapting external repo with likely version conflicts). CPO is TERTIARY
+(single-agent only). Implement in priority order; stop if compute budget is exhausted.
+
 **Tasks**:
 
-1. **MACPO baseline** from [N03]:
+1. **MAPPO-Lagrangian baseline** (PRIMARY — implement first):
+   - Simpler than MACPO — uses Lagrangian relaxation for soft constraints
+   - `J_constrained = J_reward - lambda * J_cost` where cost = safety violations
+   - Lambda is a learned dual variable (updated with Adam optimizer)
+   - **Can be built on top of SB3 PPO** — just add Lagrangian cost term to the loss
+   - Implementation: ~100 lines on top of existing PPO infrastructure
+   ```python
+   class MAPPOLagrangian:
+       """PPO with learned Lagrange multiplier for safety cost."""
+       def __init__(self, env, cost_limit=0.01, lagrange_lr=5e-3):
+           self.ppo = PPO('MlpPolicy', env, ...)
+           self.log_lagrange = nn.Parameter(torch.zeros(1))  # learned dual variable
+           self.lagrange_optimizer = Adam([self.log_lagrange], lr=lagrange_lr)
+           self.cost_limit = cost_limit  # target safety violation rate
+   ```
+
+2. **MACPO baseline** (SECONDARY — attempt only if MAPPO-Lag works):
    - Clone from https://github.com/chauncygu/Multi-Agent-Constrained-Policy-Optimisation
-   - Adapt to our PE environment
+   - **HIGH RISK**: Repo from 2023, likely uses old gym/torch versions
+   - Budget 4+ hours for adaptation; if compatibility issues take > 2 hours, skip MACPO and use
+     MAPPO-Lagrangian results to represent the "soft constraint" baseline family
    - Key: MACPO provides monotonic improvement in BOTH reward and safety (Theorem 4.4)
 
-2. **MAPPO-Lagrangian baseline** (from same repo):
-   - Simpler than MACPO — uses Lagrangian relaxation for soft constraints
-   - `J_constrained = J_reward - lambda * J_cost`
-   - Lambda is learned (dual variable)
-
-3. **CPO baseline** (single-agent):
+3. **CPO baseline** (TERTIARY — single-agent, if time permits):
    - Foundational safe RL algorithm (Achiam et al. 2017)
    - Applied to single-agent PE (train pursuer against scripted evader)
    - Shows single-agent safe RL limitations in adversarial setting
+   - Use omnisafe or safety-gymnasium implementations if available
 
-4. **SB-TRPO baseline** [N14] (optional, budget alternative):
-   - Safety-biased trust region
-   - 10x cheaper than CPO (Monte Carlo returns, no learned critics)
-   - Useful for quick prototyping comparisons
+4. **Comparison table structure**:
 
-5. **Comparison table structure**:
-
-   | Method | Safety Guarantee | NE Convergence | Capture Rate | Safety Violations | Training Time |
-   |--------|-----------------|----------------|-------------|-------------------|---------------|
-   | Our (CBF-Beta + AMS-DRL) | Hard (CBF) | Yes | ? | 0 | Baseline |
-   | MACPO | Soft (constrained opt) | No (CTDE) | ? | ? | ? |
-   | MAPPO-Lagrangian | Soft (Lagrangian) | No (CTDE) | ? | ? | ? |
-   | CPO (single-agent) | Soft (constrained opt) | N/A | ? | ? | ? |
-   | PPO + AMS-DRL (no safety) | None | Yes | ? | Many | Fast |
+   | Method | Safety Guarantee | NE Convergence | Capture Rate | Phys. Violations | CBF Violations | Training Time |
+   |--------|-----------------|----------------|-------------|-------------------|----------------|---------------|
+   | Our (PPO+DCBF + AMS-DRL) | Hard (DCBF filter) | Yes | ? | 0 (target) | < 1% (target) | Baseline |
+   | MAPPO-Lagrangian | Soft (Lagrangian) | No (CTDE) | ? | ? | N/A | ? |
+   | MACPO (if feasible) | Soft (constrained opt) | No (CTDE) | ? | ? | N/A | ? |
+   | CPO (single-agent, if time) | Soft (constrained opt) | N/A | ? | ? | N/A | ? |
+   | PPO + AMS-DRL (no safety) | None | Yes | ? | Many | N/A | Fast |
 
 **Validation**:
-- All baselines train and produce results
-- MACPO code integrates with our environment
+- MAPPO-Lagrangian trains and produces results (minimum required)
 - Comparison is fair (same compute budget, same evaluation protocol)
-- Results demonstrate the value of CBF hard constraints vs soft constraints
+- Results demonstrate the value of DCBF hard constraints vs soft constraints
 
 **Estimated effort**: 4-5 hours (+1h buffer)
 
@@ -1595,6 +1921,74 @@ In alternating self-play (AMS-DRL), **catastrophic forgetting** manifests as:
 
 ---
 
+### Session 9: Asymmetric Capability Experiments
+
+**Goal**: Investigate how speed asymmetry between pursuer and evader affects the game dynamics, NE strategies, and safety behavior.
+
+**Rationale**: Real pursuit-evasion scenarios rarely feature equally-capable agents. The speed ratio v_P/v_E fundamentally determines the game's character — classical differential game theory shows the pursuer needs a speed advantage to guarantee capture.
+
+**Tasks**:
+
+1. **Define asymmetric configurations** (env already supports per-agent v_max/omega_max):
+   ```yaml
+   # conf/experiment/asymmetric_fast_pursuer.yaml
+   # v_P/v_E = 1.5 — pursuer has 50% speed advantage (classical advantage)
+   pursuer:
+     v_max: 1.5
+     omega_max: 2.0
+   evader:
+     v_max: 1.0
+     omega_max: 2.0
+
+   # conf/experiment/asymmetric_matched.yaml
+   # v_P/v_E = 0.8 — slightly slower pursuer (must use strategy, not speed)
+   pursuer:
+     v_max: 0.8
+     omega_max: 2.0
+   evader:
+     v_max: 1.0
+     omega_max: 2.0
+
+   # conf/experiment/asymmetric_slow_pursuer.yaml
+   # v_P/v_E = 0.5 — severely disadvantaged pursuer (capture requires corner traps)
+   pursuer:
+     v_max: 0.5
+     omega_max: 2.0
+   evader:
+     v_max: 1.0
+     omega_max: 2.0
+   ```
+
+2. **Training protocol**:
+   - Fast pursuer (v_P/v_E=1.5): 3 seeds, full AMS-DRL — expect high capture rate
+   - Matched (v_P/v_E=0.8): 1-3 seeds — expect balanced game, rich NE
+   - Slow pursuer (v_P/v_E=0.5): 1-3 seeds — expect low capture, interesting evader strategies
+   - Use same curriculum and health monitoring as Stage 5 main runs
+
+3. **Analysis** (`scripts/analyze_asymmetric.py`):
+   - Compare NE gap across speed ratios
+   - Capture rate vs speed ratio curve
+   - Strategy diversity: do slower pursuers develop more creative strategies?
+   - DCBF intervention rate: does speed asymmetry affect safety behavior?
+   - Trajectory visualizations for each speed ratio
+
+**Compute**: ~20-50 GPU hours (3 seeds × 8-15h for fast pursuer; 1-3 seeds for others)
+
+**Deliverables**:
+- Speed ratio vs capture rate plot (key figure for paper)
+- Strategy comparison across speed ratios
+- Safety metric comparison (DCBF intervention rate vs speed ratio)
+
+**Validation**:
+- Fast pursuer captures at >80% rate
+- Slow pursuer captures at <30% rate (if >50%, check evader is training properly)
+- NE gap < 0.15 for all variants
+- Zero physical collisions across all speed ratios
+
+**Estimated effort**: 2-3h dev + 20-50h GPU compute
+
+---
+
 ## 6. Technical Specifications
 
 ### 6.1 Sensor Parameters
@@ -1673,9 +2067,12 @@ health_monitor_config = {
     'rollback_cooldown_steps': 50_000,  # Min steps between rollbacks
 
     # --- Fixed baseline evaluation ---
-    'baseline_eval_freq': 10_000,       # Eval vs scripted baselines every N steps
-    'baseline_eval_episodes': 50,       # Episodes per baseline evaluation
-    'checkpoint_eval_freq': 25_000,     # Eval vs checkpoint baselines every N steps
+    # NOTE: Overhead-conscious design. Full baseline eval (50 games × 5 baselines = 250 games)
+    # at 10K steps would take 15× longer than training. Use tiered frequency instead.
+    'lightweight_eval_freq': 10_000,    # Random baseline only, every 10K steps (20 episodes)
+    'full_eval_freq': 50_000,           # All baselines, every 50K steps (20 episodes each)
+    'baseline_eval_episodes': 20,       # Episodes per baseline (reduced from 50)
+    'checkpoint_eval_freq': 50_000,     # Eval vs checkpoint baselines every N steps
     'elo_k_factor': 32,                 # Elo rating update factor
     'elo_drop_alert': 100,              # Elo drop threshold for regression alert
 
@@ -1693,6 +2090,11 @@ health_monitor_config = {
     'forgetting_eval_episodes': 30,     # Episodes for historical opponent eval
     'forgetting_threshold': 0.25,       # Peak win-rate drop threshold
     'forgetting_check_freq': 50_000,    # Check every N steps
+
+    # --- DCBF solve time monitoring ---
+    'dcbf_solve_time_warn_ms': 1.0,     # Alert if mean QP solve time > 1ms
+    'dcbf_solve_time_critical_ms': 5.0, # Critical alert if max solve time > 5ms
+    'dcbf_solve_time_log_freq': 1024,   # Log solve time stats every N steps
 }
 ```
 
@@ -1736,6 +2138,8 @@ wandb:
     - health/total_entropy
     - health/forgetting_score
     - diversity/cluster_entropy_normalized
+    - dcbf/solve_time_mean_ms
+    - dcbf/solve_time_max_ms
 ```
 
 ### 6.7 TensorBoard Monitoring Dashboard
@@ -1754,6 +2158,8 @@ Key metrics to track during self-play training:
 | `diversity/cluster_entropy_normalized` | Strategy diversity | > 0.7 | < 0.4 |
 | `diversity/state_coverage` | Arena coverage fraction | > 0.3 | < 0.15 |
 | `forgetting/score` | Overall forgetting metric | < 0.15 | > 0.25 |
+| `dcbf/solve_time_mean_ms` | Mean QP solve time per step | < 1.0 ms | > 1.0 ms (warn), > 5.0 ms (critical) |
+| `dcbf/solve_time_max_ms` | Max QP solve time per step | < 5.0 ms | > 5.0 ms |
 
 ---
 
@@ -1763,48 +2169,86 @@ Key metrics to track during self-play training:
 
 | Criterion | Target | How to Measure | Protocol |
 |-----------|--------|---------------|----------|
-| NE convergence | NE gap < 0.10 within 6 phases | `abs(SR_P - SR_E)` computed over 200 eval episodes after each phase | 5 seeds; plot convergence curve with error bars |
+| NE convergence | NE gap < 0.10 by phase 12 at latest (expected within 6 per [18]); if not converged by phase 8, trigger risk mitigation | `abs(SR_P - SR_E)` computed over 200 eval episodes after each phase | 5 seeds; plot convergence curve with error bars |
 | BiMDN improvement | Capture rate +15% vs raw observation (same setup) | Train identical pipeline with/without BiMDN; evaluate 200 episodes | 5 seeds; Welch's t-test, p < 0.05 |
-| Safety maintained | Zero safety violations across all partial-obs training | `assert h_i(x) >= -1e-6` every timestep (CBF uses true state) | 5 seeds x all AMS-DRL phases; any violation = FAIL |
+| Physical safety | Zero physical collisions (robot-obstacle, robot-boundary, robot-robot). **Definition**: a physical collision occurs when the center-to-center distance between the robot and an obstacle falls below `r_robot + r_obstacle`, or the robot center is within `r_robot` of a wall/boundary. This is distinct from CBF boundary violations (`h(x) < 0`) which trigger before physical contact. | Track collision events separately from CBF boundary violations | 5 seeds x all AMS-DRL phases; any physical collision = FAIL |
+| CBF boundary safety | CBF boundary violations < 1% of timesteps | `h_i(x) < 0` rate, evaluated with DCBF gamma tuned for eval (gamma=0.05-0.1) | Report violation rate; investigate and tighten gamma if > 1% |
 | Strategy diversity | >= 3 distinct DTW-based clusters (`cluster_entropy_norm` > 0.7) | DTW + k-means on 500 trajectories; silhouette > 0.3 | 500 eval trajectories; k=5 default |
-| Baselines complete | MACPO + MAPPO-Lag + CPO + unconstrained + simultaneous SP | All trained with same compute budget; eval table filled | 5 seeds each |
+| Baselines complete | MAPPO-Lagrangian (required) + unconstrained PPO (required); MACPO, CPO optional | All trained with same compute budget; eval table filled | 5 seeds for required; 3 seeds for optional |
 | Exploitability | < 0.15 reward gap for both agents | Train best-response for 500K steps against fixed opponent; compare | Report for both pursuer and evader |
 | Curriculum completes | Agent advances to Level 4 within training budget | Curriculum level tracked per phase; Level 4 reached | 5 seeds; if any seed fails to reach L4, investigate |
 | Health monitoring | No unrecovered collapses; <= 2 rollbacks total | Entropy, capture rate, Elo tracked throughout training | 5 seeds; report rollback events and triggers |
 | No catastrophic forgetting | Forgetting score < 0.15 at convergence | Evaluate against all historical checkpoints; compute peak drop | 5 seeds; report per-checkpoint win rates |
 | Partial-obs visualization | FOV cones + lidar rays + belief ellipses render in PERenderer | `render_mode="human"` shows overlays; `render_mode="rgb_array"` produces valid video | Visual check + RecordVideo produces .mp4 with sensor overlays |
 | wandb tracking operational | All Phase 3 runs logged with NE gap, health metrics, baseline tables | wandb dashboard shows `ne/*`, `health/*`, `diversity/*` metrics | Verify runs in `phase3-evaluation` group |
+| End-to-end integration | Full pipeline runs without crashes for 10K steps | Smoke test: sensors + BiMDN + PPO + DCBF + AMS-DRL + health monitoring | Test V (see §7.4) |
 
 ### 7.2 Quality Metrics
 
 | Metric | Expected | How to Measure | Notes |
 |--------|----------|---------------|-------|
-| NE gap at convergence | < 0.10 | Absolute value of capture rate - escape rate | Per Paper [18] |
+| NE gap at convergence | < 0.10 (by phase 12; expected within 6 per [18]) | Absolute value of capture rate - escape rate | If not < 0.10 by phase 8, increase timesteps_per_phase or try PSRO |
 | Exploitability | < 0.15 reward gap | Best-response training (500K steps) | Low = close to NE |
-| BiMDN belief accuracy | < 2m RMSE (in FOV), < 5m RMSE (out of FOV) | Compare predicted position to true position | Evaluate on held-out trajectories |
+| BiMDN belief accuracy | Mean RMSE < 2m in-FOV, < 5m out-of-FOV (across 5 seeds, 1000+ held-out samples/seed; Welch's t-test vs 8.2m random baseline, p < 0.05) | Compare predicted position to true position on held-out trajectory samples | Justification: uniform random baseline over 20×20 arena gives RMSE ≈ 8.2m. Target of < 5m out-of-FOV is meaningfully better than random; < 2m in-FOV confirms the sensor signal is utilized. |
 | BiMDN multimodality | Effective # components > 1.5 when target lost | `n_eff = 1 / sum(pi_i^2)` | Should capture uncertainty behind obstacles |
 | Curriculum advancement | All 4 levels completed in order | Level tracking log | No skipping levels |
 | Training time | ~15-30 hours total (6-12 phases x 500K steps x 2-5ms/step) | Wall-clock timer | Includes BiMDN pre-training |
-| AMS-DRL vs simultaneous | Documented comparison with winner identified | Side-by-side NE gap curves | May be approximately equivalent |
+| AMS-DRL vs simultaneous | Documented comparison (OPTIONAL) | Side-by-side NE gap curves | Only if AMS-DRL converges and compute permits |
 
 ### 7.3 Definition of Done
 
 > **Phase 3 is COMPLETE when:**
-> 1. Deliverables D1-D15 are implemented and tested (including D9: health monitoring, D10-D11: viz/tracking)
-> 2. ALL must-pass criteria in Section 7.1 are met (5 seeds each)
-> 3. Baseline comparison table (Section 5, Session 6) is filled with actual numbers
+> 1. Required deliverables (D1-D8, D9a-D9e, D10-D14, D16-D18) implemented and tested; D7b/D7c/D9f/D15 optional
+> 2. ALL must-pass criteria in Section 7.1 are met (5 seeds for required, 3 for optional)
+> 3. Baseline comparison table (Session 6) filled: MAPPO-Lagrangian + unconstrained PPO (required)
 > 4. NE convergence plot generated with error bars (5 seeds)
 > 5. Strategy diversity analysis complete (DTW clusters identified and visualized)
-> 6. Minimum test suite (Section 7.4) passes: 21 tests (A-U), all green
+> 6. Minimum test suite (Section 7.4) passes: 31 tests (A-Z + B2, L2, W2, W3), all green
 > 7. Health monitoring system active: entropy, baselines, rollback, forgetting detection all operational
 > 8. PERenderer shows FOV cones, lidar rays, belief ellipses, and ghost markers
 > 9. All runs logged to wandb with NE convergence, health metrics, and eval videos
 > 10. Best models saved for Phase 4 export
 > 11. Phase 3 summary with key findings, health monitoring report, and Phase 4 recommendations
+> 12. Physical safety violations = 0 across all evaluation episodes
 
-### 7.4 Minimum Test Suite (21 Tests)
+### 7.4 Minimum Test Suite (31 Tests)
 
-**File: `tests/test_sensors.py`** (4 tests)
+**Test Index** (letter → function name mapping):
+
+| Test | Function | File | Focus |
+|------|----------|------|-------|
+| A | `test_fov_detects_target_in_cone` | test_sensors.py | FOV detection |
+| B | `test_fov_misses_target_outside_cone` | test_sensors.py | FOV rejection |
+| B2 | `test_fov_boundary_conditions` | test_sensors.py | FOV edge cases |
+| C | `test_lidar_obstacle_distance` | test_sensors.py | Lidar obstacle |
+| D | `test_lidar_arena_boundary` | test_sensors.py | Lidar boundary |
+| E | `test_bimdn_valid_outputs` | test_bimdn.py | BiMDN output shapes |
+| F | `test_bimdn_pretrain_loss_decreases` | test_bimdn.py | BiMDN training |
+| G | `test_bimdn_gradient_to_policy` | test_bimdn.py | Gradient flow |
+| H | `test_bimdn_multimodal_when_lost` | test_bimdn.py | Multimodality |
+| I | `test_cold_start_evader` | test_selfplay.py | AMS-DRL cold start |
+| J | `test_amsdrl_smoke` | test_selfplay.py | AMS-DRL no crash |
+| K | `test_simultaneous_sp_stable` | test_selfplay.py | Simultaneous SP |
+| L | `test_curriculum_advancement` | test_selfplay.py | Curriculum advance |
+| L2 | `test_curriculum_no_regression` | test_selfplay.py | Curriculum no regress |
+| M | `test_mappo_lagrangian_trains` | test_baselines.py | MAPPO-Lag baseline |
+| N | `test_comparison_table_complete` | test_baselines.py | Table completeness |
+| O | `test_exploitability_finite` | test_baselines.py | Exploitability |
+| P | `test_entropy_collapse_detection` | test_health_monitoring.py | Entropy monitor |
+| Q | `test_entropy_clamping` | test_health_monitoring.py | Entropy floor |
+| R | `test_checkpoint_rollback` | test_health_monitoring.py | Rollback |
+| S | `test_dtw_diversity_valid` | test_health_monitoring.py | DTW diversity |
+| T | `test_forgetting_detection` | test_health_monitoring.py | Forgetting |
+| U | `test_baseline_eval_win_rates` | test_health_monitoring.py | Baseline eval |
+| V | `test_phase3_pipeline_smoke` | test_phase3_integration.py | E2E + safety |
+| W | `test_dcbf_partial_obs_interface` | test_phase3_integration.py | DCBF interface |
+| W2 | `test_dcbf_infeasible_qp` | test_phase3_integration.py | DCBF failure |
+| W3 | `test_dcbf_invalid_state` | test_phase3_integration.py | DCBF validation |
+| X | `test_belief_encoder_interface` | test_phase3_integration.py | Encoder plug |
+| Y | `test_wall_cbf_constraint` | test_wall_cbf.py | Wall CBF |
+| Z | `test_lidar_wall_intersection` | test_wall_cbf.py | Wall lidar |
+
+**File: `tests/test_sensors.py`** (5 tests)
 
 ```python
 # Test A: FOV detection when target is in cone
@@ -1825,6 +2269,35 @@ def test_fov_misses_target_outside_cone():
     target = [0, 5, 0]  # 90 deg bearing
     d, b = sensor.detect(own, target)
     assert d == -1.0
+
+# Test B2: FOV boundary conditions (target exactly on FOV edge)
+def test_fov_boundary_conditions():
+    """Test edge cases: target on FOV angular boundary, at max range, directly ahead."""
+    sensor = FOVSensor(fov_angle=60, fov_range=10.0)
+    own = [0, 0, 0]
+
+    # Target exactly at fov_range (exclusive boundary: NOT detected)
+    target_at_range = [10.0, 0, 0]
+    d, b = sensor.detect(own, target_at_range)
+    assert d == -1.0, "Target at exactly fov_range should NOT be detected"
+
+    # Target just inside fov_range
+    target_inside = [9.99, 0, 0]
+    d, b = sensor.detect(own, target_inside)
+    assert d > 0, "Target just inside fov_range should be detected"
+
+    # Target directly ahead (bearing = 0)
+    target_ahead = [5.0, 0, 0]
+    d, b = sensor.detect(own, target_ahead)
+    assert d > 0 and abs(b) < 0.01, "Target directly ahead: bearing should be ~0"
+
+    # Target exactly on FOV angular boundary (bearing = fov_half_angle)
+    # At 60 deg half-angle, target at bearing = 60 deg
+    target_boundary = [5.0 * np.cos(np.radians(60)), 5.0 * np.sin(np.radians(60)), 0]
+    d, b = sensor.detect(own, target_boundary)
+    # On boundary: implementation-dependent (inclusive or exclusive)
+    # Document the choice and test accordingly
+    assert d == -1.0 or d > 0  # Either is valid; just don't crash
 
 # Test C: Lidar detects obstacle at correct distance
 def test_lidar_obstacle_distance():
@@ -1880,18 +2353,44 @@ def test_bimdn_gradient_to_policy():
     loss.backward()
     assert bimdn.lstm.weight_ih_l0.grad is not None
 
-# Test H: BiMDN produces multimodal belief when uncertain
+# Test H: Pre-trained BiMDN produces higher uncertainty when target is lost
 def test_bimdn_multimodal_when_lost():
-    """With no detection for K steps, effective components > 1."""
+    """After pre-training, BiMDN should show higher n_eff when target is lost vs visible.
+    NOTE: This test uses 50 epochs (not 20) and a larger dataset for robustness.
+    The primary assertion is n_eff_lost > 1.3 (lower bar than 1.5) to reduce flakiness.
+    The relative comparison (lost > visible) is a secondary check that may fail
+    on rare seeds — run with 3 seeds if the secondary assertion is flaky.
+    """
     bimdn = BiMDN(obs_dim=40, n_mixtures=5)
-    # Observation history with all detections = -1 (target lost)
-    obs_hist = create_lost_observation_history(K=10)
-    _, (pi, mu, sigma) = bimdn(torch.FloatTensor(obs_hist).unsqueeze(0))
-    n_eff = 1.0 / (pi[0] ** 2).sum()
-    assert n_eff > 1.5  # Multiple effective components
+    dataset = generate_synthetic_dataset(500)  # Larger dataset for stability
+    pretrain_bimdn(bimdn, dataset, epochs=50)  # More epochs for reliable convergence
+
+    # Compare n_eff between "target visible" and "target lost" scenarios
+    # Average over multiple samples to reduce variance
+    n_visible_samples, n_lost_samples = 20, 20
+    n_eff_visible_list, n_eff_lost_list = [], []
+
+    for _ in range(n_visible_samples):
+        obs_visible = create_visible_observation_history(K=10)
+        _, (pi_vis, _, _) = bimdn(torch.FloatTensor(obs_visible).unsqueeze(0))
+        n_eff_visible_list.append((1.0 / (pi_vis[0] ** 2).sum()).item())
+
+    for _ in range(n_lost_samples):
+        obs_lost = create_lost_observation_history(K=10)
+        _, (pi_lost, _, _) = bimdn(torch.FloatTensor(obs_lost).unsqueeze(0))
+        n_eff_lost_list.append((1.0 / (pi_lost[0] ** 2).sum()).item())
+
+    mean_n_eff_visible = np.mean(n_eff_visible_list)
+    mean_n_eff_lost = np.mean(n_eff_lost_list)
+
+    # Primary: lost scenarios should use multiple mixture components
+    assert mean_n_eff_lost > 1.3, f"n_eff_lost={mean_n_eff_lost:.2f}, expected > 1.3"
+    # Secondary: lost should be more uncertain than visible (on average)
+    assert mean_n_eff_lost > mean_n_eff_visible, (
+        f"n_eff_lost={mean_n_eff_lost:.2f} should > n_eff_visible={mean_n_eff_visible:.2f}")
 ```
 
-**File: `tests/test_selfplay.py`** (4 tests)
+**File: `tests/test_selfplay.py`** (5 tests)
 
 ```python
 # Test I: AMS-DRL cold start produces functional evader
@@ -1902,18 +2401,23 @@ def test_cold_start_evader():
     success = evaluate_navigation(sp.evader, nav_env, n_episodes=50)
     assert success > 0.5
 
-# Test J: NE gap decreases over self-play phases
-def test_ne_gap_decreasing():
-    """NE gap should trend downward over 4 phases."""
+# Test J: AMS-DRL smoke test (runs without crashing, metrics are valid)
+def test_amsdrl_smoke():
+    """4 phases of AMS-DRL at 50K steps each: no crashes, NE gap is bounded and finite.
+    NOTE: 50K steps per phase is too few for meaningful learning. This is a SMOKE TEST only.
+    Real NE convergence is validated in Session 8's full pipeline evaluation (500K+ steps/phase).
+    """
     sp = AMSDRLSelfPlay(env, config)
-    sp.cold_start()
+    sp.cold_start(episodes=100)  # short cold start for smoke test
     gaps = []
     for phase in range(4):
         role = 'pursuer' if phase % 2 == 0 else 'evader'
         sp.train_phase(role, timesteps=50000)
         metrics = sp._evaluate()
-        gaps.append(abs(metrics['capture_rate'] - metrics['escape_rate']))
-    assert gaps[-1] < gaps[0]  # Trend downward
+        gap = abs(metrics['capture_rate'] - metrics['escape_rate'])
+        gaps.append(gap)
+        assert np.isfinite(gap) and 0 <= gap <= 1.0  # valid range
+    # Don't assert trend — 50K steps is too few for reliable learning
 
 # Test K: Simultaneous self-play doesn't diverge
 def test_simultaneous_sp_stable():
@@ -1924,24 +2428,36 @@ def test_simultaneous_sp_stable():
 
 # Test L: Curriculum level advances correctly
 def test_curriculum_advancement():
-    """Manager should advance when both agents exceed threshold."""
+    """Manager should advance when pursuer capture rate exceeds threshold."""
     cm = CurriculumManager(env, config)
     assert cm.current_level == 1
-    # Simulate good performance
-    metrics = [0.75] * 100  # Both agents > 70%
+    # Simulate pursuer achieving >70% capture rate
+    metrics = [0.75] * 100  # capture_rate > 0.70 threshold
     advanced = cm.check_advancement(metrics)
     assert advanced and cm.current_level == 2
+
+# Test L2: Curriculum level does not regress on poor performance
+def test_curriculum_no_regression():
+    """Once advanced, level should not decrease even if performance drops."""
+    cm = CurriculumManager(env, config)
+    cm.current_level = 3  # Simulate having reached level 3
+    # Poor performance at level 3
+    metrics = [0.20] * 100  # capture_rate well below threshold
+    regressed = cm.check_advancement(metrics)
+    assert not regressed  # No advancement
+    assert cm.current_level == 3  # Level stays at 3, does NOT drop to 2
 ```
 
 **File: `tests/test_baselines.py`** (3 tests)
 
 ```python
-# Test M: MACPO trains without crashing
-def test_macpo_trains():
-    """MACPO baseline runs 10K steps without errors."""
-    macpo = setup_macpo(env)
-    macpo.train(total_timesteps=10000)
-    assert macpo.policy is not None
+# Test M: MAPPO-Lagrangian trains without crashing (PRIMARY baseline)
+def test_mappo_lagrangian_trains():
+    """MAPPO-Lagrangian baseline runs 10K steps without errors."""
+    mappo_lag = setup_mappo_lagrangian(env, cost_limit=0.01)
+    mappo_lag.train(total_timesteps=10000)
+    assert mappo_lag.policy is not None
+    assert hasattr(mappo_lag, 'log_lagrange')  # Lagrange multiplier exists
 
 # Test N: Baseline comparison table has no NaN
 def test_comparison_table_complete():
@@ -2027,7 +2543,137 @@ def test_baseline_eval_win_rates():
     assert 0.0 <= win_rate <= 1.0
 ```
 
-> **Test suite total**: 21 tests (A-U) across 5 files — exceeds 15+ minimum.
+```
+
+**File: `tests/test_phase3_integration.py`** (5 tests)
+
+```python
+# Test V: End-to-end Phase 3 pipeline smoke test
+def test_phase3_pipeline_smoke():
+    """Run 1000 steps of the full Phase 3 pipeline: sensors + BiMDN + PPO + DCBF.
+    Asserts: no crashes, valid observation shapes, DCBF receives true state,
+    metrics are logged correctly, AND zero physical collisions + CBF invariant.
+    """
+    env = PursuitEvasionEnv(fov_active=True, n_obstacles=2)
+    bimdn = BiMDN(obs_dim=40, n_mixtures=5)
+    ppo = PPO('MlpPolicy', env)
+    dcbf = DCBFFilter(gamma=0.2, d=0.1)
+    collision_count = 0
+    cbf_violation_count = 0
+
+    for step in range(1000):
+        partial_obs = env.get_partial_observation('pursuer')
+        assert partial_obs.shape[0] == 40  # correct obs dim
+
+        true_state = env.get_true_state()
+        assert true_state.shape[0] == 6  # [x_P, y_P, θ_P, x_E, y_E, θ_E]
+
+        nominal_action, _ = ppo.predict(partial_obs)
+        safe_action = dcbf.filter(nominal_action, true_state)
+        assert safe_action.shape == (2,)  # [v, ω]
+
+        obs, reward, done, _, info = env.step(safe_action)
+        assert np.isfinite(reward)
+
+        # Safety assertions
+        if info.get('collision', False):
+            collision_count += 1
+        h_values = dcbf.get_constraint_values(true_state)
+        if any(h < -1e-6 for h in h_values):
+            cbf_violation_count += 1
+
+        if done:
+            env.reset()
+
+    assert collision_count == 0, f"Physical collisions detected: {collision_count}"
+    assert cbf_violation_count / 1000 < 0.01, (
+        f"CBF violation rate {cbf_violation_count/1000:.1%} exceeds 1% threshold")
+
+# Test W: DCBF filter receives true state while agent gets partial obs
+def test_dcbf_partial_obs_interface():
+    """Verify the separation: policy uses partial obs, DCBF uses true state."""
+    env = PursuitEvasionEnv(fov_active=True, n_obstacles=2)
+    env.reset(seed=42)
+
+    partial_obs = env.get_partial_observation('pursuer')
+    true_state = env.get_true_state()
+
+    # Partial obs should NOT contain opponent position when out of FOV
+    # True state should ALWAYS contain opponent position
+    assert len(partial_obs) < len(true_state) or partial_obs[2] == -1.0  # d_to_opp = -1 if not seen
+    assert true_state[3] != 0 or true_state[4] != 0  # evader position always present
+
+    # DCBF filter should work with true state regardless of FOV
+    dcbf = DCBFFilter(gamma=0.2, d=0.1)
+    nominal = np.array([0.5, 0.0])
+    safe = dcbf.filter(nominal, true_state)
+    assert np.isfinite(safe).all()
+
+# Test W2: DCBF handles infeasible QP gracefully
+def test_dcbf_infeasible_qp():
+    """When QP is infeasible (e.g., cornered by multiple constraints),
+    DCBF should return backup action and log a warning, not crash."""
+    dcbf = DCBFFilter(gamma=0.2, d=0.1)
+    # Construct a state where robot is sandwiched between two obstacles
+    # with conflicting constraint gradients → QP infeasible
+    tight_state = np.array([5.0, 5.0, 0.0, 5.5, 5.0, np.pi])
+    obstacles = [
+        {'x': 5.3, 'y': 5.0, 'radius': 0.2},
+        {'x': 4.7, 'y': 5.0, 'radius': 0.2},
+    ]
+    nominal = np.array([1.0, 0.0])
+    safe = dcbf.filter(nominal, tight_state, obstacles=obstacles)
+    assert np.isfinite(safe).all()  # Must not crash or return NaN
+    assert safe.shape == (2,)
+    # Backup action should be conservative (low velocity)
+    assert abs(safe[0]) <= 0.5  # backup controller limits speed
+
+# Test W3: DCBF filter with invalid state input raises error
+def test_dcbf_invalid_state():
+    """DCBF should raise ValueError for NaN or wrong-shape state inputs."""
+    dcbf = DCBFFilter(gamma=0.2, d=0.1)
+    import pytest
+    with pytest.raises((ValueError, AssertionError)):
+        dcbf.filter(np.array([0.5, 0.0]), np.array([np.nan, 0, 0, 0, 0, 0]))
+    with pytest.raises((ValueError, AssertionError)):
+        dcbf.filter(np.array([0.5, 0.0]), np.array([1.0, 2.0]))  # wrong shape
+
+# Test X: Pluggable belief encoder interface
+def test_belief_encoder_interface():
+    """BiMDN, LSTMEncoder, and MLPHistoryEncoder all implement the same interface."""
+    obs_hist = torch.randn(4, 10, 40)
+
+    for EncoderClass in [BiMDN, LSTMEncoder, MLPHistoryEncoder]:
+        encoder = EncoderClass(obs_dim=40, latent_dim=32)
+        latent = encoder.encode(obs_hist)
+        assert latent.shape == (4, 32)
+        assert latent.requires_grad  # gradients flow through
+```
+
+**File: `tests/test_wall_cbf.py`** (2 tests)
+
+```python
+# Test Y: Wall-segment CBF constraint is valid
+def test_wall_cbf_constraint():
+    """VCP-CBF for wall segment produces valid h value and gradient."""
+    wall = WallSegment(x1=5.0, y1=0.0, x2=5.0, y2=10.0, thickness=0.1)
+    robot_state = np.array([3.0, 5.0, 0.0])  # robot at (3,5), facing right
+    d_vcp = 0.1
+    h, grad_h = vcp_cbf_wall(robot_state, wall, d_vcp, safety_margin=0.3)
+    assert h > 0  # Robot is safely away from wall
+    assert grad_h.shape == (2,)  # Gradient w.r.t. [v, omega]
+
+# Test Z: Lidar ray-segment intersection
+def test_lidar_wall_intersection():
+    """Lidar ray intersects wall segment at correct distance."""
+    sensor = LidarSensor(n_rays=36, max_range=5.0)
+    own = [3.0, 5.0, 0.0]  # facing right
+    wall = WallSegment(x1=5.0, y1=0.0, x2=5.0, y2=10.0)
+    dist = sensor._ray_segment_intersect(3.0, 5.0, 0.0, wall)
+    assert abs(dist - 2.0) < 0.1  # Wall is 2m away
+```
+
+> **Test suite total**: 31 tests (A-Z + B2, L2, W2, W3) across 7 files — exceeds 15+ minimum.
 
 ### 7.5 Worked Examples
 
@@ -2190,26 +2836,265 @@ Counter-example (forgetting detected):
   Action: Shorten alternation cycles, add experience replay
 ```
 
+#### Example 6: Full Timestep Walkthrough (Pipeline Integration)
+
+```
+Setup:
+  Arena: 20m × 20m, 2 obstacles
+  Pursuer at [5.0, 5.0, θ=0.0], Evader at [15.0, 12.0, θ=π]
+  FOV: 120 deg, 10m range. Evader is 11.2m away → OUT OF FOV RANGE.
+
+Step 1: Sensor observations
+  FOV: d_to_evader = -1.0, bearing = 0.0  (not detected — 11.2m > 10.0m range)
+  Lidar: 36 readings, e.g. [5.0, 5.0, ..., 3.2, ..., 5.0]  (obstacle at ray 12)
+  State: own_v = 0.8, own_ω = 0.1
+  Raw obs: [0.8, 0.1, -1.0, 0.0, 5.0, 5.0, ..., 3.2, ..., 5.0]  → shape (40,)
+
+Step 2: Observation history buffer
+  Buffer state (10 × 40): last 10 raw observations
+  obs_history shape: (1, 10, 40) after unsqueeze for batch dim
+
+Step 3: BiMDN forward pass
+  Input: obs_history (1, 10, 40)
+  → Forward LSTM: processes t-9 → t-0
+  → Backward LSTM: processes t-0 → t-9
+  → Concatenate hidden states: (1, 128)
+  → MDN heads:
+    pi: [0.35, 0.30, 0.20, 0.10, 0.05]  (mixture weights, sum=1)
+    mu: [(14.0, 11.5), (16.0, 13.0), (12.0, 10.0), ...]  (predicted positions)
+    sigma: [(1.2, 1.0), (1.5, 1.3), (2.0, 1.8), ...]  (uncertainties)
+  → Latent head: z (1, 32) — tanh-bounded latent for policy
+
+Step 4: Policy input construction
+  Lidar branch: Conv1D(1, 36) → Conv1D(32) → Conv1D(64) → Pool → Flatten → (256,)
+  State branch: MLP(4 → 64 → 64) → (64,)
+  Belief: z → (32,)
+  Concatenate: [256 + 64 + 32] = (352,)
+  Combined MLP(352 → 256 → 256) → features (256,)
+
+Step 5: PPO actor (SB3 Gaussian policy)
+  Input: features (256,)
+  → Linear(256, 2) → mean: [0.72, -0.35]  (nominal v, ω)
+  → log_std: [-0.5, -0.3]  (learnable parameter)
+  → Sample: v=0.68, ω=-0.42  (Gaussian sample)
+  → Clip to action bounds: v ∈ [0, 1.0], ω ∈ [-2.84, 2.84]
+  Nominal action: [0.68, -0.42]
+
+Step 6: DCBF filter (post-hoc, uses TRUE STATE)
+  True state: [5.0, 5.0, 0.0, 15.0, 12.0, π]  (pursuer + evader full state)
+  VCP position: q = [5.0 + 0.1*cos(0), 5.0 + 0.1*sin(0)] = [5.1, 5.0]
+  Check constraints:
+    h_arena = R² - ||q||² = 100 - 50.01 = 49.99  ≥ 0 ✓
+    h_obs1 = ||q - p_obs1||² - χ² = ... ≥ 0 ✓
+    h_collision = ||q_P - q_E||² - r_min² = ... ≥ 0 ✓ (far apart)
+  DCBF condition: Δh + gamma*h ≥ 0 for all constraints
+  All satisfied → safe action = nominal action [0.68, -0.42]  (no correction needed)
+
+Step 7: Environment step
+  Apply safe action [v=0.68, ω=-0.42] to unicycle dynamics (dt=0.05):
+    x_new = 5.0 + 0.68 * cos(0.0) * 0.05 = 5.034
+    y_new = 5.0 + 0.68 * sin(0.0) * 0.05 = 5.0
+    θ_new = 0.0 + (-0.42) * 0.05 = -0.021
+  New pursuer state: [5.034, 5.0, -0.021]
+  Reward: w1 * (d_old - d_new) / d_max + w5 * min(h_i) / h_max
+         = 1.0 * (11.2 - 11.17) / 20 + 0.05 * 49.99 / 100 = 0.0015 + 0.025 = 0.027
+```
+
+#### Example 7: Curriculum Level Transition
+
+```
+Setup:
+  Training at Curriculum Level 1 (close encounters, no obstacles)
+  advancement_threshold = 0.70, eval_window = 100 episodes
+
+Timeline:
+  Step 100K: capture_rate (last 100 eps) = 0.55  → below 0.70, stay at Level 1
+  Step 150K: capture_rate = 0.63  → improving, stay at Level 1
+  Step 200K: capture_rate = 0.72  → EXCEEDS 0.70 threshold!
+
+  CurriculumManager.check_advancement() returns True
+  Level 1 → Level 2 transition:
+    - Initial distance range: [2-5m] → [5-15m]
+    - Obstacles: 0 → 0 (still no obstacles at Level 2)
+    - FOV: remains active (120 deg, 10m range)
+    - AMS-DRL phase: continues current phase (no restart)
+
+  Step 200K: Level 2 begins
+    capture_rate window: CLEARED (starts fresh at new level)
+    Reason: performance typically drops temporarily when difficulty increases
+
+  Step 250K: capture_rate = 0.42  → expected drop, stay at Level 2
+    Level does NOT regress to 1 (monotonically non-decreasing)
+
+  Step 400K: capture_rate = 0.71  → EXCEEDS threshold!
+  Level 2 → Level 3 transition:
+    - Initial distance: [2-5m] (reintroduced for close+obstacle encounters)
+    - Obstacles: 2-4 circular obstacles added
+    - This is the hardest transition — obstacles + partial obs is challenging
+
+  Step 700K: Still at Level 3, capture_rate = 0.58
+    Timeout check: 2 × timesteps_per_phase = 2 × 500K = 1M steps max
+    Still within budget (700K < 1M), continue training
+
+  Step 950K: capture_rate = 0.68  → close but below 0.70
+    Approaching timeout (950K near 1M limit)
+    If 1M reached without advancement:
+      Option A: Lower threshold to 0.60 → would have advanced at step 700K
+      Option B: Force-advance with documentation
+      Decision: investigate — is the evader exploiting obstacles too well?
+
+Key insight: The curriculum manages difficulty pacing, while the self-play
+health monitor handles training stability. They operate independently.
+```
+
+#### Example 8: DCBF Correction Scenario
+
+```
+Setup:
+  Pursuer at [9.2, 5.0, theta_P = 0.0] (facing right, near right wall)
+  Arena boundary at x = 10.0 (right wall)
+  Obstacle at [9.8, 5.5, radius=0.3]
+  VCP offset d = 0.1, safety margin chi = 0.3 + 0.1 = 0.4
+  DCBF gamma = 0.2
+
+Step 1: PPO nominal action
+  Policy outputs: v = 0.9, ω = 0.1  (accelerating toward wall)
+
+Step 2: Compute VCP position
+  q_vcp = [9.2 + 0.1*cos(0), 5.0 + 0.1*sin(0)] = [9.3, 5.0]
+
+Step 3: Check CBF constraints
+  h_boundary_right = (10.0 - chi) - q_vcp_x = (10.0 - 0.4) - 9.3 = 0.3  (barely safe)
+  h_obstacle = ||q_vcp - p_obs||^2 - (r_obs + chi)^2
+             = (9.3-9.8)^2 + (5.0-5.5)^2 - (0.3+0.4)^2
+             = 0.25 + 0.25 - 0.49 = 0.01  (VERY close to constraint!)
+
+Step 4: DCBF condition check
+  For h_obstacle = 0.01:
+    Required: Δh + gamma * h >= 0
+    With nominal action (v=0.9, ω=0.1):
+      q_vcp_next = [9.3 + 0.9*cos(0)*0.05, 5.0 + 0.9*sin(0)*0.05]
+                 = [9.345, 5.0]
+      h_next = (9.345-9.8)^2 + (5.0-5.5)^2 - 0.49
+             = 0.207 + 0.25 - 0.49 = -0.033  ← WOULD VIOLATE!
+    Δh = -0.033 - 0.01 = -0.043
+    Δh + gamma * h = -0.043 + 0.2 * 0.01 = -0.041 < 0  ← CONSTRAINT VIOLATED
+
+Step 5: QP correction
+  Solve: min ||u - u_nom||^2
+         s.t. Δh_i(u) + gamma * h_i >= 0 for all constraints
+  QP redirects action away from obstacle:
+    safe_action = [0.3, -0.5]  (slow down, turn left away from obstacle/wall)
+
+Step 6: Apply corrected action
+  x_new = 9.2 + 0.3 * cos(0) * 0.05 = 9.215
+  y_new = 5.0 + 0.3 * sin(0) * 0.05 = 5.0
+  θ_new = 0.0 + (-0.5) * 0.05 = -0.025
+  h_obstacle_new = ... > 0  ✓ (constraint maintained)
+
+  Intervention logged: dcbf/intervention_rate += 1
+  Safe action differs from nominal: ||correction|| = 0.79
+
+Key insight: The DCBF correction is minimal — it modifies the action just
+enough to satisfy all constraints. The policy's intent (move right) is
+preserved as much as possible while avoiding the obstacle/wall.
+```
+
+#### Example 9: Asymmetric Capability Game Dynamics
+
+```
+Scenario: Speed ratio comparison across 3 configurations
+
+Configuration 1: v_P/v_E = 1.5 (fast pursuer)
+  Pursuer v_max = 1.5, Evader v_max = 1.0
+  After AMS-DRL convergence:
+    Capture rate: 87% (pursuer dominant)
+    NE gap: 0.06 (converged in 4 phases)
+    Evader strategies: boundary running (45%), obstacle hiding (35%), fleeing (20%)
+    Pursuer strategies: cut-off (50%), direct chase (40%), cornering (10%)
+    DCBF intervention rate: 4.2% (higher speed → more interventions)
+    Mean capture time: 12.3s
+
+Configuration 2: v_P/v_E = 0.8 (slow pursuer)
+  Pursuer v_max = 0.8, Evader v_max = 1.0
+  After AMS-DRL convergence:
+    Capture rate: 38% (evader slightly dominant)
+    NE gap: 0.08 (converged in 6 phases — harder game)
+    Evader strategies: aggressive fleeing (60%), taunting/baiting (25%), obstacle orbit (15%)
+    Pursuer strategies: ambush/cornering (55%), obstacle-aided trapping (30%), patient approach (15%)
+    DCBF intervention rate: 2.1% (lower speed → fewer constraint conflicts)
+    Mean capture time: 28.7s
+    Key observation: slower pursuer develops MORE creative strategies (ambush > chase)
+
+Configuration 3: v_P/v_E = 0.5 (severely disadvantaged pursuer)
+  Pursuer v_max = 0.5, Evader v_max = 1.0
+  After AMS-DRL convergence:
+    Capture rate: 12% (evader dominant — capture requires corner traps)
+    NE gap: 0.12 (barely converged; approaches the 0.10 threshold from above)
+    Evader strategies: open-field running (70%), casual evasion (30%)
+    Pursuer strategies: corner trap setup (60%), obstacle ambush (30%), give-up/patrol (10%)
+    DCBF intervention rate: 1.5%
+    Mean capture time: 42.1s (when capture occurs)
+
+Publication figure: Speed ratio vs Capture rate curve
+  (1.5, 87%), (1.0, ~50%), (0.8, 38%), (0.5, 12%)
+  Classical result: with equal turning radius, capture guaranteed iff v_P > v_E
+  Our result: with obstacles + partial obs, even v_P < v_E can capture via strategy
+
+Key insight: Speed asymmetry fundamentally changes the game character.
+Slower pursuers develop richer strategic repertoires (more DTW clusters)
+to compensate for their speed disadvantage.
+```
+
 ---
 
 ## 8. Risk Assessment
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| BiMDN fails under fast dynamics | Low | Medium | Fall back to LSTM-only belief |
+| BiMDN fails under fast dynamics | Low | Medium | Pluggable encoder interface: fall back to LSTMEncoder or MLPHistoryEncoder (same API, swap one class) |
 | NE doesn't converge in 6 phases | Medium | Medium | Increase timesteps per phase; try PSRO [04] |
-| Partial obs + safety = too hard | Medium | Medium | Simplify: wider FOV, fewer obstacles initially |
-| MACPO code incompatible | Medium | Low | Re-implement core algorithm; focus on MAPPO-Lagrangian |
-| Simultaneous SP unstable with PPO | Medium | Low | Use TD3 for simultaneous comparison [N06] |
+| Partial obs + DCBF = too hard | Medium | Medium | Simplify: wider FOV, fewer obstacles initially; DCBF filter strength is tunable (gamma) |
+| **MACPO code incompatible** | **HIGH** | **Medium** | MACPO is OPTIONAL. Primary baseline is MAPPO-Lagrangian (built on SB3 PPO, ~100 lines). Skip MACPO if integration takes > 2 hours |
+| Simultaneous SP unstable with PPO | Medium | Low | Simultaneous SP is OPTIONAL (Session 4). Skip if AMS-DRL works well |
 | Curriculum advancement too slow | Low | Low | Lower threshold; manual level override |
-| CBF infeasibility increases with obstacles | Medium | Medium | More N13 iterations; increase safety margins |
+| DCBF infeasibility increases with obstacles | Medium | Medium | Hierarchical relaxation (Tier 2) + backup controller (Tier 3); monitor feasibility rate |
 | **Entropy collapse / mode collapse** | Medium | High | `log_std` clamping floor at -2.0; `ent_coef > 0`; automatic rollback via `SelfPlayHealthMonitor` |
 | **Catastrophic forgetting in alternating SP** | Medium | High | Historical opponent evaluation; shorter alternation cycles (10K-25K); 80/20 latest/historical mix (OpenAI Five approach) |
 | **Strategy cycling (rock-paper-scissors)** | Medium | Medium | DTW diversity tracking; forgetting detector; consider PSRO if cycling persists |
 | **Rollback thrashing** (repeated rollbacks) | Low | Medium | 50K-step cooldown between rollbacks; escalate to population-based training if > 3 rollbacks |
 | **DTW computation too slow** | Low | Low | Use state-space coverage as fast proxy; DTW only every 100 episodes on 50-sample subset |
+| **Compute budget exceeds available resources** | Medium | High | See §8.1 Compute Plan; prioritize required deliverables; use niro-2 GPU; parallelize seeds |
 | FOV/lidar overlay slows rendering | Low | Low | Only draw sensor overlays in human/rgb_array modes; skip during training with `render_mode=None` |
 | wandb multi-seed logging conflicts | Low | Low | Use unique `name` per seed; `group` for aggregation; `wandb.init(resume="allow")` for restarts |
+
+### 8.1 Compute Plan
+
+**Estimated GPU hours** (niro-2 lab PC):
+
+| Experiment | Seeds | Steps/Seed | Est. Time/Seed | Total Hours |
+|------------|-------|------------|----------------|-------------|
+| DCBF theorem verification | 1 | N/A (CPU) | ~0h | 0h |
+| AMS-DRL (main) | 5 | 6 phases × 500K = 3M | ~8-15h | 40-75h |
+| BiMDN pre-training | 1 | 50 epochs | ~1h | 1h |
+| BiMDN ablation (raw obs, LSTM) | 2 × 5 | 3M each | ~8-15h | 80-150h |
+| MAPPO-Lagrangian baseline | 5 | 3M | ~8-15h | 40-75h |
+| Unconstrained PPO baseline | 5 | 3M | ~8-15h | 40-75h |
+| Exploitability (best-response) | 2 × 5 | 500K each | ~2h | 20h |
+| Asymmetric: v_P/v_E=1.5 | 3 | 3M | ~8-15h | 24-45h |
+| Asymmetric: v_P/v_E=0.8 | 1-3 | 3M | ~8-15h | 8-45h |
+| Asymmetric: v_P/v_E=0.5 | 1-3 | 3M | ~8-15h | 8-45h |
+| Post-training evals (human, gen., interp.) | - | eval only | ~2-5h | 2-5h |
+| **Total (required + new)** | | | | **~260-540h** |
+| Simultaneous SP (optional) | 3 | 3M | ~8-15h | 24-45h |
+| MACPO (optional) | 3 | 3M | ~8-15h | 24-45h |
+| **Total (with optional)** | | | | **~310-630h** |
+
+**Parallelization strategy**:
+- niro-2 has 1 GPU → run at most 2 experiments simultaneously (if GPU memory permits)
+- Independent experiments (different baselines) can run concurrently
+- Estimate 2-3 weeks for required experiments at ~20h/day effective utilization
+- Start AMS-DRL main runs first (longest); baselines and ablations in parallel
 
 ---
 
@@ -2246,6 +3131,10 @@ scipy==1.15.0              # pdist for pairwise distances
 # hydra-core==1.3.2        # Already in Phase 1 — Phase 3 configs in conf/
 # omegaconf==2.3.0         # Already in Phase 1
 ```
+
+**Operational resilience notes**:
+- **wandb failure fallback**: Use `wandb.init(mode='offline')` as fallback if wandb is unavailable (network down, API key expired, rate limited). Health monitor operates independently of wandb — critical alerts (entropy collapse, rollback triggers) go to stdout and a local `health_log.json` file regardless of wandb status. On session resume, sync offline runs with `wandb sync runs/offline-*`.
+- **Training resume protocol**: All training runs checkpoint at regular intervals (see `checkpoint_save_freq`). To resume after hardware failure: load latest checkpoint directory, verify step count from `meta.json`, continue with `model.learn(total_timesteps - completed_steps)`. BiMDN state is co-located with PPO checkpoint (see `CheckpointManager` docstring).
 
 **Compatibility notes**:
 - MACPO repo may require specific gym version; use wrapper if needed

@@ -28,3 +28,13 @@ venv/
 *.log
 wandb/
 external/
+
+# Training artifacts
+models/
+outputs/
+runs/
+results/
+
+# Tool config
+.claude/
+.serena/

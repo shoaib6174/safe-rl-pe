@@ -38,6 +38,14 @@ class PERenderer:
         "cbf_danger": (255, 50, 50),
         "cbf_intervention": (255, 140, 0),
         "hud_text": (200, 200, 200),
+        # Phase 3: Partial observability overlays
+        "fov_pursuer": (0, 120, 255),
+        "fov_evader": (255, 80, 80),
+        "lidar_hit": (100, 255, 100),
+        "lidar_miss": (60, 60, 60),
+        "belief_ellipse": (255, 255, 0),
+        "ghost": (255, 255, 255),
+        "wall_segment": (140, 140, 140),
     }
 
     def __init__(
@@ -123,8 +131,37 @@ class PERenderer:
         self._draw_arena(canvas)
         # Layer 2: Obstacles (if any)
         self._draw_obstacles(canvas, env_state.get("obstacles", []))
+        # Layer 2b: Wall segments (if any)
+        self._draw_wall_segments(canvas, env_state.get("wall_segments", []))
         # Layer 3: CBF safety overlays
         self._draw_cbf_overlay(canvas, env_state)
+        # Layer 3b: FOV cones (Phase 3 partial observability)
+        sensor_info = env_state.get("sensor_info")
+        if sensor_info is not None:
+            self._draw_fov_cone(
+                canvas, env_state["pursuer_pos"], env_state["pursuer_heading"],
+                sensor_info.get("fov_half_angle", np.radians(60)),
+                sensor_info.get("fov_range", 10.0),
+                self.COLORS["fov_pursuer"],
+            )
+        # Layer 3c: Lidar rays
+        lidar_readings = env_state.get("lidar_readings")
+        if lidar_readings is not None:
+            self._draw_lidar_rays(
+                canvas, env_state["pursuer_pos"], env_state["pursuer_heading"],
+                lidar_readings,
+                n_rays=len(lidar_readings),
+                max_range=env_state.get("lidar_max_range", 5.0),
+            )
+        # Layer 3d: Belief distribution
+        self._draw_belief(canvas, env_state.get("belief_state"))
+        # Layer 3e: Ghost marker (undetected opponent)
+        if sensor_info is not None and not sensor_info.get("fov_detected", True):
+            self._draw_ghost(
+                canvas,
+                sensor_info.get("last_known_opp_pos"),
+                sensor_info.get("steps_since_seen", 0),
+            )
         # Layer 4: Trajectory trails
         self._draw_trails(canvas, env_state)
         # Layer 5: Agents
@@ -239,6 +276,119 @@ class PERenderer:
                 r = max(int(abs(h_val) * self.scale * 0.3), 3)
                 pg.draw.circle(surf, color, center, r, width=2)
             canvas.blit(surf, (0, 0))
+
+    def _draw_fov_cone(self, canvas, agent_pos, agent_heading, fov_half_angle,
+                       fov_range, color):
+        """Draw translucent FOV cone for an agent."""
+        pg = self._pygame
+        cx, cy = self._world_to_pixel(agent_pos[0], agent_pos[1])
+        range_px = int(fov_range * self.scale)
+
+        # Create semi-transparent surface
+        fov_surf = pg.Surface((self.window_size, self.window_size), pg.SRCALPHA)
+
+        # Draw cone as a filled polygon (two edge lines + arc approximation)
+        n_arc = 20
+        points = [(cx, cy)]
+        for i in range(n_arc + 1):
+            angle = agent_heading - fov_half_angle + (2 * fov_half_angle * i / n_arc)
+            # Note: pygame Y is flipped
+            px = cx + int(range_px * np.cos(angle))
+            py = cy - int(range_px * np.sin(angle))
+            points.append((px, py))
+
+        if len(points) >= 3:
+            pg.draw.polygon(fov_surf, (*color, 40), points)
+            pg.draw.polygon(fov_surf, (*color, 80), points, width=1)
+
+        canvas.blit(fov_surf, (0, 0))
+
+    def _draw_lidar_rays(self, canvas, agent_pos, agent_heading, lidar_readings,
+                         n_rays, max_range):
+        """Draw lidar rays from agent position."""
+        pg = self._pygame
+        cx, cy = self._world_to_pixel(agent_pos[0], agent_pos[1])
+        angles = np.linspace(-np.pi, np.pi, n_rays, endpoint=False)
+
+        lidar_surf = pg.Surface((self.window_size, self.window_size), pg.SRCALPHA)
+
+        for i, dist in enumerate(lidar_readings):
+            ray_angle = agent_heading + angles[i]
+            end_dist = min(float(dist), max_range)
+            ex = agent_pos[0] + end_dist * np.cos(ray_angle)
+            ey = agent_pos[1] + end_dist * np.sin(ray_angle)
+            epx, epy = self._world_to_pixel(ex, ey)
+
+            if dist < max_range:
+                color = (*self.COLORS["lidar_hit"], 80)
+            else:
+                color = (*self.COLORS["lidar_miss"], 40)
+            pg.draw.line(lidar_surf, color, (cx, cy), (epx, epy), 1)
+
+        canvas.blit(lidar_surf, (0, 0))
+
+    def _draw_belief(self, canvas, belief_state):
+        """Draw BiMDN belief distribution as Gaussian ellipses.
+
+        Args:
+            belief_state: Dict with 'means' [(M, 2)], 'stds' [(M, 2)],
+                         'weights' [(M,)] from BiMDN output.
+        """
+        if belief_state is None:
+            return
+
+        pg = self._pygame
+        belief_surf = pg.Surface((self.window_size, self.window_size), pg.SRCALPHA)
+
+        for mu, sigma, weight in zip(
+            belief_state["means"], belief_state["stds"], belief_state["weights"],
+        ):
+            if weight < 0.05:
+                continue  # Skip negligible components
+            cx, cy = self._world_to_pixel(mu[0], mu[1])
+            rx = max(int(sigma[0] * self.scale * 2), 3)
+            ry = max(int(sigma[1] * self.scale * 2), 3)
+            alpha = min(int(weight * 120), 120)
+            color = (*self.COLORS["belief_ellipse"], alpha)
+            pg.draw.ellipse(belief_surf, color,
+                           (cx - rx, cy - ry, rx * 2, ry * 2))
+            pg.draw.ellipse(belief_surf, (*self.COLORS["belief_ellipse"], alpha + 40),
+                           (cx - rx, cy - ry, rx * 2, ry * 2), width=1)
+
+        canvas.blit(belief_surf, (0, 0))
+
+    def _draw_ghost(self, canvas, last_known_pos, steps_since_seen,
+                    fade_steps=60):
+        """Draw ghost marker at last known opponent position.
+
+        Fades over time as the information becomes stale.
+        """
+        if last_known_pos is None:
+            return
+
+        pg = self._pygame
+        alpha = max(10, int(80 * (1.0 - steps_since_seen / fade_steps)))
+        if alpha <= 10:
+            return  # Fully faded
+
+        gx, gy = self._world_to_pixel(last_known_pos[0], last_known_pos[1])
+        ghost_surf = pg.Surface((24, 24), pg.SRCALPHA)
+        pg.draw.circle(ghost_surf, (*self.COLORS["ghost"], alpha), (12, 12), 10, width=2)
+        # Question mark
+        if self._font:
+            q_surf = self._font.render("?", True, (*self.COLORS["ghost"], alpha))
+            ghost_surf.blit(q_surf, (7, 2))
+        canvas.blit(ghost_surf, (gx - 12, gy - 12))
+
+    def _draw_wall_segments(self, canvas, walls):
+        """Draw wall segment obstacles."""
+        if not walls:
+            return
+        pg = self._pygame
+        for wall in walls:
+            p1 = self._world_to_pixel(wall.p1[0], wall.p1[1])
+            p2 = self._world_to_pixel(wall.p2[0], wall.p2[1])
+            pg.draw.line(canvas, self.COLORS["wall_segment"], p1, p2, width=3)
 
     def _draw_hud(self, canvas, env_state):
         """Heads-up display with key metrics."""

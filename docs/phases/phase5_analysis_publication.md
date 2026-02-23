@@ -31,22 +31,26 @@
 ### 1.2 Timeline
 - **Start**: Month 8 (after Phase 4: Sim-to-Real Transfer is complete)
 - **End**: Month 10
-- **Duration**: 3 months (approximately 14 working sessions)
+- **Duration**: 3 months (approximately 18 working sessions)
 
 ### 1.3 Objectives
 1. **Formal Safety Analysis**: Prove CBF validity for the VCP formulation, prove constraint satisfaction under GP uncertainty (RCBF probabilistic guarantee), and establish Lyapunov-based stability
 2. **Nash Equilibrium Analysis**: Compute exploitability metrics, verify NE convergence via best-response opponents and PSRO-style verification
-3. **Comprehensive Benchmarking**: Run all 12 baselines and all 11 ablation studies with statistical rigor (5-10 seeds, confidence intervals, significance tests)
+3. **Comprehensive Benchmarking**: Run all 13 baselines (including HJ/DeepReach optimal) and all 11 ablation studies with statistical rigor (5-10 seeds, confidence intervals, significance tests)
 4. **Publication Artifacts**: Generate all figures, tables, and demonstration videos for 3 papers
 5. **Paper Writing**: Draft and submit conference paper (ICRA/IROS/CoRL), journal paper (RA-L/T-RO), and theory paper (CDC/L4DC)
 6. **Open-Source Release**: Clean, documented, reproducible codebase with Docker support
+7. **Generalization Study**: Zero-shot evaluation on unseen complex environments (corridor, L-shaped, warehouse)
+8. **Interpretability Analysis**: Saliency maps, BiMDN belief evolution, policy phase portraits, emergent strategy classification
+9. **Opponent Modeling**: Post-hoc trajectory analysis of opponent adaptation and strategy classification
+10. **Human Evader Experiment**: Evaluate pursuer policy against human-controlled evader
 
 ### 1.4 Prerequisites (All Must Be Complete)
 - **Phase 1 (Simulation Foundation)**: Gymnasium PE environment, PPO self-play, VCP-CBF validated
 - **Phase 2 (Safety Integration)**: CBF-Beta policy, RCBF-QP filter, 3-tier infeasibility handling, zero safety violations in training
 - **Phase 2.5 (BarrierNet Experiment)**: Train-deploy gap measured, safety architecture decision made
 - **Phase 3 (Partial Observability + Self-Play)**: BiMDN belief encoder, AMS-DRL self-play, curriculum learning, NE convergence achieved, MACPO/CPO baselines complete
-- **Phase 4 (Sim-to-Real Transfer)**: Isaac Lab environment, ONNX export, Gazebo validation, real robot deployment on TurtleBot3/4, GP disturbance estimation, real-world data collected
+- **Phase 4 (Sim-to-Real Transfer)**: Isaac Lab environment, ONNX export, Gazebo validation, real robot deployment on TurtleBot3 Burger, GP disturbance estimation, real-world data collected
 
 ### 1.5 Required Inputs
 | Input | Source | Format |
@@ -239,7 +243,7 @@ Report 95% CIs for all primary metrics.
 #### 2.3.3 Significance Testing
 
 - **Paired comparisons** (SafePE vs each baseline): Welch's t-test or Mann-Whitney U test (if non-normal)
-- **Multiple comparisons correction**: Holm-Bonferroni (12 baselines = 12 comparisons)
+- **Multiple comparisons correction**: Holm-Bonferroni (13 baselines = 13 comparisons, including HJ/DeepReach optimal)
 - **Effect size**: Cohen's d for continuous metrics, odds ratio for binary metrics (safety violations)
 - **Significance threshold**: p < 0.05 after correction
 - **Power analysis**: Verify n >= 5 seeds provides power > 0.80 for expected effect sizes
@@ -504,11 +508,19 @@ Step 6: Write numerical verification script that:
 - Checks that the Lie derivative condition is satisfied
 - Reports feasibility rate (should be >99.9%)
 
+**Note — DCBF Safety Theorem (from Phase 3 Stage -1)**:
+The discrete-time CBF (DCBF) safety theorem with gamma=0.2 was formally proved and numerically verified in Phase 3 (Stage -1) before training. That theorem proves zero physical collisions under 5 stated assumptions (A1-A5) via Nagumo's theorem + comparison principle. Session 1 here extends that work to the continuous-time VCP-CBF formulation and adds the RCBF probabilistic guarantee. Reference the Phase 3 proof (`docs/proofs/dcbf_safety_theorem.md`) and build upon it:
+- Phase 3 DCBF theorem → discrete-time safety guarantee during training
+- Phase 5 Theorem 1 → continuous-time VCP-CBF validity
+- Phase 5 Theorem 2 → forward invariance of safe set
+- Together: complete safety chain from training through deployment
+
 **Verification**:
 - [ ] All theorems stated with complete conditions
 - [ ] Proof sketches are mathematically sound
 - [ ] Numerical verification script runs and reports >99.9% feasibility
 - [ ] Proofs reference [N12] and adapt correctly for unicycle (vs car-like)
+- [ ] Cross-reference with Phase 3 DCBF theorem is explicit and consistent
 
 ---
 
@@ -645,7 +657,7 @@ Step 5: Report:
 ### Session 4: Comprehensive Benchmarking — Run All Baselines
 
 **Objectives**:
-- Run all 12 baselines with 5+ seeds each
+- Run all 13 baselines (including HJ/DeepReach optimal) with 5+ seeds each
 - Ensure fair comparison (same compute, same evaluation)
 - Collect all primary and secondary metrics
 
@@ -677,7 +689,7 @@ hyperparams:
 seeds: [0, 1, 2, 3, 4]
 ```
 
-Create similar configs for all 12 baselines:
+Create similar configs for all 13 baselines (12 learning-based + HJ/DeepReach optimal):
 1. `dqn.yaml` — DQN (no safety) [12]
 2. `ddpg.yaml` — DDPG (no safety) [12]
 3. `maddpg.yaml` — MADDPG (no safety) [02]
@@ -740,12 +752,95 @@ metrics_to_collect = {
 ```
 
 **Verification**:
-- [ ] All 12 baselines produce valid metrics (no NaN, no crashes)
+- [ ] All 13 baselines produce valid metrics (no NaN, no crashes)
 - [ ] Each baseline run with minimum 5 seeds
 - [ ] Same total_timesteps for all baselines
 - [ ] Same evaluation protocol (100 episodes, same initial conditions)
 - [ ] Results saved in structured format to `experiments/baselines/`
 - [ ] Safety-relevant baselines report safety violation rate
+
+#### Session 4b: HJ/DeepReach Classical Baseline (Addition 6)
+
+**Objectives**:
+- Compute the HJ-optimal value function for the PE game using DeepReach
+- Extract the optimal pursuer/evader policies from the learned value function
+- Compare RL capture rate vs HJ-optimal capture region
+- Provide a classical game-theoretic optimality benchmark
+
+**Files to create/modify**:
+- `external/deepreach/` — Clone of DeepReach repository
+- `scripts/train_deepreach_baseline.py` — DeepReach training for our PE formulation
+- `scripts/eval_deepreach_vs_rl.py` — Head-to-head comparison
+- `configs/baselines/deepreach.yaml` — DeepReach hyperparameters
+
+**Instructions**:
+
+Step 1: Clone DeepReach and set up the PE game formulation:
+```python
+# scripts/train_deepreach_baseline.py
+# 6D state: [x_P, y_P, theta_P, x_E, y_E, theta_E]
+# Relative formulation: [dx, dy, dtheta, x_E, y_E, theta_E]
+# Value function V(x,t): min time-to-capture (pursuer minimizes, evader maximizes)
+
+import deepreach
+from deepreach.dataio import ReachabilityDataset
+
+class PursuitEvasionGame(deepreach.Module):
+    def __init__(self, v_max=1.0, omega_max=1.0, capture_radius=0.5):
+        super().__init__()
+        self.v_max = v_max
+        self.omega_max = omega_max
+        self.r_capture = capture_radius
+
+    def hamiltonian(self, x, dvdx):
+        """HJI Hamiltonian: H = min_u_P max_u_E (dvdx^T f(x,u_P,u_E))"""
+        # Decompose into pursuer-minimizing and evader-maximizing terms
+        # Pursuer chooses u_P to minimize H, evader chooses u_E to maximize H
+        pass
+
+    def boundary_fn(self, x):
+        """Target set: ||pos_P - pos_E|| <= r_capture"""
+        return torch.norm(x[..., :2] - x[..., 3:5], dim=-1) - self.r_capture
+```
+
+Step 2: Train the 6D value function:
+- Network: 512-unit, 3-layer MLP with sine activations (per DeepReach [21])
+- Training: 100K iterations, batch size 65536
+- Time horizon: T = 55s (matching episode length)
+- Compute: ~10-30 GPU hours on single A100
+
+Step 3: Extract optimal policies and evaluate:
+```python
+# scripts/eval_deepreach_vs_rl.py
+def extract_hj_policy(value_net, state, dt=0.05):
+    """Extract optimal action via gradient of value function."""
+    state.requires_grad_(True)
+    V = value_net(state)
+    dVdx = torch.autograd.grad(V, state)[0]
+    # Pursuer: argmin_u (dVdx^T f(x,u))
+    # Evader: argmax_u (dVdx^T f(x,u))
+    return optimal_pursuer_action, optimal_evader_action
+
+def compare_capture_regions(value_net, rl_policy, arena_size=20.0, grid_res=100):
+    """Compare HJ capture region vs RL capture rate on a state grid."""
+    # HJ capture region: {x : V(x,0) <= 0}
+    # RL capture rate: empirical over 100 episodes per grid cell
+    pass
+```
+
+Step 4: Visualization:
+- Overlay HJ capture region boundary on RL capture heatmap
+- Plot value function slices at fixed relative orientations
+- Compare trajectory optimality: HJ vs RL path efficiency
+
+**Compute**: 10-30 GPU hours (DeepReach training only)
+
+**Verification**:
+- [ ] DeepReach value function converges (loss < 1e-3)
+- [ ] HJ-optimal policy achieves near-100% capture in HJ capture region
+- [ ] RL capture rate compared quantitatively with HJ capture region
+- [ ] Visualization showing HJ boundary overlaid on RL heatmap
+- [ ] Results saved to `experiments/baselines/deepreach/`
 
 ---
 
@@ -921,8 +1016,8 @@ phase3_eval = [r for r in all_runs if "phase3-evaluation" in (r.group or "")]
 ```
 
 Step 3: Run statistical analysis for all primary metrics:
-- For each metric, compare SafePE against all 12 baselines
-- Apply Holm-Bonferroni correction for the 12 comparisons
+- For each metric, compare SafePE against all 13 baselines
+- Apply Holm-Bonferroni correction for the 13 comparisons
 - Report: mean, std, 95% CI, p-value (corrected), Cohen's d, significance
 
 Step 3: Run ablation statistical analysis:
@@ -1112,6 +1207,7 @@ MADR [22] & -- & -- & -- & -- & -- & -- & -- \\
 CPO & -- & -- & -- & -- & -- & -- & -- \\
 MACPO [N03] & -- & -- & -- & -- & -- & -- & -- \\
 MAPPO-Lag. [N03] & -- & -- & -- & -- & -- & -- & -- \\
+HJ-Optimal (DeepReach) [21] & -- & -- & N/A & N/A & -- & N/A & N/A \\
 \midrule
 \textbf{SafePE (Ours)} & \textbf{--} & \textbf{--} & \textbf{0.0} & \textbf{--} & \textbf{--} & \textbf{--} & \textbf{--} \\
 \bottomrule
@@ -1260,7 +1356,7 @@ for 1v1 Pursuit-Evasion on Ground Robots}
 % ~150 words
 % Problem: 1v1 PE on ground robots lacks safety guarantees
 % Method: CBF-constrained self-play with NE convergence
-% Key results: 0% safety violations, NE gap < 0.10, outperforms 12 baselines
+% Key results: 0% safety violations, NE gap < 0.10, outperforms 13 baselines (incl. HJ-optimal)
 % Significance: First safe DRL for 1v1 PE with provable safety
 \end{abstract}
 
@@ -1298,12 +1394,16 @@ for 1v1 Pursuit-Evasion on Ground Robots}
 % - Theorem 2: Forward invariance guarantee
 % - Proposition: NE convergence under CBF constraints
 
-% Section VI: Experiments (~1.5 pages)
+% Section VI: Experiments (~2 pages)
 % A. Setup (environment, hyperparameters, baselines)
-% B. Main Results (Table 1: comparison with 12 baselines)
-% C. Safety Analysis (0% violations, CBF feasibility, margin distribution)
+% B. Main Results (Table 1: comparison with 12 baselines + HJ/DeepReach optimal)
+% C. Safety Analysis (0% violations, CBF feasibility, DCBF theorem verification)
 % D. NE Convergence (exploitability curve, PSRO verification)
 % E. Ablation Studies (Table 2: 11 ablations, key findings)
+% F. Asymmetric Capabilities (v_P/v_E = 1.5, 0.8, 0.5 — speed advantage analysis)
+% G. Generalization Study (zero-shot transfer to corridor, L-shaped, warehouse)
+% H. Interpretability (saliency maps, phase portraits, emergent strategies)
+% I. Human Evader Experiment (pursuer vs human-controlled evader)
 
 % Section VII: Conclusion (~0.25 pages)
 % - Summary of contributions
@@ -1457,22 +1557,28 @@ Self-Play to Real-World Deployment}
 % - Theorem: Probabilistic safety under GP uncertainty
 % - Proposition: NE convergence
 
-% VII. Experiments (3 pages)
-% A. Simulation Results (summary from Paper 1)
+% VII. Experiments (4 pages)
+% A. Simulation Results (summary from Paper 1, including HJ/DeepReach baseline)
 % B. Sim-to-Real Gap Analysis (Table 3)
 % C. Real-Robot Results
-%    - Capture rate, safety, NE gap on physical robots
+%    - Capture rate, safety, NE gap on physical robots (TurtleBot3 Burger)
 %    - GP disturbance estimation accuracy
 %    - QP solve time distribution
-% D. Baseline Comparison (full Table 1)
+% D. Baseline Comparison (full Table 1, including HJ-optimal)
 % E. Ablation Studies (full Table 2)
-% F. Hyperparameter Sensitivity (Table 4)
+% F. Asymmetric Capability Analysis (speed ratio experiments)
+% G. Generalization Study (complex environments: corridor, L-shaped, warehouse)
+% H. Human Evader Experiment (pursuer vs human opponents)
+% I. Interpretability Analysis (saliency maps, belief evolution, phase portraits)
+% J. Opponent Modeling Analysis (strategy classification, adaptation metrics)
+% K. Hyperparameter Sensitivity (Table 4)
 
-% VIII. Discussion (0.5 pages)
+% VIII. Discussion (0.75 pages)
 % - Limitations: arena size, obstacle complexity, 2D planar
-% - Safety claims: what is proven vs empirical
+% - Safety claims: what is proven (DCBF theorem) vs empirical
 % - Compute requirements
 % - When SafePE should/shouldn't be used
+% - Generalization limitations and failure modes
 
 % IX. Conclusion (0.5 pages)
 ```
@@ -1528,6 +1634,9 @@ Pursuit-Evasion with Nonholonomic Dynamics}
 % - Lemma 1: Uniform relative degree 1
 % - Theorem 1: VCP-CBF validity
 % - Theorem 2: Forward invariance under VCP-CBF-QP
+% - Theorem 2b: DCBF safety guarantee (gamma=0.2, from Phase 3 Stage -1)
+%   * Discrete-time formulation via Nagumo + comparison principle
+%   * Bridges training-time (discrete) and deployment (continuous) safety
 % - Remark: Comparison with HOCBF approach
 
 % IV. Probabilistic Safety under Model Uncertainty (1 page)
@@ -1543,10 +1652,12 @@ Pursuit-Evasion with Nonholonomic Dynamics}
 % - Proposition: Exploitability bound for CBF-constrained self-play
 % - Connection to CMDP formulation [N09]
 
-% VI. Numerical Validation (1 page)
+% VI. Numerical Validation (1.5 pages)
 % - Verify Theorem 1: CBF-QP feasibility rate >99.9%
+% - Verify Theorem 2b: DCBF 10K-state + 1K-trajectory verification (Phase 3)
 % - Verify Theorem 3: Monte Carlo violation rate matches prediction
 % - Verify Theorem 4: Exploitability convergence with/without CBF
+% - Comparison with HJ/DeepReach optimal value function (capture region overlap)
 
 % VII. Conclusion (0.25 pages)
 ```
@@ -1708,6 +1819,261 @@ Step 3: Paper 3 Supplementary:
 - [ ] All hyperparameters documented
 - [ ] Additional experiment results included
 - [ ] References consistent with main papers
+
+---
+
+### Session 15: Generalization Study (Addition 7)
+
+**Objectives**:
+- Evaluate Phase 3 trained policies on unseen complex environments
+- Measure zero-shot transfer to corridor, L-shaped room, and warehouse layouts
+- Test distribution shift: train 2 obstacles → test 5; train 20×20m → test 15×15m
+- Quantify generalization gaps to identify failure modes
+
+**Files to create/modify**:
+- `scripts/run_generalization_study.py` — Generalization evaluation runner
+- `experiments/generalization/` — Results directory
+
+**Instructions**:
+
+Step 1: Define the generalization test matrix:
+```python
+# scripts/run_generalization_study.py
+GENERALIZATION_TESTS = {
+    # Layout generalization (train: simple arena with circular obstacles)
+    'corridor': {'layout': 'corridor', 'size': (4, 20), 'walls': 4},
+    'l_shaped': {'layout': 'l_shaped', 'size': (15, 15), 'cutout': (7, 7)},
+    'warehouse': {'layout': 'warehouse', 'size': (20, 20), 'shelves': 8},
+
+    # Obstacle count generalization (train: 2 obstacles)
+    'obs_3': {'layout': 'simple', 'n_obstacles': 3},
+    'obs_5': {'layout': 'simple', 'n_obstacles': 5},
+    'obs_8': {'layout': 'simple', 'n_obstacles': 8},
+
+    # Arena size generalization (train: 20×20m)
+    'arena_15': {'layout': 'simple', 'arena_size': 15.0},
+    'arena_10': {'layout': 'simple', 'arena_size': 10.0},
+    'arena_25': {'layout': 'simple', 'arena_size': 25.0},
+}
+```
+
+Step 2: Run each test: load Phase 3 trained models (best seed), evaluate 100 episodes per test, record all primary metrics.
+
+Step 3: Compute generalization gap = |metric_test - metric_train| / metric_train for each test condition.
+
+Step 4: Generate heatmap: rows = test conditions, columns = metrics, cells = generalization gap (%).
+
+**Compute**: 0 GPU hours (evaluation only, ~1h CPU)
+
+**Verification**:
+- [ ] All 9 test conditions evaluated (100 episodes each)
+- [ ] Generalization gap table complete for all primary metrics
+- [ ] Heatmap figure generated and saved to `figures/generalization_heatmap.pdf`
+- [ ] Failure mode analysis for worst-performing conditions
+- [ ] Results saved to `experiments/generalization/`
+
+---
+
+### Session 16: Interpretability Analysis (Addition 9)
+
+**Objectives**:
+- Generate input saliency maps showing which observation dimensions drive policy decisions
+- Visualize BiMDN belief evolution over episode trajectories
+- Create policy phase portraits (action vector fields across the arena)
+- Provide intuitive understanding of learned strategies
+
+**Files to create/modify**:
+- `evaluation/interpretability/saliency_maps.py` — Gradient-based input saliency
+- `evaluation/interpretability/belief_evolution.py` — BiMDN belief animation
+- `evaluation/interpretability/phase_portraits.py` — Policy vector fields
+- `evaluation/interpretability/strategy_analysis.py` — Emergent strategy classification
+- `figures/interpretability/` — Output directory
+
+**Instructions**:
+
+Step 1: Input saliency maps:
+```python
+# evaluation/interpretability/saliency_maps.py
+def compute_saliency(policy, obs, method='gradient'):
+    """Compute gradient of V(s) w.r.t. observation dimensions."""
+    obs_tensor = torch.tensor(obs, requires_grad=True)
+    value = policy.predict_values(obs_tensor)
+    value.backward()
+    saliency = obs_tensor.grad.abs()  # |dV/d(obs_i)|
+    return saliency
+
+def generate_saliency_heatmap(policy, env, n_episodes=20):
+    """Average saliency across episodes, grouped by observation type."""
+    # Group by: ego state, relative position, lidar, belief
+    # Normalize and visualize as bar chart + heatmap over time
+    pass
+```
+
+Step 2: BiMDN belief evolution:
+```python
+# evaluation/interpretability/belief_evolution.py
+def animate_belief_evolution(belief_encoder, episode_trajectory):
+    """Create animated visualization of belief distribution over time."""
+    # For each timestep: extract GMM parameters (mu, sigma, pi)
+    # Plot 2D Gaussian mixture contours over arena
+    # Show ground truth opponent position + belief distribution
+    # Save as animated GIF / MP4
+    pass
+```
+
+Step 3: Policy phase portraits:
+```python
+# evaluation/interpretability/phase_portraits.py
+def generate_phase_portrait(policy, arena_size=20.0, grid_res=40):
+    """Generate vector field of policy actions across arena."""
+    # Fix opponent at center, vary agent position on grid
+    # At each position: query policy for action (v, omega)
+    # Plot quiver plot with arrows showing velocity direction
+    # Color by speed magnitude
+    pass
+```
+
+Step 4: Strategy classification:
+- Cluster episode trajectories by shape (DTW distance + k-means)
+- Identify emergent strategies: intercept, cut-off, wall-trap (pursuer); dodge, spiral, wall-hug (evader)
+- Report strategy distribution and transition frequencies
+
+**Compute**: 2-5 GPU hours (gradient computation on trained models)
+
+**Verification**:
+- [ ] Saliency maps generated for both pursuer and evader policies
+- [ ] BiMDN belief animation shows convergence to true opponent state
+- [ ] Phase portraits show qualitatively different strategies in different arena regions
+- [ ] Strategy classification identifies at least 3 distinct strategy types per role
+- [ ] All visualizations saved to `figures/interpretability/`
+
+---
+
+### Session 17: Opponent Modeling Analysis (Addition 8)
+
+**Objectives**:
+- Post-hoc analysis of trajectory data to understand opponent modeling behavior
+- Classify evader strategies from trajectories
+- Measure pursuer adaptation to different evader strategies
+- (Optional) Integrate BiMDN intent prediction head for explicit opponent modeling
+
+**Files to create/modify**:
+- `evaluation/opponent_modeling_analysis.py` — Trajectory-based opponent modeling analysis
+- `experiments/opponent_modeling/` — Results directory
+
+**Instructions**:
+
+Step 1: Strategy classification from trajectory data:
+```python
+# evaluation/opponent_modeling_analysis.py
+from sklearn.cluster import KMeans
+from dtaidistance import dtw
+
+def classify_evader_strategies(trajectories, n_clusters=5):
+    """Cluster evader trajectories by shape similarity."""
+    # Compute DTW distance matrix between all trajectory pairs
+    # Apply k-means / spectral clustering
+    # Label clusters: straight-line, spiral, wall-hugging, random, evasive
+    return cluster_labels, cluster_centers
+
+def measure_pursuer_adaptation(pursuer_trajectories, evader_strategy_labels):
+    """Measure whether pursuer changes behavior based on evader strategy."""
+    # For each evader strategy cluster:
+    #   - Compute average pursuer interception angle
+    #   - Compute average time-to-capture
+    #   - Compute pursuit trajectory curvature
+    # Test if differences are statistically significant (ANOVA)
+    pass
+```
+
+Step 2: Belief-action correlation analysis:
+- Extract BiMDN belief states from evaluation episodes
+- Correlate belief uncertainty (entropy) with action conservatism (CBF margin)
+- Plot: x = belief entropy, y = CBF safety margin, color = capture outcome
+
+Step 3: (Optional, +5-15 GPU hours) Explicit intent prediction:
+- Add a lightweight MLP head to BiMDN that predicts evader's next-step velocity
+- Train on Phase 3 trajectory data
+- Evaluate prediction accuracy vs episode timestep (does prediction improve over time?)
+
+**Compute**: 0 GPU hours (trajectory analysis only; optional intent head: 5-15h)
+
+**Verification**:
+- [ ] Evader strategy clusters identified with clear separation (silhouette score > 0.3)
+- [ ] Pursuer adaptation analysis shows statistically significant behavior differences
+- [ ] Belief-action correlation plot generated
+- [ ] Results saved to `experiments/opponent_modeling/`
+
+---
+
+### Session 18: Human Evader Experiment (Addition 4)
+
+**Objectives**:
+- Evaluate trained pursuer policy against human-controlled evader
+- Provide keyboard/joystick interface for human control
+- Run structured experiment: 20 episodes per participant
+- Collect and analyze human vs AI performance data
+
+**Files to create/modify**:
+- `scripts/human_evader_experiment.py` — Human evader experiment runner
+- `envs/human_interface.py` — Keyboard/joystick controller
+- `experiments/human_evader/` — Results directory
+
+**Instructions**:
+
+Step 1: Implement human control interface:
+```python
+# envs/human_interface.py
+import pygame
+
+class HumanEvaderController:
+    """Replace evader policy with human keyboard/joystick input."""
+
+    def __init__(self, control_mode='keyboard'):
+        self.control_mode = control_mode
+        pygame.init()
+        if control_mode == 'joystick' and pygame.joystick.get_count() > 0:
+            self.joystick = pygame.joystick.Joystick(0)
+            self.joystick.init()
+
+    def get_action(self):
+        """Map human input to (v, omega) action."""
+        if self.control_mode == 'keyboard':
+            keys = pygame.key.get_pressed()
+            v = 0.0
+            omega = 0.0
+            if keys[pygame.K_UP]: v = 1.0
+            if keys[pygame.K_DOWN]: v = -0.5
+            if keys[pygame.K_LEFT]: omega = 1.0
+            if keys[pygame.K_RIGHT]: omega = -1.0
+            return np.array([v, omega])
+        elif self.control_mode == 'joystick':
+            v = -self.joystick.get_axis(1)  # Forward/back
+            omega = -self.joystick.get_axis(0)  # Left/right
+            return np.array([v, omega])
+```
+
+Step 2: Experiment protocol:
+- 3-5 participants (lab members)
+- Each participant: 5 practice episodes (not recorded) + 20 test episodes
+- Record: capture outcome, time-to-capture/escape, trajectory, human reaction time
+- Pursuer uses best Phase 3 policy with CBF safety filter active
+- Render in real-time with `PERenderer` at 30 FPS
+
+Step 3: Analysis:
+- Compare: AI evader capture rate vs human evader capture rate
+- Does the pursuer policy generalize to human opponents?
+- Qualitative: what strategies do humans use that AI doesn't?
+- Report mean ± std across participants
+
+**Compute**: 0 GPU hours (real-time inference only)
+
+**Verification**:
+- [ ] Human interface works with both keyboard and joystick
+- [ ] 20 episodes per participant recorded with full trajectory data
+- [ ] Capture rate comparison table: AI evader vs human evader
+- [ ] Qualitative strategy analysis documented
+- [ ] Results saved to `experiments/human_evader/`
 
 ---
 
@@ -1950,9 +2316,9 @@ Step 3: Paper 3 Supplementary:
 
 | Criterion | Target | Measurement | Protocol |
 |-----------|--------|-------------|----------|
-| Formal proofs written | 4 theorems complete | Count of complete proofs with numerical verification | Each theorem: statement + proof + verification script with >99.9% pass rate |
+| Formal proofs written | 5 theorems complete (4 + DCBF from Phase 3) | Count of complete proofs with numerical verification | Each theorem: statement + proof + verification script with >99.9% pass rate |
 | Exploitability computed | < 0.10 | Final policy pair metric | 5 seeds for best-response training; 100 eval episodes; report mean ± 95% CI |
-| All baselines run | 12/12 complete | Count of successful runs | Each baseline: 5 seeds × 100 eval episodes; same total_timesteps; no NaN metrics |
+| All baselines run | 13/13 complete (incl. HJ/DeepReach) | Count of successful runs | Each baseline: 5 seeds × 100 eval episodes; same total_timesteps; no NaN metrics |
 | All ablations run | 11/11 complete | Count of successful runs | Each variant: 5 seeds; control identical across all ablations |
 | Statistical analysis | All comparisons done | Summary report complete | Welch's t-test + Holm-Bonferroni correction; Cohen's d for all pairs; 95% bootstrap CIs |
 
@@ -2006,19 +2372,23 @@ Step 3: Paper 3 Supplementary:
 > 2. Paper 1 submitted to ICRA/IROS/CoRL and posted to arXiv
 > 3. Paper 2 (journal) draft complete and ready for submission
 > 4. Paper 3 (theory) draft complete with verified proofs
-> 5. All 4 formal theorems have complete proofs + numerical verification
-> 6. All 12 baselines and 11 ablations run with >= 5 seeds, statistical analysis complete
+> 5. All 5 formal theorems (4 + DCBF from Phase 3) have complete proofs + numerical verification
+> 6. All 13 baselines (incl. HJ/DeepReach) and 11 ablations run with >= 5 seeds, statistical analysis complete
 > 7. Minimum test suite (Section 7.8) passes: 15+ tests, all green
 > 8. Open-source repo: README, LICENSE, Docker, tutorials, CI pipeline passing
 > 9. All demo videos (7+) edited, annotated, and published
 > 10. Reproducibility validated: Docker image builds, fresh clone + pytest passes
+> 11. Generalization study complete (9 test conditions, heatmap generated)
+> 12. Interpretability analysis complete (saliency maps, phase portraits, belief evolution)
+> 13. Human evader experiment complete (20 episodes per participant, comparison table)
+> 14. Opponent modeling analysis complete (strategy classification, adaptation metrics)
 
 ### 7.7 Phase Gate Checklist
 
 Before declaring Phase 5 complete, verify:
-- [ ] Formal proofs: 4 theorems written, reviewed, verified numerically
+- [ ] Formal proofs: 5 theorems written (4 + DCBF), reviewed, verified numerically
 - [ ] Exploitability < 0.10 for final policy pair (5 seeds, 95% CI)
-- [ ] All 12 baselines run (5+ seeds each, same compute, same evaluation)
+- [ ] All 13 baselines run (incl. HJ/DeepReach, 5+ seeds each, same compute, same evaluation)
 - [ ] All 11 ablations run (5+ seeds each, effect sizes computed)
 - [ ] Statistical analysis: Holm-Bonferroni corrected comparisons, summary report
 - [ ] 9+ publication figures generated (300 DPI, colorblind-friendly)
@@ -2030,6 +2400,10 @@ Before declaring Phase 5 complete, verify:
 - [ ] Open-source repo: clean code, README, Docker, CI, tutorials
 - [ ] All claims in papers verified against statistical analysis
 - [ ] Minimum test suite passes (Section 7.8)
+- [ ] Generalization study: 9 test conditions evaluated, heatmap figure generated
+- [ ] Interpretability: saliency maps, phase portraits, belief evolution visualizations
+- [ ] Human evader experiment: 20 episodes per participant, comparison table
+- [ ] Opponent modeling: strategy classification, adaptation metrics
 
 ### 7.8 Minimum Test Suite (15+ Tests)
 
@@ -2221,7 +2595,7 @@ Step 4: Report
 Step 5: Compare with baseline (e.g., PPO+SP no CBF)
   Baseline mean: 0.47, 95% CI: [0.44, 0.50]
   Welch's t-test: t=2.86, p=0.023
-  After Holm-Bonferroni (12 baselines): p_adj = 0.023 * 12 = 0.276
+  After Holm-Bonferroni (13 baselines): p_adj = 0.023 * 13 = 0.299
   → NOT significant after correction
   Cohen's d = (0.512 - 0.47) / pooled_std = 1.62 (large effect)
   Report: "large effect size (d=1.62) but not significant after
@@ -2368,7 +2742,7 @@ Step 6: Verify
 - Response: True NE computation is intractable for continuous PE games. We follow the standard practice of computing exploitability against best-response opponents, consistent with [18] and the self-play literature [04]. Our exploitability < 0.10 indicates near-NE behavior.
 
 **"More baselines needed"**:
-- Response: We compare against 12 baselines spanning DRL-only, safe RL, self-play, classical, and game-theoretic optimal methods. This is the most comprehensive comparison in the PE literature. We are happy to add specific baselines the reviewer suggests.
+- Response: We compare against 13 baselines spanning DRL-only, safe RL, self-play, classical, and HJ game-theoretic optimal methods. This is the most comprehensive comparison in the PE literature. We are happy to add specific baselines the reviewer suggests.
 
 **"Real-robot experiments are limited (few trials)"**:
 - Response: We run N real-robot trials (more than [02] with M trials and [22] with K trials). Real-robot experiments are inherently expensive. We supplement with extensive simulation results (5-10 seeds x 100 episodes).
@@ -2419,16 +2793,16 @@ Step 6: Verify
 ```
 Month 8:
   Week 1-2: Sessions 1-3 (formal analysis, NE analysis)
-  Week 3-4: Sessions 4-6 (benchmarking, ablations, statistics)
+  Week 3-4: Sessions 4-4b, 5-6 (benchmarking incl. HJ/DeepReach, ablations, statistics)
 
 Month 9:
-  Week 1: Session 7 (figures)
-  Week 2: Session 8 (tables)
-  Week 3-4: Sessions 9-10 (Paper 1 writing, videos)
+  Week 1: Sessions 7, 15 (figures, generalization study)
+  Week 2: Sessions 8, 16-17 (tables, interpretability, opponent modeling)
+  Week 3-4: Sessions 9-10, 18 (Paper 1 writing, videos, human evader)
 
 Month 10:
-  Week 1: Session 11 (Paper 2 writing)
-  Week 2: Session 12 (Paper 3 writing)
+  Week 1: Session 11 (Paper 2 writing — includes new results sections)
+  Week 2: Session 12 (Paper 3 writing — includes DCBF theorem)
   Week 3: Sessions 13-14 (open-source, supplementary)
   Week 4: Final review, submission
 ```

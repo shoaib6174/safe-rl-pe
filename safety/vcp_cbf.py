@@ -243,6 +243,64 @@ def vcp_cbf_collision(
     return float(h), float(a_v), float(a_omega)
 
 
+def vcp_cbf_wall(
+    state: np.ndarray,
+    wall,
+    d: float = 0.1,
+    safety_margin: float = 0.25,
+    alpha: float = 1.0,
+) -> tuple[float, float, float]:
+    """VCP-CBF for wall-segment obstacle avoidance.
+
+    Unlike circular obstacles (point-to-center distance), walls use
+    point-to-line-segment distance, which has a piecewise gradient
+    (along-segment vs at-endpoint regions).
+
+    h(x) = dist(q_vcp, wall)^2 - chi^2
+    where q_vcp = [x + d*cos(theta), y + d*sin(theta)]
+          chi = safety_margin + d (VCP offset included for consistency)
+
+    Args:
+        state: Robot state [x, y, theta].
+        wall: WallSegment object with p1, p2, direction, length attributes.
+        d: VCP offset distance.
+        safety_margin: Safety margin around the wall.
+        alpha: CBF class-K function parameter.
+
+    Returns:
+        (h, a_v, a_omega): CBF value and constraint coefficients.
+    """
+    x, y, theta = float(state[0]), float(state[1]), float(state[2])
+    qx, qy = compute_vcp(x, y, theta, d)
+    q = np.array([qx, qy])
+
+    chi = safety_margin
+
+    # Find closest point on segment to VCP
+    closest = wall.closest_point(q)
+    diff = q - closest
+    dist_sq = float(np.dot(diff, diff))
+    dist = np.sqrt(dist_sq) if dist_sq > 1e-12 else 1e-6
+
+    # CBF value: h = dist^2 - chi^2
+    h = dist_sq - chi ** 2
+
+    # Gradient of h w.r.t. q: dh/dq = 2 * (q - closest)
+    # This is valid when the closest point is in the interior of the segment.
+    # At endpoints, the gradient direction changes but is still (q - closest).
+    dh_dqx = 2.0 * diff[0]
+    dh_dqy = 2.0 * diff[1]
+
+    # CBF constraint coefficients: h_dot = a_v * v + a_omega * omega
+    cos_t = np.cos(theta)
+    sin_t = np.sin(theta)
+
+    a_v = dh_dqx * cos_t + dh_dqy * sin_t
+    a_omega = -dh_dqx * d * sin_t + dh_dqy * d * cos_t
+
+    return float(h), float(a_v), float(a_omega)
+
+
 def get_all_constraints(
     state_ego: np.ndarray,
     state_other: np.ndarray | None,
