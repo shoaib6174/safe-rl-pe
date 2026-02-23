@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-02-22
+## Last Updated: 2026-02-23
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -46,6 +46,14 @@
 | 33 | 2026-02-22 | **Phase 2.5 Final**: Retrained baseline with obstacles (100% capture), final 200-ep evaluation, decision report finalized | [S33](worklogs/2026-02-22_S33.md) |
 | 34 | 2026-02-22 | **Phase 2.5**: Baseline comparison visualizations (23 plots), 3-way eval monitoring | [S34](worklogs/2026-02-22_S34.md) |
 | 35 | 2026-02-22 | **Phase 2.5 Filter Tuning**: CBF filter fixes (epsilon, DCBF, CBF-RL reward), 14-config sweep — DCBF gamma=0.2 optimal | [S35](worklogs/2026-02-22_S35.md) |
+| 36 | 2026-02-22 | **Phase 3 Spec Panel Review**: 21 issues fixed (3 critical, 10 high, 8 medium), quality 7.0→8.5+/10 | [S36](worklogs/2026-02-22_S36.md) |
+| 37 | 2026-02-22 | **Spec Enhancement**: 9 research additions integrated into Phases 3-5 (DCBF theorem, complex envs, asymmetric, HJ baseline, TB3, generalization, interpretability, opponent modeling, human evader) | [S37](worklogs/2026-02-22_S37.md) |
+| 38 | 2026-02-22 | **Phase 3 Spec Panel Review #2**: 24 issues fixed (1 critical, 7 high, 11 medium, 5 low), quality 8.3→9.0+/10, tests 26→31, examples 6→9 | [S38](worklogs/2026-02-22_S38.md) |
+| 39 | 2026-02-22 | **Phase 3 Sessions 1-2**: Sensors (FOV, Lidar, WallSegment, buffer, wrapper) + BiMDN (encoder, policy network), 29 tests, 123 core passing | [S39](worklogs/2026-02-22_S39.md) |
+| 40 | 2026-02-22 | **Phase 3 Training**: Fixed obs space (added own pose, 40→43 dims), 3 Stage 1 runs (In-FOV 0.31m), Stage 2 all 0% capture — Gates 1&2 failed | [S40](worklogs/2026-02-22_S40.md) |
+| 41 | 2026-02-22 | **Phase 3 Session 3**: AMS-DRL self-play — opponent adapter, NavigationEnv, CheckpointManager, health callbacks, AMSDRLSelfPlay orchestrator, NE tools, 38 tests (474 total) | [S41](worklogs/2026-02-22_S41.md) |
+| 42 | 2026-02-23 | **Phase 3 Session 5**: Curriculum learning — CurriculumManager (4-level progressive difficulty), AMS-DRL integration, --curriculum CLI flag, 29 tests (503 total) | [S42](worklogs/2026-02-23_S42.md) |
+| 43 | 2026-02-23 | **Phase 3 Session 7**: Opponent pool for self-play diversity — OpponentPool class, per-sub-env sampling, FIFO eviction, 16 tests | [S43](worklogs/2026-02-23_S43.md) |
 
 ## Paper Reading Status
 
