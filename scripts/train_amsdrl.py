@@ -101,6 +101,10 @@ def parse_args():
     parser.add_argument("--w_collision", type=float, default=0.0,
                         help="Obstacle collision penalty weight (default: 0.0, off)")
 
+    # Wall collision penalty
+    parser.add_argument("--w_wall", type=float, default=0.0,
+                        help="Wall collision penalty weight (default: 0.0, off)")
+
     # PBRS obstacle-seeking
     parser.add_argument("--w_obs_approach", type=float, default=0.0,
                         help="PBRS obstacle-seeking weight for evader (default: 0.0, off). "
@@ -204,6 +208,7 @@ def main():
         w_obs_approach=args.w_obs_approach,
         timeout_penalty=args.timeout_penalty,
         w_collision=args.w_collision,
+        w_wall=args.w_wall,
         evader_training_multiplier=args.evader_multiplier,
         min_escape_rate=args.min_escape_rate,
         min_phases_per_level=args.min_phases_per_level,

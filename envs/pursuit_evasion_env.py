@@ -63,6 +63,7 @@ class PursuitEvasionEnv(gym.Env):
         reward_computer: RewardComputer | None = None,
         prep_steps: int = 0,
         w_collision: float = 0.0,
+        w_wall: float = 0.0,
     ):
         super().__init__()
 
@@ -96,6 +97,9 @@ class PursuitEvasionEnv(gym.Env):
 
         # Obstacle collision penalty weight (0.0 = no penalty)
         self.w_collision = w_collision
+
+        # Wall collision penalty weight (0.0 = no penalty)
+        self.w_wall = w_wall
 
         # Reward computer (allow injection for SafetyRewardComputer)
         arena_diagonal = np.sqrt(arena_width**2 + arena_height**2)
@@ -321,6 +325,11 @@ class PursuitEvasionEnv(gym.Env):
         if self.w_collision > 0.0:
             r_p -= self.w_collision * float(p_obs_collision)
             r_e -= self.w_collision * float(e_obs_collision)
+
+        # Apply wall collision penalty (per-agent, not zero-sum)
+        if self.w_wall > 0.0:
+            r_p -= self.w_wall * float(p_wall)
+            r_e -= self.w_wall * float(e_wall)
 
         self.last_reward_pursuer = r_p
         self.last_reward_evader = r_e

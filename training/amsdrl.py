@@ -75,6 +75,7 @@ def _make_partial_obs_env(
     w_obs_approach: float = 0.0,
     timeout_penalty: float = -100.0,
     w_collision: float = 0.0,
+    w_wall: float = 0.0,
 ) -> tuple:
     """Create an environment stack for one agent.
 
@@ -121,6 +122,7 @@ def _make_partial_obs_env(
         reward_computer=reward_computer,
         prep_steps=prep_steps,
         w_collision=w_collision,
+        w_wall=w_wall,
     )
     single_env = SingleAgentPEWrapper(base_env, role=role)
 
@@ -298,6 +300,7 @@ def _evaluate_head_to_head(
     max_init_distance: float = 15.0,
     prep_steps: int = 0,
     w_collision: float = 0.0,
+    w_wall: float = 0.0,
     **kwargs,
 ) -> dict:
     """Evaluate pursuer vs evader head-to-head using full-state obs.
@@ -317,6 +320,7 @@ def _evaluate_head_to_head(
         max_init_distance=max_init_distance,
         prep_steps=prep_steps,
         w_collision=w_collision,
+        w_wall=w_wall,
     )
 
     # Create adapters for both agents
@@ -387,6 +391,7 @@ def _evaluate_head_to_head_full_obs(
     max_init_distance: float = 15.0,
     prep_steps: int = 0,
     w_collision: float = 0.0,
+    w_wall: float = 0.0,
     **kwargs,
 ) -> dict:
     """Evaluate pursuer vs evader with full-state observations (diagnostic mode)."""
@@ -402,6 +407,7 @@ def _evaluate_head_to_head_full_obs(
         max_init_distance=max_init_distance,
         prep_steps=prep_steps,
         w_collision=w_collision,
+        w_wall=w_wall,
     )
 
     captures = 0
@@ -518,6 +524,7 @@ class AMSDRLSelfPlay:
         w_obs_approach: float = 0.0,
         timeout_penalty: float = -100.0,
         w_collision: float = 0.0,
+        w_wall: float = 0.0,
         evader_training_multiplier: float = 1.0,
         min_escape_rate: float = 0.0,
         min_phases_per_level: int = 1,
@@ -563,6 +570,7 @@ class AMSDRLSelfPlay:
             "w_obs_approach": w_obs_approach,
             "timeout_penalty": timeout_penalty,
             "w_collision": w_collision,
+            "w_wall": w_wall,
         }
         self.fixed_speed = fixed_speed
         self.evader_training_multiplier = evader_training_multiplier

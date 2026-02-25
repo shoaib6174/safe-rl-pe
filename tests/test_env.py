@@ -360,3 +360,75 @@ class TestPrepPhase:
             # Pursuer is frozen, so capture shouldn't happen (unless evader walks into pursuer)
             # We just check that the pursuer's position didn't change
         assert np.allclose(env.pursuer_state[:2], env.pursuer_state[:2])
+
+
+class TestWallPenalty:
+    """Tests for the w_wall wall collision penalty."""
+
+    def make_env(self, **kwargs):
+        defaults = dict(
+            arena_width=10.0,
+            arena_height=10.0,
+            dt=0.1,
+            max_steps=100,
+            capture_radius=0.5,
+            render_mode=None,
+        )
+        defaults.update(kwargs)
+        return PursuitEvasionEnv(**defaults)
+
+    def test_wall_penalty_applied_on_contact(self):
+        """Reward should decrease by w_wall when agent hits a wall."""
+        w_wall = 5.0
+        env = self.make_env(w_wall=w_wall)
+        env.reset(seed=42)
+
+        # Place pursuer at the right wall edge, heading east (into the wall)
+        half_w = env.arena_width / 2.0 - env.robot_radius
+        env.pursuer_state = np.array([half_w, 0.0, 0.0])  # at wall, heading east
+        # Place evader far away so no capture
+        env.evader_state = np.array([-3.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        # Pursuer drives into wall (v=1.0, heading east at east wall)
+        p_action = np.array([1.0, 0.0], dtype=np.float32)
+        e_action = np.array([0.0, 0.0], dtype=np.float32)  # evader stays put
+
+        # Run same scenario WITHOUT wall penalty for comparison
+        env_no_wall = self.make_env(w_wall=0.0)
+        env_no_wall.reset(seed=42)
+        env_no_wall.pursuer_state = np.array([half_w, 0.0, 0.0])
+        env_no_wall.evader_state = np.array([-3.0, 0.0, np.pi])
+        env_no_wall.prev_distance = env_no_wall._compute_distance()
+
+        _, rewards_wall, _, _, _ = env.step(p_action, e_action)
+        _, rewards_no_wall, _, _, _ = env_no_wall.step(p_action, e_action)
+
+        # Pursuer hit the wall, so reward should be lower by w_wall
+        assert rewards_wall["pursuer"] == pytest.approx(
+            rewards_no_wall["pursuer"] - w_wall, abs=1e-6
+        ), (
+            f"Wall penalty not applied: with={rewards_wall['pursuer']}, "
+            f"without={rewards_no_wall['pursuer']}, expected diff={w_wall}"
+        )
+
+    def test_no_wall_penalty_when_zero(self):
+        """With w_wall=0 (default), wall contact should not affect reward."""
+        env = self.make_env(w_wall=0.0)
+        env.reset(seed=42)
+
+        # Place pursuer at the wall heading into it
+        half_w = env.arena_width / 2.0 - env.robot_radius
+        env.pursuer_state = np.array([half_w, 0.0, 0.0])
+        env.evader_state = np.array([-3.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        p_action = np.array([1.0, 0.0], dtype=np.float32)
+        e_action = np.array([0.0, 0.0], dtype=np.float32)
+
+        _, rewards, _, _, _ = env.step(p_action, e_action)
+
+        # Reward should be the same as base reward (zero-sum from RewardComputer)
+        # Just verify it's a finite number — no penalty was subtracted
+        assert np.isfinite(rewards["pursuer"])
+        assert rewards["pursuer"] == pytest.approx(-rewards["evader"], abs=1e-6)
