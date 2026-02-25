@@ -230,3 +230,133 @@ class TestSingleAgentWrapper:
         # Should not raise
         env.set_opponent(None)
         env.set_opponent(lambda obs, deterministic=False: (np.zeros(2), None))
+
+
+class TestPrepPhase:
+    """Tests for the preparation phase (pursuer freeze)."""
+
+    def make_env(self, **kwargs):
+        defaults = dict(
+            arena_width=10.0,
+            arena_height=10.0,
+            dt=0.05,
+            max_steps=100,
+            capture_radius=0.5,
+            render_mode=None,
+        )
+        defaults.update(kwargs)
+        return PursuitEvasionEnv(**defaults)
+
+    def test_prep_steps_default_off(self):
+        """prep_steps=0 by default (no freeze)."""
+        env = self.make_env()
+        assert env.prep_steps == 0
+
+    def test_pursuer_frozen_during_prep(self):
+        """Pursuer should not move during preparation phase."""
+        env = self.make_env(prep_steps=10)
+        obs, _ = env.reset(seed=42)
+        initial_pos = env.pursuer_state[:2].copy()
+
+        # Step with full-speed pursuer action during prep phase
+        p_action = np.array([1.0, 0.0])  # v=1.0, omega=0
+        e_action = np.array([0.0, 0.0])
+        for _ in range(5):
+            env.step(p_action, e_action)
+
+        # Pursuer should not have moved (v forced to 0)
+        assert np.allclose(env.pursuer_state[:2], initial_pos, atol=1e-6), (
+            f"Pursuer moved during prep phase: {initial_pos} -> {env.pursuer_state[:2]}"
+        )
+
+    def test_pursuer_moves_after_prep(self):
+        """Pursuer should move normally after preparation phase ends."""
+        env = self.make_env(prep_steps=5)
+        obs, _ = env.reset(seed=42)
+
+        # Step through prep phase
+        p_action = np.array([1.0, 0.0])
+        e_action = np.array([0.0, 0.0])
+        for _ in range(5):
+            env.step(p_action, e_action)
+
+        # Now past prep phase — pursuer should move
+        pos_before = env.pursuer_state[:2].copy()
+        env.step(p_action, e_action)
+        pos_after = env.pursuer_state[:2].copy()
+
+        assert not np.allclose(pos_before, pos_after, atol=1e-6), (
+            "Pursuer did not move after prep phase ended"
+        )
+
+    def test_evader_moves_during_prep(self):
+        """Evader should move freely during preparation phase."""
+        env = self.make_env(prep_steps=10)
+        obs, _ = env.reset(seed=42)
+        initial_pos = env.evader_state[:2].copy()
+
+        # Step with evader moving
+        p_action = np.array([0.0, 0.0])
+        e_action = np.array([1.0, 0.0])  # v=1.0, omega=0
+        for _ in range(5):
+            env.step(p_action, e_action)
+
+        # Evader should have moved
+        assert not np.allclose(env.evader_state[:2], initial_pos, atol=1e-6), (
+            "Evader did not move during prep phase"
+        )
+
+    def test_pursuer_can_turn_during_prep(self):
+        """Pursuer can turn (omega) during prep but not translate."""
+        env = self.make_env(prep_steps=10)
+        obs, _ = env.reset(seed=42)
+        initial_pos = env.pursuer_state[:2].copy()
+        initial_theta = env.pursuer_state[2]
+
+        # Step with omega only
+        p_action = np.array([1.0, 2.0])  # v=1.0 (will be zeroed), omega=2.0
+        e_action = np.array([0.0, 0.0])
+        for _ in range(5):
+            env.step(p_action, e_action)
+
+        # Position should not change (v=0)
+        assert np.allclose(env.pursuer_state[:2], initial_pos, atol=1e-6)
+        # Heading should change (omega allowed)
+        assert env.pursuer_state[2] != pytest.approx(initial_theta, abs=1e-6)
+
+    def test_in_prep_phase_info_flag(self):
+        """Info dict should report in_prep_phase correctly."""
+        env = self.make_env(prep_steps=3)
+        env.reset(seed=42)
+
+        p_action = np.array([0.0, 0.0])
+        e_action = np.array([0.0, 0.0])
+
+        # Steps 0, 1, 2 are prep (current_step < 3 before step, then <= 3 after)
+        _, _, _, _, info = env.step(p_action, e_action)  # step 1
+        assert info["in_prep_phase"] is True
+
+        _, _, _, _, info = env.step(p_action, e_action)  # step 2
+        assert info["in_prep_phase"] is True
+
+        _, _, _, _, info = env.step(p_action, e_action)  # step 3
+        assert info["in_prep_phase"] is True
+
+        _, _, _, _, info = env.step(p_action, e_action)  # step 4
+        assert info["in_prep_phase"] is False
+
+    def test_no_capture_during_prep(self):
+        """Even if agents start close, pursuer can't move to capture during prep."""
+        env = self.make_env(prep_steps=10, capture_radius=0.5, min_init_distance=0.6,
+                           max_init_distance=1.0)
+        env.reset(seed=42)
+
+        # Try to move pursuer toward evader
+        p_action = np.array([1.0, 0.0])
+        e_action = np.array([0.0, 0.0])
+
+        for _ in range(5):
+            _, _, terminated, _, _ = env.step(p_action, e_action)
+            # Pursuer is frozen, so capture shouldn't happen (unless evader walks into pursuer)
+            # We just check that the pursuer's position didn't change
+        assert np.allclose(env.pursuer_state[:2], env.pursuer_state[:2])

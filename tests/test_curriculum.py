@@ -21,7 +21,7 @@ class TestCurriculumManagerInit:
         assert cm.current_level == 1
         assert cm.advancement_threshold == 0.70
         assert not cm.at_max_level
-        assert cm.max_level == 4
+        assert cm.max_level == 6
 
     def test_custom_threshold(self):
         cm = CurriculumManager(advancement_threshold=0.80)
@@ -31,9 +31,9 @@ class TestCurriculumManagerInit:
         cm = CurriculumManager()
         assert cm.current_level == 1
 
-    def test_four_levels_defined(self):
+    def test_six_levels_defined(self):
         cm = CurriculumManager()
-        assert set(cm.levels.keys()) == {1, 2, 3, 4}
+        assert set(cm.levels.keys()) == {1, 2, 3, 4, 5, 6}
 
     def test_level_descriptions(self):
         cm = CurriculumManager()
@@ -44,7 +44,7 @@ class TestCurriculumManagerInit:
     def test_repr(self):
         cm = CurriculumManager()
         r = repr(cm)
-        assert "level=1/4" in r
+        assert "level=1/6" in r
         assert "threshold=0.7" in r
 
 
@@ -71,15 +71,40 @@ class TestCurriculumLevels:
         overrides = cm.get_env_overrides()
         assert overrides["n_obstacles"] > 0
 
-    def test_level_4_has_obstacles(self):
+    def test_level_4_medium_distance_with_obstacles(self):
         cm = CurriculumManager()
         cm.current_level = 4
         overrides = cm.get_env_overrides()
         assert overrides["n_obstacles"] > 0
+        assert overrides["max_init_distance"] <= 8.0
+
+    def test_level_5_far_distance_with_obstacles(self):
+        cm = CurriculumManager()
+        cm.current_level = 5
+        overrides = cm.get_env_overrides()
+        assert overrides["n_obstacles"] > 0
+        assert overrides["max_init_distance"] <= 12.0
+
+    def test_level_6_full_scenario(self):
+        cm = CurriculumManager()
+        cm.current_level = 6
+        overrides = cm.get_env_overrides()
+        assert overrides["n_obstacles"] > 0
+        assert overrides["min_init_distance"] == 2.0
+
+    def test_obstacle_count_monotonic(self):
+        """Obstacle count should never decrease as levels increase."""
+        cm = CurriculumManager()
+        prev_obstacles = 0
+        for level in range(1, 7):
+            cm.current_level = level
+            overrides = cm.get_env_overrides()
+            assert overrides["n_obstacles"] >= prev_obstacles
+            prev_obstacles = overrides["n_obstacles"]
 
     def test_overrides_have_required_keys(self):
         cm = CurriculumManager()
-        for level in range(1, 5):
+        for level in range(1, 7):
             cm.current_level = level
             overrides = cm.get_env_overrides()
             assert "min_init_distance" in overrides
@@ -88,7 +113,7 @@ class TestCurriculumLevels:
 
     def test_min_lt_max_distance(self):
         cm = CurriculumManager()
-        for level in range(1, 5):
+        for level in range(1, 7):
             cm.current_level = level
             overrides = cm.get_env_overrides()
             assert overrides["min_init_distance"] < overrides["max_init_distance"]
@@ -101,7 +126,7 @@ class TestArenaAwareClamping:
         """10x10 arena diagonal ≈ 14.14, 80% ≈ 11.3. Max dist should be clamped."""
         cm = CurriculumManager(arena_width=10.0, arena_height=10.0)
         max_possible = 0.8 * np.hypot(10.0, 10.0)
-        for level in range(1, 5):
+        for level in range(1, 7):
             cm.current_level = level
             overrides = cm.get_env_overrides()
             assert overrides["max_init_distance"] <= max_possible + 1e-6
@@ -117,7 +142,7 @@ class TestArenaAwareClamping:
     def test_tiny_arena_still_valid(self):
         """5x5 arena should still produce valid distance ranges."""
         cm = CurriculumManager(arena_width=5.0, arena_height=5.0)
-        for level in range(1, 5):
+        for level in range(1, 7):
             cm.current_level = level
             overrides = cm.get_env_overrides()
             assert overrides["min_init_distance"] < overrides["max_init_distance"]
@@ -150,22 +175,22 @@ class TestCurriculumAdvancement:
 
     def test_advance_through_all_levels(self):
         cm = CurriculumManager()
-        for expected_level in range(2, 5):
+        for expected_level in range(2, 7):
             advanced = cm.check_advancement(0.90)
             assert advanced
             assert cm.current_level == expected_level
 
     def test_no_advance_past_max(self):
         cm = CurriculumManager()
-        cm.current_level = 4
+        cm.current_level = 6
         advanced = cm.check_advancement(0.99)
         assert not advanced
-        assert cm.current_level == 4
+        assert cm.current_level == 6
 
     def test_at_max_level_property(self):
         cm = CurriculumManager()
         assert not cm.at_max_level
-        cm.current_level = 4
+        cm.current_level = 6
         assert cm.at_max_level
 
     def test_level_history_recorded(self):
@@ -202,7 +227,7 @@ class TestCurriculumStatus:
 
     def test_status_at_max(self):
         cm = CurriculumManager()
-        cm.current_level = 4
+        cm.current_level = 6
         assert cm.get_status()["curriculum_at_max"] is True
 
 
@@ -247,3 +272,136 @@ class TestCurriculumIntegration:
         assert amsdrl.env_kwargs["min_init_distance"] == 2.0
         assert amsdrl.env_kwargs["max_init_distance"] <= 5.0
         assert amsdrl.n_obstacles == 0
+
+    def test_amsdrl_passes_curriculum_params(self):
+        """AMSDRLSelfPlay should pass min_escape_rate and min_phases_per_level to CurriculumManager."""
+        from training.amsdrl import AMSDRLSelfPlay
+        amsdrl = AMSDRLSelfPlay(
+            output_dir="/tmp/test_curriculum_params",
+            max_phases=2,
+            timesteps_per_phase=100,
+            curriculum=True,
+            n_envs=1,
+            min_escape_rate=0.05,
+            min_phases_per_level=4,
+        )
+        assert amsdrl.curriculum.min_escape_rate == 0.05
+        assert amsdrl.curriculum.min_phases_per_level == 4
+
+    def test_amsdrl_stores_evader_multiplier(self):
+        """AMSDRLSelfPlay should store evader_training_multiplier."""
+        from training.amsdrl import AMSDRLSelfPlay
+        amsdrl = AMSDRLSelfPlay(
+            output_dir="/tmp/test_evader_mult",
+            max_phases=2,
+            timesteps_per_phase=100,
+            n_envs=1,
+            evader_training_multiplier=3.0,
+        )
+        assert amsdrl.evader_training_multiplier == 3.0
+
+
+# ─── Dual-Criteria Advancement Tests ───
+
+
+class TestDualCriteriaAdvancement:
+    """Test the new dual-criteria advancement gate."""
+
+    def test_blocked_by_low_escape_rate(self):
+        """Advancement blocked when escape_rate < min_escape_rate."""
+        cm = CurriculumManager(min_escape_rate=0.05, min_phases_per_level=1)
+        # High capture rate but zero escape rate
+        advanced = cm.check_advancement(0.90, escape_rate=0.02)
+        assert not advanced
+        assert cm.current_level == 1
+
+    def test_blocked_by_insufficient_phases(self):
+        """Advancement blocked when phases_at_level < min_phases_per_level."""
+        cm = CurriculumManager(min_escape_rate=0.0, min_phases_per_level=4)
+        # All metric criteria met, but only 1 phase at level
+        advanced = cm.check_advancement(0.90, escape_rate=0.10)
+        assert not advanced
+        assert cm.current_level == 1
+        assert cm.phases_at_level == 1
+
+    def test_advances_when_all_criteria_met(self):
+        """Advancement proceeds when ALL criteria met."""
+        cm = CurriculumManager(min_escape_rate=0.05, min_phases_per_level=3)
+        # Accumulate 3 phases (need exactly min_phases_per_level)
+        cm.check_advancement(0.50, escape_rate=0.10)  # Phase 1 — low capture
+        cm.check_advancement(0.60, escape_rate=0.10)  # Phase 2 — low capture
+        assert cm.current_level == 1
+        assert cm.phases_at_level == 2
+        # Phase 3 — all criteria met
+        advanced = cm.check_advancement(0.80, escape_rate=0.10)
+        assert advanced
+        assert cm.current_level == 2
+
+    def test_phases_counter_increments(self):
+        """phases_at_level incremented on each check_advancement call."""
+        cm = CurriculumManager(min_phases_per_level=4)
+        for i in range(4):
+            cm.check_advancement(0.50, escape_rate=0.0)
+        assert cm.phases_at_level == 4
+
+    def test_phases_counter_resets_on_advancement(self):
+        """phases_at_level resets to 0 when advancing."""
+        cm = CurriculumManager(min_phases_per_level=1)
+        cm.check_advancement(0.90, escape_rate=0.0)  # Advance L1→L2
+        assert cm.current_level == 2
+        assert cm.phases_at_level == 0
+
+    def test_backward_compat_default_params(self):
+        """Default params (min_escape_rate=0, min_phases=1) maintain old behavior."""
+        cm = CurriculumManager()
+        # Should advance with just capture_rate > threshold (old behavior)
+        advanced = cm.check_advancement(0.80)
+        assert advanced
+        assert cm.current_level == 2
+
+
+# ─── Regression Tests ───
+
+
+class TestCurriculumRegression:
+    """Test curriculum regression on sustained evader collapse."""
+
+    def test_regression_triggers_after_patience(self):
+        """Regression triggers after regression_patience consecutive low-escape phases."""
+        cm = CurriculumManager(regression_floor=0.02, regression_patience=3)
+        cm.current_level = 3
+        # 3 consecutive phases below floor
+        assert not cm.check_regression(0.01)
+        assert not cm.check_regression(0.01)
+        assert cm.check_regression(0.01)
+        assert cm.current_level == 2
+
+    def test_no_regression_below_level_1(self):
+        """Cannot regress below Level 1."""
+        cm = CurriculumManager(regression_floor=0.02, regression_patience=1)
+        cm.current_level = 1
+        regressed = cm.check_regression(0.00)
+        assert not regressed
+        assert cm.current_level == 1
+
+    def test_regression_resets_on_recovery(self):
+        """Counter resets when escape_rate recovers above floor."""
+        cm = CurriculumManager(regression_floor=0.02, regression_patience=3)
+        cm.current_level = 3
+        cm.check_regression(0.01)  # +1
+        cm.check_regression(0.01)  # +2
+        cm.check_regression(0.05)  # Recovery — reset counter
+        cm.check_regression(0.01)  # +1 again
+        assert not cm.check_regression(0.01)  # +2, not yet 3
+        assert cm.current_level == 3  # No regression
+
+    def test_regression_resets_counters(self):
+        """Regression resets phases_at_level and consecutive_floor_phases."""
+        cm = CurriculumManager(regression_floor=0.02, regression_patience=2)
+        cm.current_level = 4
+        cm.phases_at_level = 5
+        cm.check_regression(0.01)
+        cm.check_regression(0.01)  # Triggers regression
+        assert cm.current_level == 3
+        assert cm.phases_at_level == 0
+        assert cm.consecutive_floor_phases == 0

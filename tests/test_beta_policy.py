@@ -276,7 +276,7 @@ class TestBetaPolicy:
                 "pursuer": {"v_max": 1.0, "omega_max": 2.84},
                 "evader": {"v_max": 1.0, "omega_max": 2.84},
                 "min_init_distance": 3.0, "max_init_distance": 7.0,
-                "reward": {"distance_scale": 1.0, "capture_bonus": 100.0, "timeout_penalty": -50.0},
+                "reward": {"distance_scale": 1.0, "capture_bonus": 100.0, "timeout_penalty": -100.0},
             },
         })
 
@@ -315,7 +315,7 @@ class TestBetaPolicy:
                 "pursuer": {"v_max": 1.0, "omega_max": 2.84},
                 "evader": {"v_max": 1.0, "omega_max": 2.84},
                 "min_init_distance": 3.0, "max_init_distance": 7.0,
-                "reward": {"distance_scale": 1.0, "capture_bonus": 100.0, "timeout_penalty": -50.0},
+                "reward": {"distance_scale": 1.0, "capture_bonus": 100.0, "timeout_penalty": -100.0},
             },
         })
 

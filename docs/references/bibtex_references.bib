@@ -216,3 +216,195 @@
   doi={10.1016/j.ins.2024.121567},
   note={N15 - RMARL-CBF-SAM: H-infinity robust MARL + decentralized neural CBFs + safety attention mechanism}
 }
+
+% ---- SELF-PLAY, CURRICULUM, AND MULTI-AGENT TRAINING ----
+% Added in S47 (2026-02-24) for Level 3+ collapse analysis
+
+@inproceedings{baker2020emergent,
+  title={Emergent Tool Use from Multi-Agent Autocurricula},
+  author={Baker, Bowen and Kanitscheider, Ingmar and Marber, Todor and Epstein, Max and Gordon, Bryan and Paine, Thomas L and Mordatch, Igor and others},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2020},
+  url={https://arxiv.org/abs/1909.07528},
+  note={OpenAI Hide-and-Seek: emergent tool use via zero-sum reward + massive scale (31.7B frames). Preparation phase gives hiders head start. 6 strategy phases emerged.}
+}
+
+@inproceedings{bansal2018emergent,
+  title={Emergent Complexity via Multi-Agent Competition},
+  author={Bansal, Trapit and Pachocki, Jakub and Sidor, Szymon and Sutskever, Ilya and Mordatch, Igor},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2018},
+  url={https://arxiv.org/abs/1710.03748},
+  note={Multi-agent competition in MuJoCo. Alternating freeze training with opponent sampling. Emergent complexity in sumo/soccer/kick-and-defend.}
+}
+
+@inproceedings{rao2024masp,
+  title={A Multi-party Asymmetric Self-play Algorithm},
+  author={Rao, Yongzhao and others},
+  booktitle={International Conference on Machine Learning and Principles and Practice of Knowledge Discovery (MLPRAE)},
+  year={2024},
+  url={https://dl.acm.org/doi/10.1145/3696687.3696712},
+  note={MASP: ELO-based dynamic adjustment of training update frequency. Stronger agent gets fewer updates, weaker agent gets more.}
+}
+
+@article{czempin2022reducing,
+  title={Reducing Exploitability with Population Based Training},
+  author={Czempin, Patrick and Gleave, Adam},
+  journal={arXiv preprint arXiv:2208.05083},
+  year={2022},
+  url={https://arxiv.org/abs/2208.05083},
+  note={Robustness scales with population size. RPPO (reward-randomized PPO) ensures population diversity. Prevents overfitting to single opponent.}
+}
+
+@article{vinyals2019alphastar,
+  title={Grandmaster level in {StarCraft II} using multi-agent reinforcement learning},
+  author={Vinyals, Oriol and Babuschkin, Igor and Czarnecki, Wojciech M and Mathieu, Micha{\"e}l and Dudzik, Andrew and Chung, Junyoung and Choi, David H and Powell, Richard and Ewalds, Timo and Georgiev, Petko and others},
+  journal={Nature},
+  volume={575},
+  number={7782},
+  pages={350--354},
+  year={2019},
+  publisher={Nature Publishing Group},
+  note={AlphaStar league: main agents, main exploiters, league exploiters. PFSP opponent selection. 44-day training, 900+ agents.}
+}
+
+@inproceedings{dennis2020paired,
+  title={Emergent Complexity and Zero-shot Transfer via Unsupervised Environment Design},
+  author={Dennis, Michael and Jaques, Natasha and Vinitsky, Eugene and Baez, Alexandre and Singh, Simone and Levine, Sergey and Dru, Russell},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  year={2020},
+  url={https://arxiv.org/abs/2012.02096},
+  note={PAIRED: protagonist-antagonist-adversary. Adversary generates environments to maximize regret. Naturally produces curriculum at boundary of agent's capability.}
+}
+
+@inproceedings{jiang2021replay,
+  title={Replay-Guided Adversarial Environment Design},
+  author={Jiang, Minqi and Dennis, Michael and Parker-Holder, Jack and Foerster, Jakob and Grefenstette, Edward and Rockt{\"a}schel, Tim},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  year={2021},
+  url={https://arxiv.org/abs/2110.02439},
+  note={Extends PAIRED with experience replay for environment design. Improves sample efficiency.}
+}
+
+@article{narvekar2020curriculum,
+  title={Curriculum Learning for Reinforcement Learning Domains: A Framework and Survey},
+  author={Narvekar, Sanmit and Peng, Bei and Leonetti, Matteo and Sinapov, Jivko and Taylor, Matthew E and Stone, Peter},
+  journal={Journal of Machine Learning Research (JMLR)},
+  volume={21},
+  number={181},
+  pages={1--50},
+  year={2020},
+  note={Comprehensive survey of curriculum learning for RL. Framework for task sequencing, transfer, and evaluation.}
+}
+
+@inproceedings{heinrich2015fictitious,
+  title={Fictitious Self-Play in Extensive-Form Games},
+  author={Heinrich, Johannes and Lanctot, Marc and Silver, David},
+  booktitle={International Conference on Machine Learning (ICML)},
+  year={2015},
+  url={https://proceedings.mlr.press/v37/heinrich15.html},
+  note={FSP: best-respond to opponent's average policy (mixture of all historical policies). Converges to NE in two-player zero-sum.}
+}
+
+@article{heinrich2016nfsp,
+  title={Deep Reinforcement Learning from Self-Play in Imperfect-Information Games},
+  author={Heinrich, Johannes and Silver, David},
+  journal={arXiv preprint arXiv:1603.01121},
+  year={2016},
+  url={https://arxiv.org/abs/1603.01121},
+  note={NFSP: neural implementation of FSP. Two networks per agent — best response (RL) + average policy (supervised on reservoir buffer). Prevents cyclic strategies.}
+}
+
+@inproceedings{lanctot2017psro,
+  title={A Unified Game-Theoretic Approach to Multiagent Reinforcement Learning},
+  author={Lanctot, Marc and Zambaldi, Vinicius and Gruslys, Audrunas and Lazaridou, Angeliki and Tuyls, Karl and P{\'e}rolat, Julien and Silver, David and Graepel, Thore},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  year={2017},
+  url={https://mlanctot.info/files/papers/nips17-psro.pdf},
+  note={PSRO: maintain policy population, compute meta-game payoff matrix, solve Nash equilibrium, train best response, add to population. Unifies FSP, DO, and EGTA.}
+}
+
+@article{mcaleer2022selfplay,
+  title={Self-Play {PSRO}: Toward Optimal Populations in Two-Player Zero-Sum Games},
+  author={McAleer, Stephen and Lanier, John B and Fox, Roy and Baldi, Pierre},
+  journal={arXiv preprint arXiv:2207.06541},
+  year={2022},
+  url={https://arxiv.org/abs/2207.06541},
+  note={SP-PSRO: incorporates self-play into PSRO for faster convergence in two-player zero-sum.}
+}
+
+@inproceedings{lockhart2019exploitability,
+  title={Computing Approximate Equilibria in Sequential Adversarial Games by Exploitability Descent},
+  author={Lockhart, Edward and Lanctot, Marc and P{\'e}rolat, Julien and Lespiau, Jean-Baptiste and Morrill, Dustin and Timbers, Finbarr and Tuyls, Karl},
+  booktitle={International Joint Conference on Artificial Intelligence (IJCAI)},
+  year={2019},
+  url={https://arxiv.org/abs/1903.05614},
+  note={Exploitability descent: directly optimize exploitability via gradient descent. Both players independently minimize NashConv. Converges actual policies (not averages).}
+}
+
+@inproceedings{timbers2022approximate,
+  title={Approximate Exploitability: Learning a Best Response in Large Games},
+  author={Timbers, Finbarr and Lockhart, Edward and Schmid, Martin and Lanctot, Marc and Bowling, Michael},
+  booktitle={International Joint Conference on Artificial Intelligence (IJCAI)},
+  year={2022},
+  note={Learned approximate best response makes exploitability-based methods practical for large games.}
+}
+
+@inproceedings{balcan2023nash,
+  title={Nash Equilibria and Pitfalls of Adversarial Training in Adversarial Robustness Games},
+  author={Balcan, Maria-Florina and others},
+  booktitle={International Conference on Artificial Intelligence and Statistics (AISTATS)},
+  year={2023},
+  url={https://arxiv.org/abs/2210.12606},
+  note={Theoretical analysis of adversarial training dynamics, NE existence, and convergence pitfalls.}
+}
+
+@inproceedings{huang2023robust,
+  title={A Robust and Opponent-Aware League Training Method for {StarCraft II}},
+  author={Huang, Ruozi and others},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  year={2023},
+  note={Opponent-aware league training. Improves on AlphaStar league with adaptive matchmaking.}
+}
+
+@article{lanctot2019openspiel,
+  title={{OpenSpiel}: A Framework for Reinforcement Learning in Games},
+  author={Lanctot, Marc and Lockhart, Edward and Lespiau, Jean-Baptiste and Zambaldi, Vinicius and Upadhyay, Satyaki and P{\'e}rolat, Julien and Srinivasan, Sriram and Timbers, Finbarr and Tuyls, Karl and Omidshafiei, Shayegan and others},
+  journal={arXiv preprint arXiv:1908.09453},
+  year={2019},
+  note={Reference implementations of FSP, NFSP, PSRO, and other multi-agent RL algorithms.}
+}
+
+@inproceedings{aaai2024subgame,
+  title={Accelerate Multi-Agent Reinforcement Learning in Zero-Sum Games with Subgame Curriculum Learning},
+  booktitle={AAAI Conference on Artificial Intelligence},
+  year={2024},
+  url={https://ojs.aaai.org/index.php/AAAI/article/view/29011},
+  note={Adaptive subgame sampling based on difficulty for zero-sum MARL. Accelerates convergence by focusing on subgames at agent's capability boundary.}
+}
+
+@article{selfplay2024survey,
+  title={A Survey on Self-play Methods in Reinforcement Learning},
+  journal={arXiv preprint arXiv:2408.01072},
+  year={2024},
+  note={Comprehensive survey of self-play methods: vanilla, FSP, PSRO, population-based, league training.}
+}
+
+% ---- REWARD SHAPING (PBRS) ----
+% Referenced in S44-S45 for obstacle-seeking implementation
+
+@inproceedings{ng1999pbrs,
+  title={Policy Invariance Under Reward Transformations: Theory and Application to Reward Shaping},
+  author={Ng, Andrew Y and Harada, Daishi and Russell, Stuart},
+  booktitle={International Conference on Machine Learning (ICML)},
+  year={1999},
+  note={PBRS: F(s,a,s') = gamma*Phi(s') - Phi(s) is the ONLY additive shaping that preserves optimal policy. Foundation for reward shaping theory.}
+}
+
+@article{devlin2012pbrs,
+  title={Dynamic Potential-Based Reward Shaping},
+  author={Devlin, Sam and Kudenko, Daniel},
+  journal={Proceedings of the 11th International Conference on Autonomous Agents and Multiagent Systems (AAMAS)},
+  year={2012},
+  note={Extends PBRS to multi-agent settings. Shows PBRS preserves Nash equilibria in competitive games.}
+}

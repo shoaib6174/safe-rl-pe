@@ -38,7 +38,7 @@ def _make_test_cfg():
             "evader": {"v_max": 1.0, "omega_max": 2.84},
             "reward": {
                 "capture_bonus": 100.0,
-                "timeout_penalty": -50.0,
+                "timeout_penalty": -100.0,
                 "distance_scale": 1.0,
             },
         },
