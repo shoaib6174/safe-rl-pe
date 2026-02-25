@@ -61,7 +61,7 @@
 | 48 | 2026-02-24 | **Phase 3 Fix**: Three-pronged fix (dual-criteria gate, regression, asymmetric training), reward rebalancing (timeout=-100, survival_bonus=0), equal speeds. Run Q+R launched. 14 new tests (590 pass) | [S48](worklogs/2026-02-24_S48.md) |
 | 49 | 2026-02-25 | **Phase 3 Monitoring**: Run Q killed (L4 collapse). Run R collapsing at L3 (gate=0.05 too low). Launched Runs S (20x20, gate=0.15) + T (10x10, gate=0.15). 3-run experimental matrix. | [S49](worklogs/2026-02-25_S49.md) |
 | 50 | 2026-02-25 | **Obstacle Physics Fix**: `resolve_obstacle_collisions()` — hard projection with tangential sliding, `w_collision` penalty, 13 new tests (603 total passing) | [S50](worklogs/2026-02-25_S50.md) |
-| 51 | 2026-02-25 | **Wall Penalty + Research**: `w_wall` impl (2 tests, 605 passing), penalty lit review (N16–N20), killed Runs R/S/T (collapsed), launched Run U (`w_wall=w_collision=0.5`) | [S51](worklogs/2026-02-25_S51.md) |
+| 51 | 2026-02-25 | **Wall Penalty + Research**: `w_wall` impl (2 tests, 605 passing), penalty lit review (N16–N20), killed R/S/T, Run U collapsed at L2 — penalties don't fix evader failure | [S51](worklogs/2026-02-25_S51.md) |
 
 ## Paper Reading Status
 
