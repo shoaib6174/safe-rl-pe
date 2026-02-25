@@ -319,7 +319,7 @@ class TestVisibilityReward:
         assert r_p + r_e != pytest.approx(0.0, abs=0.1)
 
     def test_fallback_zero_sum_no_obstacles(self):
-        """Without obstacles, should fall back to zero-sum distance-based."""
+        """Without obstacles, should fall back to zero-sum + survival bonus."""
         rc = self.make_reward()
         r_p, r_e = rc.compute(
             d_curr=8.0, d_prev=9.0, captured=False, timed_out=False,
@@ -327,15 +327,17 @@ class TestVisibilityReward:
             evader_pos=np.array([6.0, 0.0, 0.0]),
             obstacles=[],  # no obstacles
         )
-        assert r_p + r_e == pytest.approx(0.0, abs=1e-10)
+        # Base is zero-sum (-r_p), but survival_bonus=1.0 adds to evader
+        assert r_p + r_e == pytest.approx(rc.survival_bonus, abs=1e-10)
 
     def test_fallback_zero_sum_no_positions(self):
-        """Without positions, should fall back to zero-sum."""
+        """Without positions, should fall back to zero-sum + survival bonus."""
         rc = self.make_reward()
         r_p, r_e = rc.compute(
             d_curr=8.0, d_prev=9.0, captured=False, timed_out=False,
         )
-        assert r_p + r_e == pytest.approx(0.0, abs=1e-10)
+        # Base is zero-sum (-r_p), but survival_bonus=1.0 adds to evader
+        assert r_p + r_e == pytest.approx(rc.survival_bonus, abs=1e-10)
 
     def test_capture_zero_sum(self):
         """Capture step should be zero-sum even in visibility mode."""

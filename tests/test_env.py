@@ -432,3 +432,64 @@ class TestWallPenalty:
         # Just verify it's a finite number — no penalty was subtracted
         assert np.isfinite(rewards["pursuer"])
         assert rewards["pursuer"] == pytest.approx(-rewards["evader"], abs=1e-6)
+
+
+class TestSurvivalBonusAllLevels:
+    """Test that survival_bonus applies at ALL levels, not just obstacle levels."""
+
+    def test_survival_bonus_without_obstacles(self):
+        """Survival bonus should apply even when no obstacles exist."""
+        from envs.rewards import RewardComputer
+        rc = RewardComputer(
+            distance_scale=1.0,
+            d_max=10.0,
+            survival_bonus=1.0,
+            use_visibility_reward=True,
+        )
+        # No obstacles — this triggers zero-sum fallback path
+        r_p, r_e = rc.compute(
+            d_curr=5.0, d_prev=5.0,
+            captured=False, timed_out=False,
+            obstacles=[],
+        )
+        # r_pursuer = 0 (no distance change, no terminal)
+        # r_evader = -r_pursuer + survival_bonus = 0 + 1.0 = 1.0
+        assert r_e == pytest.approx(1.0, abs=0.01)
+
+    def test_survival_bonus_not_on_capture(self):
+        """Survival bonus should NOT apply on terminal steps."""
+        from envs.rewards import RewardComputer
+        rc = RewardComputer(
+            distance_scale=1.0,
+            d_max=10.0,
+            survival_bonus=1.0,
+        )
+        r_p, r_e = rc.compute(
+            d_curr=0.1, d_prev=1.0,
+            captured=True, timed_out=False,
+        )
+        # On capture: r_e = -r_p (zero-sum), no survival bonus
+        assert r_e == pytest.approx(-r_p, abs=0.01)
+
+    def test_survival_bonus_with_visibility_and_obstacles(self):
+        """Survival bonus should also apply in visibility mode with obstacles."""
+        from envs.rewards import RewardComputer
+        rc = RewardComputer(
+            distance_scale=1.0,
+            d_max=10.0,
+            survival_bonus=1.0,
+            use_visibility_reward=True,
+            visibility_weight=1.0,
+        )
+        # With obstacles and visibility — evader is hidden
+        r_p, r_e = rc.compute(
+            d_curr=5.0, d_prev=5.0,
+            captured=False, timed_out=False,
+            pursuer_pos=np.array([1.0, 1.0, 0.0]),
+            evader_pos=np.array([5.0, 5.0, 0.0]),
+            obstacles=[{
+                "x": 3.0, "y": 3.0, "radius": 2.0,
+            }],
+        )
+        # Visibility: +1.0 (hidden) + survival_bonus 1.0 = 2.0
+        assert r_e == pytest.approx(2.0, abs=0.2)

@@ -7,7 +7,7 @@ distance clamping, and integration with AMSDRLSelfPlay.
 import pytest
 import numpy as np
 
-from training.curriculum import CurriculumManager
+from training.curriculum import CurriculumManager, SmoothCurriculumManager
 
 
 # ─── CurriculumManager Unit Tests ───
@@ -405,3 +405,207 @@ class TestCurriculumRegression:
         assert cm.current_level == 3
         assert cm.phases_at_level == 0
         assert cm.consecutive_floor_phases == 0
+
+
+# ─── SmoothCurriculumManager Tests ───
+
+
+class TestSmoothCurriculumInit:
+    """Test SmoothCurriculumManager initialization."""
+
+    def test_default_init(self):
+        scm = SmoothCurriculumManager()
+        assert scm.min_init_distance == 2.0
+        assert scm.max_init_distance == 5.0
+        assert scm.final_max_distance <= 15.0
+        assert scm.distance_increment == 1.0
+
+    def test_starts_not_at_max(self):
+        scm = SmoothCurriculumManager()
+        assert not scm.at_max_level
+
+    def test_overrides_match_initial(self):
+        scm = SmoothCurriculumManager(initial_max_distance=5.0)
+        overrides = scm.get_env_overrides()
+        assert overrides["min_init_distance"] == 2.0
+        assert overrides["max_init_distance"] == 5.0
+        assert overrides["n_obstacles"] == 0
+
+    def test_no_obstacles_initially(self):
+        scm = SmoothCurriculumManager(obstacles_after_distance=8.0)
+        assert scm.n_obstacles == 0
+
+
+class TestSmoothCurriculumAdvancement:
+    """Test smooth distance expansion."""
+
+    def test_advances_by_increment(self):
+        scm = SmoothCurriculumManager(distance_increment=1.0)
+        advanced = scm.check_advancement(0.80, escape_rate=0.10)
+        assert advanced
+        assert scm.max_init_distance == 6.0
+
+    def test_no_advance_below_threshold(self):
+        scm = SmoothCurriculumManager()
+        advanced = scm.check_advancement(0.50, escape_rate=0.10)
+        assert not advanced
+        assert scm.max_init_distance == 5.0
+
+    def test_blocked_by_escape_rate(self):
+        scm = SmoothCurriculumManager(min_escape_rate=0.10)
+        advanced = scm.check_advancement(0.80, escape_rate=0.05)
+        assert not advanced
+
+    def test_gradual_expansion(self):
+        scm = SmoothCurriculumManager(
+            initial_max_distance=5.0,
+            final_max_distance=8.0,
+            distance_increment=1.0,
+        )
+        for _ in range(3):
+            scm.check_advancement(0.80, escape_rate=0.10)
+        assert scm.max_init_distance == 8.0
+        assert scm.at_max_level
+
+    def test_clamps_at_final(self):
+        scm = SmoothCurriculumManager(
+            initial_max_distance=7.0,
+            final_max_distance=8.0,
+            distance_increment=2.0,
+        )
+        scm.check_advancement(0.80, escape_rate=0.10)
+        assert scm.max_init_distance == 8.0  # Clamped, not 9.0
+
+    def test_obstacles_appear_at_threshold(self):
+        scm = SmoothCurriculumManager(
+            initial_max_distance=7.0,
+            obstacles_after_distance=8.0,
+            distance_increment=1.0,
+            n_obstacles=3,
+        )
+        assert scm.n_obstacles == 0
+        scm.check_advancement(0.80, escape_rate=0.10)
+        assert scm.max_init_distance == 8.0
+        assert scm.n_obstacles == 3
+
+
+class TestSmoothCurriculumRegression:
+    """Test smooth curriculum regression."""
+
+    def test_regression_decreases_distance(self):
+        scm = SmoothCurriculumManager(
+            initial_max_distance=7.0,
+            distance_increment=1.0,
+            regression_patience=2,
+        )
+        scm.check_regression(0.01)
+        assert scm.check_regression(0.01)
+        assert scm.max_init_distance == 6.0
+
+    def test_no_regression_at_minimum(self):
+        scm = SmoothCurriculumManager(initial_max_distance=5.0)
+        assert not scm.check_regression(0.01)
+
+    def test_regression_clamps_at_5(self):
+        scm = SmoothCurriculumManager(
+            initial_max_distance=5.5,
+            distance_increment=1.0,
+            regression_patience=1,
+        )
+        scm.check_regression(0.01)
+        assert scm.max_init_distance == 5.0  # Clamped, not 4.5
+
+
+class TestSmoothCurriculumStatus:
+    """Test smooth curriculum status reporting."""
+
+    def test_status_includes_max_distance(self):
+        scm = SmoothCurriculumManager(initial_max_distance=6.0)
+        status = scm.get_status()
+        assert "6.0" in status["curriculum_description"]
+
+    def test_level_increases_with_advancement(self):
+        scm = SmoothCurriculumManager()
+        assert scm.current_level == 1
+        scm.check_advancement(0.80, escape_rate=0.10)
+        assert scm.current_level == 2
+
+
+# ─── Integration Tests for New Parameters ───
+
+
+class TestNewAMSDRLParams:
+    """Test new AMSDRLSelfPlay parameters from S52 fixes."""
+
+    def test_bilateral_rollback_param(self):
+        from training.amsdrl import AMSDRLSelfPlay
+        amsdrl = AMSDRLSelfPlay(
+            output_dir="/tmp/test_bilateral",
+            max_phases=2, timesteps_per_phase=100, n_envs=1,
+            bilateral_rollback=True,
+        )
+        assert amsdrl.bilateral_rollback is True
+
+    def test_evader_first_on_advance_param(self):
+        from training.amsdrl import AMSDRLSelfPlay
+        amsdrl = AMSDRLSelfPlay(
+            output_dir="/tmp/test_evader_first",
+            max_phases=2, timesteps_per_phase=100, n_envs=1,
+            evader_first_on_advance=True,
+        )
+        assert amsdrl.evader_first_on_advance is True
+
+    def test_warm_start_evader_param(self):
+        from training.amsdrl import AMSDRLSelfPlay
+        amsdrl = AMSDRLSelfPlay(
+            output_dir="/tmp/test_warm_start",
+            max_phases=2, timesteps_per_phase=100, n_envs=1,
+            warm_start_evader=True,
+            warm_start_timesteps=10_000,
+        )
+        assert amsdrl.warm_start_evader is True
+        assert amsdrl.warm_start_timesteps == 10_000
+
+    def test_mixed_level_ratio_param(self):
+        from training.amsdrl import AMSDRLSelfPlay
+        amsdrl = AMSDRLSelfPlay(
+            output_dir="/tmp/test_mixed_level",
+            max_phases=2, timesteps_per_phase=100, n_envs=4,
+            mixed_level_ratio=0.25,
+        )
+        assert amsdrl.mixed_level_ratio == 0.25
+
+    def test_smooth_curriculum_creates_correct_manager(self):
+        from training.amsdrl import AMSDRLSelfPlay
+        amsdrl = AMSDRLSelfPlay(
+            output_dir="/tmp/test_smooth_curriculum",
+            max_phases=2, timesteps_per_phase=100, n_envs=1,
+            smooth_curriculum=True,
+            smooth_curriculum_increment=0.5,
+        )
+        assert isinstance(amsdrl.curriculum, SmoothCurriculumManager)
+        assert amsdrl.curriculum.distance_increment == 0.5
+
+    def test_smooth_curriculum_overrides_regular(self):
+        """smooth_curriculum takes priority over curriculum."""
+        from training.amsdrl import AMSDRLSelfPlay
+        amsdrl = AMSDRLSelfPlay(
+            output_dir="/tmp/test_smooth_priority",
+            max_phases=2, timesteps_per_phase=100, n_envs=1,
+            curriculum=True,
+            smooth_curriculum=True,
+        )
+        assert isinstance(amsdrl.curriculum, SmoothCurriculumManager)
+
+    def test_default_params_backward_compat(self):
+        """All new params default to off for backward compatibility."""
+        from training.amsdrl import AMSDRLSelfPlay
+        amsdrl = AMSDRLSelfPlay(
+            output_dir="/tmp/test_defaults",
+            max_phases=2, timesteps_per_phase=100, n_envs=1,
+        )
+        assert amsdrl.bilateral_rollback is False
+        assert amsdrl.evader_first_on_advance is False
+        assert amsdrl.warm_start_evader is False
+        assert amsdrl.mixed_level_ratio == 0.0
+        assert amsdrl.curriculum is None

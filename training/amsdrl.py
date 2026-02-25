@@ -32,13 +32,15 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 from agents.partial_obs_policy import PartialObsFeaturesExtractor
 from envs.dcbf_action_wrapper import DCBFActionWrapper
 from envs.rewards import RewardComputer
+from envs.rnd import RNDModule, RNDRewardWrapper
 from envs.navigation_env import NavigationEnv
 from envs.opponent_adapter import PartialObsOpponentAdapter
 from envs.partial_obs_wrapper import PartialObsWrapper
 from envs.pursuit_evasion_env import PursuitEvasionEnv
 from envs.wrappers import FixedSpeedModelAdapter, FixedSpeedWrapper, SingleAgentPEWrapper
 from training.checkpoint_manager import CheckpointManager
-from training.curriculum import CurriculumManager
+from training.curriculum import CurriculumManager, SmoothCurriculumManager
+from training.ewc import EWCRegularizer
 from training.opponent_pool import OpponentPool
 from training.selfplay_callbacks import (
     EntropyMonitorCallback,
@@ -150,6 +152,9 @@ def _make_vec_env(
     n_obstacles: int = 0,
     seed: int = 42,
     full_obs: bool = False,
+    rnd_module: RNDModule | None = None,
+    rnd_coef: float = 0.0,
+    rnd_update_freq: int = 256,
     **env_kwargs,
 ) -> tuple:
     """Create vectorized environments.
@@ -172,6 +177,12 @@ def _make_vec_env(
                 full_obs=full_obs,
                 **env_kwargs,
             )
+            # RND wrapper for evader intrinsic motivation
+            if rnd_module is not None and role == "evader":
+                env = RNDRewardWrapper(
+                    env, rnd_module=rnd_module,
+                    rnd_coef=rnd_coef, update_freq=rnd_update_freq,
+                )
             base_envs.append(base)
             return Monitor(env)
         return _init
@@ -528,6 +539,19 @@ class AMSDRLSelfPlay:
         evader_training_multiplier: float = 1.0,
         min_escape_rate: float = 0.0,
         min_phases_per_level: int = 1,
+        bilateral_rollback: bool = False,
+        evader_first_on_advance: bool = False,
+        warm_start_evader: bool = False,
+        warm_start_timesteps: int = 50_000,
+        mixed_level_ratio: float = 0.0,
+        smooth_curriculum: bool = False,
+        smooth_curriculum_increment: float = 0.5,
+        ewc_lambda: float = 0.0,
+        ewc_fisher_samples: int = 1024,
+        rnd_coef: float = 0.0,
+        rnd_embed_dim: int = 64,
+        rnd_hidden_dim: int = 128,
+        rnd_update_freq: int = 256,
         verbose: int = 1,
     ):
         self.output_dir = Path(output_dir)
@@ -574,10 +598,27 @@ class AMSDRLSelfPlay:
         }
         self.fixed_speed = fixed_speed
         self.evader_training_multiplier = evader_training_multiplier
+        self.bilateral_rollback = bilateral_rollback
+        self.evader_first_on_advance = evader_first_on_advance
+        self.warm_start_evader = warm_start_evader
+        self.warm_start_timesteps = warm_start_timesteps
+        self.mixed_level_ratio = mixed_level_ratio
 
         # Curriculum learning
         self.curriculum = None
-        if curriculum:
+        if smooth_curriculum:
+            self.curriculum = SmoothCurriculumManager(
+                arena_width=arena_width,
+                arena_height=arena_height,
+                distance_increment=smooth_curriculum_increment,
+                min_escape_rate=min_escape_rate,
+                min_phases_per_level=min_phases_per_level,
+            )
+            overrides = self.curriculum.get_env_overrides()
+            self.env_kwargs["min_init_distance"] = overrides["min_init_distance"]
+            self.env_kwargs["max_init_distance"] = overrides["max_init_distance"]
+            self.n_obstacles = overrides["n_obstacles"]
+        elif curriculum:
             self.curriculum = CurriculumManager(
                 arena_width=arena_width,
                 arena_height=arena_height,
@@ -618,6 +659,22 @@ class AMSDRLSelfPlay:
             self.pursuer_pool = None
             self.evader_pool = None
 
+        # EWC regularizer (Tier 3, Fix 5)
+        self.ewc_lambda = ewc_lambda
+        self.ewc: EWCRegularizer | None = None
+        if ewc_lambda > 0:
+            self.ewc = EWCRegularizer(
+                lambda_=ewc_lambda,
+                fisher_samples=ewc_fisher_samples,
+            )
+
+        # RND intrinsic motivation (Tier 3, Fix 9)
+        self.rnd_coef = rnd_coef
+        self.rnd_embed_dim = rnd_embed_dim
+        self.rnd_hidden_dim = rnd_hidden_dim
+        self.rnd_update_freq = rnd_update_freq
+        self.rnd_module = None  # Created lazily when env obs_dim is known
+
     def run(self) -> dict:
         """Execute the full AMS-DRL protocol.
 
@@ -651,6 +708,11 @@ class AMSDRLSelfPlay:
                 w_occ = self.env_kwargs.get("w_occlusion", 0.0)
                 if w_occ > 0:
                     print(f"  Occlusion bonus: {w_occ}")
+            if self.ewc_lambda > 0:
+                print(f"  EWC: lambda={self.ewc_lambda}, fisher_samples={self.ewc.fisher_samples}")
+            if self.rnd_coef > 0:
+                print(f"  RND: coef={self.rnd_coef}, embed={self.rnd_embed_dim}, "
+                      f"hidden={self.rnd_hidden_dim}, update_freq={self.rnd_update_freq}")
             print(f"  Seed: {self.seed}")
             print(f"  Device: {self.device}")
             print("=" * 60)
@@ -677,8 +739,13 @@ class AMSDRLSelfPlay:
 
         # ─── Alternating Training Phases ───
         converged = False
+        force_next_role = None  # Override alternation for evader-first
         for phase in range(1, self.max_phases + 1):
-            role = "pursuer" if phase % 2 == 1 else "evader"
+            if force_next_role is not None:
+                role = force_next_role
+                force_next_role = None
+            else:
+                role = "pursuer" if phase % 2 == 1 else "evader"
 
             if self.verbose:
                 print(f"\n=== Phase S{phase}: Training {role} ===")
@@ -697,11 +764,25 @@ class AMSDRLSelfPlay:
                     metrics["capture_rate"], metrics["escape_rate"]
                 )
                 if advanced:
+                    # EWC: snapshot evader before changing level
+                    if self.ewc is not None and self.evader_model is not None:
+                        self._ewc_snapshot_evader()
+
                     # Apply new level's env overrides for subsequent phases
                     overrides = self.curriculum.get_env_overrides()
                     self.env_kwargs["min_init_distance"] = overrides["min_init_distance"]
                     self.env_kwargs["max_init_distance"] = overrides["max_init_distance"]
                     self.n_obstacles = overrides["n_obstacles"]
+
+                    # Evader-first: force next phase to train evader
+                    if self.evader_first_on_advance:
+                        force_next_role = "evader"
+                        if self.verbose:
+                            print("  [EVADER-FIRST] Next phase will train evader at new level")
+
+                    # Warm-start evader at new level
+                    if self.warm_start_evader:
+                        self._warm_start_evader_at_level()
                 else:
                     # Check for regression (evader collapse)
                     regressed = self.curriculum.check_regression(metrics["escape_rate"])
@@ -897,6 +978,127 @@ class AMSDRLSelfPlay:
         if self.verbose:
             print(f"  Cold-start complete: {self.cold_start_timesteps} steps")
 
+    def _warm_start_evader_at_level(self):
+        """Restore evader to best milestone weights and optionally pre-train.
+
+        Called when curriculum advances to a new level. Prevents the evader
+        from entering the new level with a policy that's been overfit to the
+        previous level's distance distribution.
+        """
+        # Find the best evader milestone checkpoint
+        milestone_dir = self.evader_ckpt.checkpoint_dir
+        milestones = sorted(milestone_dir.glob("milestone_phase*_evader"))
+        if not milestones:
+            if self.verbose:
+                print("  [WARM-START] No evader milestones found, skipping")
+            return
+
+        # Use the most recent evader milestone
+        best_milestone = milestones[-1]
+        if self.verbose:
+            print(f"  [WARM-START] Restoring evader from {best_milestone.name}")
+
+        try:
+            loaded_model = type(self.evader_model).load(
+                str(best_milestone / "ppo.zip")
+            )
+            self.evader_model.policy.load_state_dict(
+                loaded_model.policy.state_dict()
+            )
+        except Exception as e:
+            print(f"  [WARM-START] Failed to restore milestone: {e}")
+            return
+
+        # Solo pre-training: train evader at new level with random opponent
+        if self.warm_start_timesteps > 0:
+            if self.verbose:
+                print(f"  [WARM-START] Solo pre-training evader for "
+                      f"{self.warm_start_timesteps} steps at new level")
+
+            train_vec_env, base_envs = _make_vec_env(
+                role="evader",
+                n_envs=self.n_envs,
+                use_dcbf=False,
+                history_length=self.history_length,
+                n_obstacles=self.n_obstacles,
+                seed=self.seed + 9999,
+                full_obs=self.full_obs,
+                fixed_speed=self.fixed_speed,
+                **self.env_kwargs,
+            )
+
+            # Set random opponents (None = random policy)
+            for base_env in base_envs:
+                inner_vec = train_vec_env.venv if hasattr(train_vec_env, "venv") else train_vec_env
+                for i, sub_env in enumerate(inner_vec.envs):
+                    wrapper = sub_env
+                    while hasattr(wrapper, "env"):
+                        if isinstance(wrapper, SingleAgentPEWrapper):
+                            break
+                        wrapper = wrapper.env
+                    if isinstance(wrapper, SingleAgentPEWrapper):
+                        wrapper.set_opponent(None)  # Random opponent
+
+            # Handle n_envs mismatch
+            if self.evader_model.n_envs != train_vec_env.num_envs:
+                import tempfile
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp) / "model.zip"
+                    self.evader_model.save(tmp_path)
+                    self.evader_model = PPO.load(
+                        tmp_path,
+                        env=train_vec_env,
+                        device=self.device,
+                    )
+            else:
+                self.evader_model.set_env(train_vec_env)
+
+            self.evader_model.learn(
+                total_timesteps=self.warm_start_timesteps,
+                reset_num_timesteps=False,
+                progress_bar=True,
+            )
+            train_vec_env.close()
+
+            if self.verbose:
+                print("  [WARM-START] Solo pre-training complete")
+
+    def _ewc_snapshot_evader(self):
+        """Take EWC snapshot of evader policy using observations from current level.
+
+        Collects observations by running the evader's current policy in the
+        current-level environment, then computes the Fisher information matrix.
+        """
+        # Create a temporary env at current level to collect observations
+        tmp_env, _ = _make_partial_obs_env(
+            role="evader",
+            use_dcbf=False,
+            history_length=self.history_length,
+            n_obstacles=self.n_obstacles,
+            full_obs=self.full_obs,
+            fixed_speed=self.fixed_speed,
+            **self.env_kwargs,
+        )
+
+        # Collect observations by rolling out the current evader policy
+        obs_list = []
+        obs, _ = tmp_env.reset()
+        for _ in range(self.ewc.fisher_samples + 100):
+            obs_list.append(obs)
+            action, _ = self.evader_model.predict(obs, deterministic=False)
+            obs, _, terminated, truncated, _ = tmp_env.step(action)
+            if terminated or truncated:
+                obs, _ = tmp_env.reset()
+        tmp_env.close()
+
+        obs_batch = torch.FloatTensor(np.array(obs_list[:self.ewc.fisher_samples]))
+        obs_batch = obs_batch.to(self.evader_model.device)
+
+        self.ewc.snapshot(self.evader_model, obs_batch)
+        if self.verbose:
+            print(f"  [EWC] Snapshot taken: {len(obs_batch)} observations, "
+                  f"lambda={self.ewc.lambda_}")
+
     def _wrap_opponent_model(self, opp_model, opponent_role, base_env):
         """Wrap an opponent model with adapters (fixed-speed, partial-obs).
 
@@ -940,6 +1142,39 @@ class AMSDRLSelfPlay:
             role: Which agent to train ('pursuer' or 'evader').
         """
         # Create training env for this phase
+        # Lazily create RND module on first evader training phase
+        rnd_for_env = None
+        if role == "evader" and self.rnd_coef > 0:
+            if self.rnd_module is None:
+                # Determine obs_dim from a temporary env
+                tmp_env, _ = _make_partial_obs_env(
+                    role="evader",
+                    history_length=self.history_length,
+                    n_obstacles=self.n_obstacles,
+                    full_obs=self.full_obs,
+                    fixed_speed=self.fixed_speed,
+                    **self.env_kwargs,
+                )
+                # Compute flattened obs dim (handles Dict obs spaces)
+                obs_space = tmp_env.observation_space
+                if hasattr(obs_space, 'spaces'):
+                    # Dict space: sum of flattened shapes
+                    obs_dim = sum(
+                        np.prod(s.shape) for s in obs_space.spaces.values()
+                    )
+                else:
+                    obs_dim = obs_space.shape[0]
+                tmp_env.close()
+                self.rnd_module = RNDModule(
+                    obs_dim=obs_dim,
+                    embed_dim=self.rnd_embed_dim,
+                    hidden_dim=self.rnd_hidden_dim,
+                )
+                if self.verbose:
+                    print(f"  [RND] Created module: obs_dim={obs_dim}, "
+                          f"embed={self.rnd_embed_dim}, hidden={self.rnd_hidden_dim}")
+            rnd_for_env = self.rnd_module
+
         train_vec_env, base_envs = _make_vec_env(
             role=role,
             n_envs=self.n_envs,
@@ -950,8 +1185,25 @@ class AMSDRLSelfPlay:
             seed=self.seed + phase * 100,
             full_obs=self.full_obs,
             fixed_speed=self.fixed_speed,
+            rnd_module=rnd_for_env,
+            rnd_coef=self.rnd_coef,
+            rnd_update_freq=self.rnd_update_freq,
             **self.env_kwargs,
         )
+
+        # Mixed-level replay: override some sub-envs to use previous level
+        if (self.mixed_level_ratio > 0
+                and self.curriculum is not None
+                and self.curriculum.current_level > 1):
+            prev_level = self.curriculum.levels[self.curriculum.current_level - 1]
+            n_mixed = max(1, int(self.n_envs * self.mixed_level_ratio))
+            for i in range(n_mixed):
+                if i < len(base_envs):
+                    base_envs[i].min_init_distance = prev_level["min_init_distance"]
+                    base_envs[i].max_init_distance = prev_level["max_init_distance"]
+            if self.verbose:
+                print(f"  [MIXED-LEVEL] {n_mixed}/{self.n_envs} envs using "
+                      f"L{self.curriculum.current_level - 1} distances")
 
         # Determine roles and models
         if role == "pursuer":
@@ -1033,6 +1285,15 @@ class AMSDRLSelfPlay:
                 print(f"  Asymmetric training: evader gets {phase_timesteps} steps "
                       f"({self.evader_training_multiplier}x at obstacle level)")
 
+        # EWC: register gradient hooks for evader training
+        ewc_hooks = []
+        if role == "evader" and self.ewc is not None and self.ewc.has_snapshot:
+            ewc_hooks = self.ewc.register_hooks(active_model)
+            if self.verbose and ewc_hooks:
+                penalty = self.ewc.penalty(active_model)
+                print(f"  [EWC] Registered {len(ewc_hooks)} hooks, "
+                      f"current penalty={penalty:.2f}")
+
         # Train
         active_model.learn(
             total_timesteps=phase_timesteps,
@@ -1040,6 +1301,13 @@ class AMSDRLSelfPlay:
             reset_num_timesteps=False,
             progress_bar=True,
         )
+
+        # EWC: remove hooks after training
+        if ewc_hooks:
+            EWCRegularizer.remove_hooks(ewc_hooks)
+            if self.verbose:
+                penalty = self.ewc.penalty(active_model)
+                print(f"  [EWC] Post-training penalty={penalty:.2f}")
 
         # Save milestone checkpoint
         ckpt_mgr.save_milestone(
@@ -1060,11 +1328,22 @@ class AMSDRLSelfPlay:
 
     def _build_callbacks(self, role: str, ckpt_mgr: CheckpointManager, phase: int):
         """Build callback list for a training phase."""
+        # Determine opponent references for bilateral rollback
+        if role == "pursuer":
+            opp_ckpt_mgr = self.evader_ckpt
+            opp_model_ref = [self.evader_model]
+        else:
+            opp_ckpt_mgr = self.pursuer_ckpt
+            opp_model_ref = [self.pursuer_model]
+
         callback_list = [
             EntropyMonitorCallback(check_freq=2048, log_std_floor=-2.0),
             SelfPlayHealthMonitorCallback(
                 checkpoint_manager=ckpt_mgr,
                 checkpoint_freq=10_000,
+                bilateral_rollback=self.bilateral_rollback,
+                opponent_ckpt_mgr=opp_ckpt_mgr,
+                opponent_model_ref=opp_model_ref,
                 verbose=self.verbose,
             ),
         ]

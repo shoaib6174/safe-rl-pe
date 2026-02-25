@@ -229,7 +229,6 @@ class RewardComputer:
             # Mode B: visibility-based evader reward (decoupled from pursuer)
             hidden = line_of_sight_blocked(pursuer_pos, evader_pos, obstacles)
             r_evader = self.visibility_weight * (1.0 if hidden else -1.0)
-            r_evader += self.survival_bonus
         else:
             # Zero-sum fallback (no obstacles, terminal step, or mode disabled)
             r_evader = -r_pursuer
@@ -244,6 +243,10 @@ class RewardComputer:
             ):
                 if line_of_sight_blocked(pursuer_pos, evader_pos, obstacles):
                     r_evader += self.w_occlusion
+
+        # Survival bonus: applied at ALL levels on non-terminal steps
+        if self.survival_bonus > 0 and not captured and not timed_out:
+            r_evader += self.survival_bonus
 
         # ── PBRS obstacle-seeking (evader only, non-terminal steps) ──
         if (

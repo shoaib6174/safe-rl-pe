@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-02-25 (S51)
+## Last Updated: 2026-02-26 (S52)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -62,6 +62,7 @@
 | 49 | 2026-02-25 | **Phase 3 Monitoring**: Run Q killed (L4 collapse). Run R collapsing at L3 (gate=0.05 too low). Launched Runs S (20x20, gate=0.15) + T (10x10, gate=0.15). 3-run experimental matrix. | [S49](worklogs/2026-02-25_S49.md) |
 | 50 | 2026-02-25 | **Obstacle Physics Fix**: `resolve_obstacle_collisions()` — hard projection with tangential sliding, `w_collision` penalty, 13 new tests (603 total passing) | [S50](worklogs/2026-02-25_S50.md) |
 | 51 | 2026-02-25 | **Wall Penalty + L2 Collapse Investigation**: `w_wall` impl, penalty lit review (N16–N20), killed R/S/T, Run U collapsed at L2, root cause analysis (8 causes, 9 fixes) | [S51](worklogs/2026-02-25_S51.md) |
+| 52 | 2026-02-26 | **L2 Collapse Countermeasures**: Tier 1+2 fixes (bilateral rollback, evader-first, warm-start, mixed-level, smooth curriculum), Tier 3 (EWC + RND), Runs V+W launched, 40 new tests (654 pass) | [S52](worklogs/2026-02-26_S52.md) |
 
 ## Paper Reading Status
 

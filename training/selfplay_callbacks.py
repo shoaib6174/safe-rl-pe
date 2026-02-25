@@ -92,6 +92,9 @@ class SelfPlayHealthMonitorCallback(BaseCallback):
         capture_window: Window of recent episodes for capture rate.
         cooldown_steps: Minimum steps between rollbacks.
         encoder: Optional BiMDN encoder for checkpointing.
+        bilateral_rollback: If True, also rollback the opponent model.
+        opponent_ckpt_mgr: CheckpointManager for opponent (required if bilateral).
+        opponent_model_ref: Mutable container [model] for opponent (required if bilateral).
         verbose: Verbosity level.
     """
 
@@ -107,6 +110,9 @@ class SelfPlayHealthMonitorCallback(BaseCallback):
         capture_window: int = 200,
         cooldown_steps: int = 50_000,
         encoder=None,
+        bilateral_rollback: bool = False,
+        opponent_ckpt_mgr: CheckpointManager | None = None,
+        opponent_model_ref: list | None = None,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -120,6 +126,9 @@ class SelfPlayHealthMonitorCallback(BaseCallback):
         self.capture_window = capture_window
         self.cooldown_steps = cooldown_steps
         self.encoder = encoder
+        self.bilateral_rollback = bilateral_rollback
+        self.opponent_ckpt_mgr = opponent_ckpt_mgr
+        self.opponent_model_ref = opponent_model_ref
 
         self.capture_history: deque = deque(maxlen=capture_window)
         self.last_rollback_step = -cooldown_steps
@@ -218,7 +227,11 @@ class SelfPlayHealthMonitorCallback(BaseCallback):
         return False
 
     def _trigger_rollback(self):
-        """Perform rollback to earlier checkpoint."""
+        """Perform rollback to earlier checkpoint.
+
+        If bilateral_rollback is enabled, also rolls back the opponent model
+        to prevent the asymmetric damage where only one agent is restored.
+        """
         self.rollback_count += 1
         self.last_rollback_step = self.num_timesteps
 
@@ -232,12 +245,30 @@ class SelfPlayHealthMonitorCallback(BaseCallback):
                     type(self.model), rollback_steps=3
                 )
 
-            # Restore policy weights
+            # Restore active agent policy weights
             self.model.policy.load_state_dict(model.policy.state_dict())
             self.capture_history.clear()
 
-            print(f"[ROLLBACK #{self.rollback_count}] Restored to step {step} "
-                  f"(from step {self.num_timesteps})")
+            print(f"[ROLLBACK #{self.rollback_count}] Restored active agent "
+                  f"to step {step} (from step {self.num_timesteps})")
+
+            # Bilateral: also rollback the opponent
+            if (self.bilateral_rollback
+                    and self.opponent_ckpt_mgr is not None
+                    and self.opponent_model_ref is not None):
+                try:
+                    opp_result = self.opponent_ckpt_mgr.perform_rollback(
+                        type(self.opponent_model_ref[0]),
+                        rollback_steps=3,
+                    )
+                    opp_model, opp_step = opp_result[0], opp_result[-1]
+                    self.opponent_model_ref[0].policy.load_state_dict(
+                        opp_model.policy.state_dict()
+                    )
+                    print(f"[BILATERAL ROLLBACK] Opponent restored to step {opp_step}")
+                except ValueError as e:
+                    print(f"[BILATERAL ROLLBACK SKIPPED] {e}")
+
         except ValueError as e:
             print(f"[ROLLBACK FAILED] {e}")
 

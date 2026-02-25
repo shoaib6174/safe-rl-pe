@@ -121,6 +121,39 @@ def parse_args():
     parser.add_argument("--min_escape_rate", type=float, default=0.0,
                         help="Minimum evader escape rate required for curriculum advancement (default: 0.0)")
 
+    # L2 collapse countermeasures (S52)
+    parser.add_argument("--bilateral_rollback", action="store_true", default=False,
+                        help="Rollback both agents (not just active) on domination detection")
+    parser.add_argument("--evader_first_on_advance", action="store_true", default=False,
+                        help="Force evader training first when curriculum advances")
+    parser.add_argument("--warm_start_evader", action="store_true", default=False,
+                        help="Restore evader to best milestone on curriculum advance")
+    parser.add_argument("--warm_start_timesteps", type=int, default=50000,
+                        help="Timesteps for evader warm-start pre-training (default: 50000)")
+    parser.add_argument("--mixed_level_ratio", type=float, default=0.0,
+                        help="Fraction of envs using previous level distances (default: 0.0, off). "
+                             "E.g. 0.2 uses 20%% prev-level envs to prevent forgetting.")
+    parser.add_argument("--smooth_curriculum", action="store_true", default=False,
+                        help="Use smooth (continuous) curriculum instead of discrete levels")
+    parser.add_argument("--smooth_curriculum_increment", type=float, default=0.5,
+                        help="Distance increment per advancement in smooth curriculum (default: 0.5)")
+
+    # Tier 3: EWC (catastrophic forgetting prevention)
+    parser.add_argument("--ewc_lambda", type=float, default=0.0,
+                        help="EWC regularization strength (0=disabled, e.g. 1000.0)")
+    parser.add_argument("--ewc_fisher_samples", type=int, default=1024,
+                        help="Observations for Fisher info estimation (default: 1024)")
+
+    # Tier 3: RND (intrinsic exploration motivation)
+    parser.add_argument("--rnd_coef", type=float, default=0.0,
+                        help="RND intrinsic reward coefficient (0=disabled, e.g. 0.1)")
+    parser.add_argument("--rnd_embed_dim", type=int, default=64,
+                        help="RND embedding dimension (default: 64)")
+    parser.add_argument("--rnd_hidden_dim", type=int, default=128,
+                        help="RND hidden layer width (default: 128)")
+    parser.add_argument("--rnd_update_freq", type=int, default=256,
+                        help="RND predictor training frequency in steps (default: 256)")
+
     # Safety
     parser.add_argument("--use_dcbf", action="store_true", default=True,
                         help="Use DCBF safety filter for pursuer (default: True)")
@@ -212,6 +245,19 @@ def main():
         evader_training_multiplier=args.evader_multiplier,
         min_escape_rate=args.min_escape_rate,
         min_phases_per_level=args.min_phases_per_level,
+        bilateral_rollback=args.bilateral_rollback,
+        evader_first_on_advance=args.evader_first_on_advance,
+        warm_start_evader=args.warm_start_evader,
+        warm_start_timesteps=args.warm_start_timesteps,
+        mixed_level_ratio=args.mixed_level_ratio,
+        smooth_curriculum=args.smooth_curriculum,
+        smooth_curriculum_increment=args.smooth_curriculum_increment,
+        ewc_lambda=args.ewc_lambda,
+        ewc_fisher_samples=args.ewc_fisher_samples,
+        rnd_coef=args.rnd_coef,
+        rnd_embed_dim=args.rnd_embed_dim,
+        rnd_hidden_dim=args.rnd_hidden_dim,
+        rnd_update_freq=args.rnd_update_freq,
     )
 
     result = amsdrl.run()

@@ -253,3 +253,192 @@ class CurriculumManager:
             f"CurriculumManager(level={self.current_level}/{self.max_level}, "
             f"threshold={self.advancement_threshold})"
         )
+
+
+class SmoothCurriculumManager:
+    """Smooth curriculum that gradually expands distance range.
+
+    Instead of discrete level jumps (L1→L2), gradually increases
+    max_init_distance by a fixed increment per successful phase.
+    Eliminates the sharp distribution shift that causes catastrophic
+    forgetting at level transitions.
+
+    Advancement: when criteria are met, max_init_distance increases by
+    `distance_increment`. The curriculum is "complete" when
+    max_init_distance reaches `final_max_distance`.
+
+    Regression: if escape_rate stays below floor, max_init_distance
+    decreases by `distance_increment`.
+
+    Args:
+        arena_width: Arena width in meters.
+        arena_height: Arena height in meters.
+        initial_min_distance: Starting min init distance (default 2.0).
+        initial_max_distance: Starting max init distance (default 5.0).
+        final_max_distance: Target max init distance (default 15.0).
+        distance_increment: How much to expand max_distance per advancement (default 1.0).
+        advancement_threshold: Capture rate required to advance (default 0.70).
+        min_escape_rate: Minimum evader escape rate to advance (default 0.0).
+        min_phases_per_level: Minimum phases at current distance before advancing.
+        regression_floor: Escape rate below which regression counter ticks.
+        regression_patience: Consecutive low-escape phases before regression.
+        obstacles_after_distance: Add obstacles when max_distance exceeds this.
+        n_obstacles: Number of obstacles to add at obstacle threshold.
+    """
+
+    def __init__(
+        self,
+        arena_width: float = 20.0,
+        arena_height: float = 20.0,
+        initial_min_distance: float = 2.0,
+        initial_max_distance: float = 5.0,
+        final_max_distance: float = 15.0,
+        distance_increment: float = 1.0,
+        advancement_threshold: float = 0.70,
+        min_escape_rate: float = 0.0,
+        min_phases_per_level: int = 1,
+        regression_floor: float = 0.02,
+        regression_patience: int = 3,
+        obstacles_after_distance: float = 8.0,
+        n_obstacles: int = 3,
+    ):
+        self.arena_width = arena_width
+        self.arena_height = arena_height
+        self.advancement_threshold = advancement_threshold
+        self.min_escape_rate = min_escape_rate
+        self.min_phases_per_level = min_phases_per_level
+        self.regression_floor = regression_floor
+        self.regression_patience = regression_patience
+
+        max_possible = 0.8 * np.hypot(arena_width, arena_height)
+        self.min_init_distance = initial_min_distance
+        self.max_init_distance = min(initial_max_distance, max_possible)
+        self.final_max_distance = min(final_max_distance, max_possible)
+        self.distance_increment = distance_increment
+        self.obstacles_after_distance = obstacles_after_distance
+        self._n_obstacles = n_obstacles
+
+        self.phases_at_level: int = 0
+        self.consecutive_floor_phases: int = 0
+        self.level_history: list[dict] = []
+        self.advancement_count: int = 0
+
+    @property
+    def current_level(self) -> int:
+        """Compatibility: report current 'level' as advancement count + 1."""
+        return self.advancement_count + 1
+
+    @property
+    def max_level(self) -> int:
+        """Compatibility: estimate max level from distance range."""
+        steps = max(1, int(
+            (self.final_max_distance - 5.0) / self.distance_increment
+        ))
+        return steps + 1
+
+    @property
+    def at_max_level(self) -> bool:
+        return self.max_init_distance >= self.final_max_distance
+
+    @property
+    def n_obstacles(self) -> int:
+        if self.max_init_distance >= self.obstacles_after_distance:
+            return self._n_obstacles
+        return 0
+
+    def get_env_overrides(self) -> dict:
+        return {
+            "min_init_distance": self.min_init_distance,
+            "max_init_distance": self.max_init_distance,
+            "n_obstacles": self.n_obstacles,
+        }
+
+    def check_advancement(self, capture_rate: float, escape_rate: float = 0.0) -> bool:
+        """Check if distance should increase."""
+        self.phases_at_level += 1
+
+        self.level_history.append({
+            "level": self.current_level,
+            "max_init_distance": self.max_init_distance,
+            "capture_rate": capture_rate,
+            "escape_rate": escape_rate,
+            "phases_at_level": self.phases_at_level,
+            "advanced": False,
+        })
+
+        if self.at_max_level:
+            return False
+
+        cr_ok = capture_rate > self.advancement_threshold
+        er_ok = escape_rate >= self.min_escape_rate
+        phases_ok = self.phases_at_level >= self.min_phases_per_level
+
+        if cr_ok and er_ok and phases_ok:
+            old_max = self.max_init_distance
+            self.max_init_distance = min(
+                self.max_init_distance + self.distance_increment,
+                self.final_max_distance,
+            )
+            self.advancement_count += 1
+            self.phases_at_level = 0
+            self.consecutive_floor_phases = 0
+            self.level_history[-1]["advanced"] = True
+
+            obs_msg = ""
+            if old_max < self.obstacles_after_distance <= self.max_init_distance:
+                obs_msg = f", obstacles now active ({self._n_obstacles})"
+
+            print(
+                f"[SMOOTH-CURRICULUM] Advanced: max_distance {old_max:.1f} → "
+                f"{self.max_init_distance:.1f}{obs_msg}"
+            )
+            return True
+
+        if not cr_ok:
+            reason = f"capture_rate={capture_rate:.2f} <= {self.advancement_threshold:.2f}"
+        elif not er_ok:
+            reason = f"escape_rate={escape_rate:.2f} < {self.min_escape_rate:.2f}"
+        else:
+            reason = f"phases_at_level={self.phases_at_level} < {self.min_phases_per_level}"
+        print(f"[SMOOTH-CURRICULUM] No advancement (max_d={self.max_init_distance:.1f}): {reason}")
+
+        return False
+
+    def check_regression(self, escape_rate: float) -> bool:
+        """Check if distance should decrease."""
+        if self.max_init_distance <= 5.0:
+            return False
+
+        if escape_rate < self.regression_floor:
+            self.consecutive_floor_phases += 1
+        else:
+            self.consecutive_floor_phases = 0
+
+        if self.consecutive_floor_phases >= self.regression_patience:
+            old_max = self.max_init_distance
+            self.max_init_distance = max(
+                self.max_init_distance - self.distance_increment,
+                5.0,
+            )
+            self.phases_at_level = 0
+            self.consecutive_floor_phases = 0
+            print(
+                f"[SMOOTH-CURRICULUM] Regression: max_distance {old_max:.1f} → "
+                f"{self.max_init_distance:.1f}"
+            )
+            return True
+
+        return False
+
+    def get_status(self) -> dict:
+        return {
+            "curriculum_level": self.current_level,
+            "curriculum_description": f"Smooth (max_d={self.max_init_distance:.1f}m)",
+            "curriculum_at_max": self.at_max_level,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"SmoothCurriculumManager(max_d={self.max_init_distance:.1f}/"
+            f"{self.final_max_distance:.1f})"
+        )
