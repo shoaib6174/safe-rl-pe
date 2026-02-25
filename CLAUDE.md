@@ -52,6 +52,16 @@ python -m venv venv
 ./venv/bin/pip install -r requirements.txt
 ```
 
+## Training Runs — MANDATORY
+
+**NEVER run training locally.** The local machine (MacBook Air, 8 GB RAM) cannot handle training. Always run training on niro-2.
+
+To launch training:
+1. Push latest code to GitHub
+2. SSH into niro-2 and pull
+3. Run training there (via `nohup` or `tmux` for long runs)
+4. Copy results back when done
+
 ## Remote Servers
 
 ### niro-2 (Lab PC)
@@ -59,4 +69,4 @@ python -m venv venv
 - **User**: niro-2
 - **Password**: 123456
 - **Access**: `sshpass -p '123456' ssh niro-2@100.71.2.97`
-- **Use for**: Downloading paywalled papers, heavy compute tasks
+- **Use for**: Downloading paywalled papers, **ALL training runs**
