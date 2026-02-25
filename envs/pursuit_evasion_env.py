@@ -22,9 +22,9 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from envs.dynamics import clip_action, unicycle_step
+from envs.dynamics import clip_action, resolve_obstacle_collisions, unicycle_step
 from envs.observations import ObservationBuilder
-from envs.rewards import RewardComputer
+from envs.rewards import RewardComputer, nearest_obstacle_distance
 
 
 class PursuitEvasionEnv(gym.Env):
@@ -53,7 +53,7 @@ class PursuitEvasionEnv(gym.Env):
         max_init_distance: float = 15.0,
         distance_scale: float = 1.0,
         capture_bonus: float = 100.0,
-        timeout_penalty: float = -50.0,
+        timeout_penalty: float = -100.0,
         render_mode: str | None = None,
         # Phase 2: Obstacle parameters
         n_obstacles: int = 0,
@@ -61,6 +61,8 @@ class PursuitEvasionEnv(gym.Env):
         obstacle_margin: float = 0.5,
         n_obstacle_obs: int = 0,
         reward_computer: RewardComputer | None = None,
+        prep_steps: int = 0,
+        w_collision: float = 0.0,
     ):
         super().__init__()
 
@@ -88,6 +90,12 @@ class PursuitEvasionEnv(gym.Env):
         self.obstacle_radius_range = obstacle_radius_range
         self.obstacle_margin = obstacle_margin
         self.obstacles: list[dict] = []
+
+        # Preparation phase: freeze pursuer for first N steps
+        self.prep_steps = prep_steps
+
+        # Obstacle collision penalty weight (0.0 = no penalty)
+        self.w_collision = w_collision
 
         # Reward computer (allow injection for SafetyRewardComputer)
         arena_diagonal = np.sqrt(arena_width**2 + arena_height**2)
@@ -187,6 +195,9 @@ class PursuitEvasionEnv(gym.Env):
         self.timed_out = False
         self.prev_distance = self._compute_distance()
         self.min_distance_this_ep = self.prev_distance
+        self.prev_d_nearest_obstacle = nearest_obstacle_distance(
+            self.evader_state, self.obstacles
+        )
         self.last_reward_pursuer = 0.0
         self.last_reward_evader = 0.0
 
@@ -230,6 +241,10 @@ class PursuitEvasionEnv(gym.Env):
             self.evader_v_max, self.evader_omega_max,
         )
 
+        # Preparation phase: freeze pursuer (zero linear velocity, allow turning)
+        if self.prep_steps > 0 and self.current_step < self.prep_steps:
+            p_v = 0.0
+
         # Store actions for observation
         self.pursuer_action = np.array([p_v, p_omega], dtype=np.float32)
         self.evader_action = np.array([e_v, e_omega], dtype=np.float32)
@@ -249,12 +264,31 @@ class PursuitEvasionEnv(gym.Env):
         self.pursuer_state = np.array([px, py, ptheta])
         self.evader_state = np.array([ex, ey, etheta])
 
+        # Resolve obstacle collisions (project to surface if inside)
+        px, py, _, p_obs_collision = resolve_obstacle_collisions(
+            self.pursuer_state[0], self.pursuer_state[1], self.pursuer_state[2],
+            self.obstacles, self.robot_radius,
+        )
+        self.pursuer_state[0] = px
+        self.pursuer_state[1] = py
+
+        ex, ey, _, e_obs_collision = resolve_obstacle_collisions(
+            self.evader_state[0], self.evader_state[1], self.evader_state[2],
+            self.obstacles, self.robot_radius,
+        )
+        self.evader_state[0] = ex
+        self.evader_state[1] = ey
+
+        # Re-clamp to arena bounds (obstacle push may exceed walls near boundaries)
+        half_w = self.arena_width / 2.0 - self.robot_radius
+        half_h = self.arena_height / 2.0 - self.robot_radius
+        self.pursuer_state[0] = np.clip(self.pursuer_state[0], -half_w, half_w)
+        self.pursuer_state[1] = np.clip(self.pursuer_state[1], -half_h, half_h)
+        self.evader_state[0] = np.clip(self.evader_state[0], -half_w, half_w)
+        self.evader_state[1] = np.clip(self.evader_state[1], -half_h, half_h)
+
         # Update step counter
         self.current_step += 1
-
-        # Check obstacle collisions
-        p_obs_collision = self._check_obstacle_collision(self.pursuer_state)
-        e_obs_collision = self._check_obstacle_collision(self.evader_state)
 
         # Compute distance and check termination
         d_curr = self._compute_distance()
@@ -266,16 +300,32 @@ class PursuitEvasionEnv(gym.Env):
         terminated = self.captured
         truncated = self.timed_out
 
+        # Compute evader-to-nearest-obstacle distance (for PBRS)
+        d_obs_curr = nearest_obstacle_distance(
+            self.evader_state, self.obstacles
+        )
+
         # Compute rewards
         r_p, r_e = self.reward_computer.compute(
             d_curr=d_curr,
             d_prev=self.prev_distance,
             captured=self.captured,
             timed_out=self.timed_out,
+            pursuer_pos=self.pursuer_state,
+            evader_pos=self.evader_state,
+            obstacles=self.obstacles,
+            d_obs_curr=d_obs_curr,
+            d_obs_prev=self.prev_d_nearest_obstacle,
         )
+        # Apply obstacle collision penalty (per-agent, not zero-sum)
+        if self.w_collision > 0.0:
+            r_p -= self.w_collision * float(p_obs_collision)
+            r_e -= self.w_collision * float(e_obs_collision)
+
         self.last_reward_pursuer = r_p
         self.last_reward_evader = r_e
         self.prev_distance = d_curr
+        self.prev_d_nearest_obstacle = d_obs_curr
 
         # Build observations
         obs = self._get_obs()
@@ -285,6 +335,9 @@ class PursuitEvasionEnv(gym.Env):
         # Add collision info
         info["pursuer_obstacle_collision"] = p_obs_collision
         info["evader_obstacle_collision"] = e_obs_collision
+        info["in_prep_phase"] = (
+            self.prep_steps > 0 and self.current_step <= self.prep_steps
+        )
 
         # Add episode metrics at termination
         if terminated or truncated:

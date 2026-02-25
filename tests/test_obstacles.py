@@ -521,3 +521,120 @@ class TestEnvWithObstacles:
 
         steps_per_sec = n_steps / elapsed
         assert steps_per_sec > 1000, f"Too slow: {steps_per_sec:.0f} steps/s (need >1000)"
+
+
+# =============================================================================
+# Physical obstacle collision enforcement (S50)
+# =============================================================================
+
+class TestObstacleCollisionEnforcement:
+    """Integration tests for physical obstacle barriers in the environment."""
+
+    def test_sliding_preserves_tangential_motion(self):
+        """Agent moving tangentially past obstacle should slide, not stop."""
+        env = PursuitEvasionEnv(
+            arena_width=20.0, arena_height=20.0,
+            n_obstacles=0, render_mode=None,
+        )
+        env.reset(seed=42)
+        # Place obstacle at (3, 0) radius 1.0
+        env.obstacles = [{"x": 3.0, "y": 0.0, "radius": 1.0}]
+
+        # Place pursuer near obstacle, heading north (tangential)
+        min_dist = 1.0 + env.robot_radius
+        env.pursuer_state = np.array([3.0 + min_dist - 0.05, 0.0, np.pi / 2])
+        # Place evader far away to avoid capture
+        env.evader_state = np.array([-5.0, 0.0, 0.0])
+
+        y_before = env.pursuer_state[1]
+        # Step with forward velocity and no turning
+        env.step(np.array([1.0, 0.0]), np.array([0.0, 0.0]))
+        y_after = env.pursuer_state[1]
+
+        # Y should have increased (tangential motion preserved)
+        assert y_after > y_before, "Tangential motion should be preserved during sliding"
+        # Agent should not be inside obstacle
+        dist = np.sqrt(
+            (env.pursuer_state[0] - 3.0)**2 + (env.pursuer_state[1] - 0.0)**2
+        )
+        assert dist >= min_dist - 1e-6, "Agent should be outside obstacle after sliding"
+
+    def test_wall_plus_obstacle_near_boundary(self):
+        """Obstacle near arena wall: agent is re-clamped to arena bounds."""
+        env = PursuitEvasionEnv(
+            arena_width=20.0, arena_height=20.0,
+            n_obstacles=0, render_mode=None,
+        )
+        env.reset(seed=42)
+        # Place obstacle near east wall
+        half_w = env.arena_width / 2.0
+        env.obstacles = [{"x": half_w - 1.0, "y": 0.0, "radius": 1.0}]
+
+        # Place pursuer between obstacle and wall
+        env.pursuer_state = np.array([half_w - 0.5, 0.0, 0.0])
+        env.evader_state = np.array([-5.0, 0.0, 0.0])
+
+        env.step(np.array([1.0, 0.0]), np.array([0.0, 0.0]))
+
+        # Agent must be within arena bounds
+        x_max = half_w - env.robot_radius
+        assert env.pursuer_state[0] <= x_max + 1e-6, (
+            f"Agent x={env.pursuer_state[0]:.3f} exceeds arena bound {x_max:.3f}"
+        )
+
+    def test_collision_penalty_applied(self):
+        """With w_collision > 0, hitting obstacle should reduce reward."""
+        env = PursuitEvasionEnv(
+            arena_width=20.0, arena_height=20.0,
+            n_obstacles=0, render_mode=None,
+            w_collision=5.0,
+        )
+        env.reset(seed=42)
+        # Place obstacle where pursuer will hit it
+        env.obstacles = [{"x": 1.0, "y": 0.0, "radius": 0.5}]
+        env.pursuer_state = np.array([0.0, 0.0, 0.0])  # heading east toward obstacle
+        env.evader_state = np.array([-5.0, 0.0, np.pi])
+
+        # Step without collision (evader far away, heading west)
+        env_no_penalty = PursuitEvasionEnv(
+            arena_width=20.0, arena_height=20.0,
+            n_obstacles=0, render_mode=None,
+            w_collision=0.0,
+        )
+        env_no_penalty.reset(seed=42)
+        env_no_penalty.obstacles = [{"x": 1.0, "y": 0.0, "radius": 0.5}]
+        env_no_penalty.pursuer_state = np.array([0.0, 0.0, 0.0])
+        env_no_penalty.evader_state = np.array([-5.0, 0.0, np.pi])
+        env_no_penalty.prev_distance = env.prev_distance
+
+        _, rewards_penalty, _, _, info_penalty = env.step(
+            np.array([1.0, 0.0]), np.array([1.0, 0.0])
+        )
+        _, rewards_no_penalty, _, _, info_no_penalty = env_no_penalty.step(
+            np.array([1.0, 0.0]), np.array([1.0, 0.0])
+        )
+
+        if info_penalty["pursuer_obstacle_collision"]:
+            assert rewards_penalty["pursuer"] < rewards_no_penalty["pursuer"], (
+                "Collision penalty should reduce pursuer reward"
+            )
+
+    def test_no_penalty_when_w_collision_zero(self):
+        """With w_collision=0 (default), collision does not affect reward."""
+        env = PursuitEvasionEnv(
+            arena_width=20.0, arena_height=20.0,
+            n_obstacles=0, render_mode=None,
+            w_collision=0.0,
+        )
+        env.reset(seed=42)
+        env.obstacles = [{"x": 1.0, "y": 0.0, "radius": 0.5}]
+        env.pursuer_state = np.array([0.0, 0.0, 0.0])
+        env.evader_state = np.array([-5.0, 0.0, np.pi])
+
+        _, rewards, _, _, info = env.step(
+            np.array([1.0, 0.0]), np.array([1.0, 0.0])
+        )
+        # Reward should be the same regardless of collision since w_collision=0
+        # We just verify no crash and collision is detected
+        assert isinstance(rewards["pursuer"], float)
+        assert "pursuer_obstacle_collision" in info

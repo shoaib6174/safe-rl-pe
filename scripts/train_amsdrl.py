@@ -78,6 +78,45 @@ def parse_args():
     parser.add_argument("--opponent_pool_size", type=int, default=0,
                         help="Opponent pool size (0=disabled, e.g. 5 for diverse self-play)")
 
+    # Reward shaping
+    parser.add_argument("--w_occlusion", type=float, default=0.0,
+                        help="Evader occlusion bonus weight (Mode A, e.g. 0.05). "
+                             "Rewards evader for hiding behind obstacles.")
+    parser.add_argument("--use_visibility_reward", action="store_true", default=False,
+                        help="Enable visibility-based evader reward (Mode B, OpenAI H&S style). "
+                             "Evader gets +1/-1 per step based on LOS occlusion.")
+    parser.add_argument("--visibility_weight", type=float, default=1.0,
+                        help="Scale for visibility reward signal (default: 1.0)")
+    parser.add_argument("--survival_bonus", type=float, default=0.0,
+                        help="Per-step survival bonus for evader (e.g. 1.0)")
+    parser.add_argument("--timeout_penalty", type=float, default=-100.0,
+                        help="Pursuer penalty on timeout / evader reward on escape (default: -100.0)")
+
+    # Preparation phase
+    parser.add_argument("--prep_steps", type=int, default=0,
+                        help="Freeze pursuer for first N steps per episode (default: 0, off). "
+                             "Gives evader time to reach obstacles before chase begins.")
+
+    # Obstacle collision penalty
+    parser.add_argument("--w_collision", type=float, default=0.0,
+                        help="Obstacle collision penalty weight (default: 0.0, off)")
+
+    # PBRS obstacle-seeking
+    parser.add_argument("--w_obs_approach", type=float, default=0.0,
+                        help="PBRS obstacle-seeking weight for evader (default: 0.0, off). "
+                             "Provides gradient toward nearest obstacle. Recommended: 50.0")
+
+    # Asymmetric training
+    parser.add_argument("--evader_multiplier", type=float, default=1.0,
+                        help="Evader training step multiplier at obstacle levels (default: 1.0). "
+                             "E.g. 3.0 gives evader 3x more steps when obstacles are present.")
+
+    # Curriculum tuning
+    parser.add_argument("--min_phases_per_level", type=int, default=1,
+                        help="Minimum phases at each curriculum level before advancement (default: 1)")
+    parser.add_argument("--min_escape_rate", type=float, default=0.0,
+                        help="Minimum evader escape rate required for curriculum advancement (default: 0.0)")
+
     # Safety
     parser.add_argument("--use_dcbf", action="store_true", default=True,
                         help="Use DCBF safety filter for pursuer (default: True)")
@@ -157,6 +196,17 @@ def main():
         batch_size=args.batch_size,
         curriculum=args.curriculum,
         opponent_pool_size=args.opponent_pool_size,
+        w_occlusion=args.w_occlusion,
+        use_visibility_reward=args.use_visibility_reward,
+        visibility_weight=args.visibility_weight,
+        survival_bonus=args.survival_bonus,
+        prep_steps=args.prep_steps,
+        w_obs_approach=args.w_obs_approach,
+        timeout_penalty=args.timeout_penalty,
+        w_collision=args.w_collision,
+        evader_training_multiplier=args.evader_multiplier,
+        min_escape_rate=args.min_escape_rate,
+        min_phases_per_level=args.min_phases_per_level,
     )
 
     result = amsdrl.run()

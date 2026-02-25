@@ -82,6 +82,66 @@ def unicycle_step(
     return x_new, y_new, theta_new, wall_contact
 
 
+def resolve_obstacle_collisions(
+    x: float,
+    y: float,
+    theta: float,
+    obstacles: list[dict],
+    robot_radius: float,
+    max_iterations: int = 3,
+) -> tuple[float, float, float, bool]:
+    """Resolve physical collisions with circular obstacles.
+
+    If the robot's body (center + robot_radius) overlaps any obstacle,
+    push the robot radially outward to the obstacle surface. Iterates
+    to handle chain reactions (pushing away from one obstacle may push
+    into another).
+
+    Args:
+        x, y, theta: Current robot state.
+        obstacles: List of obstacle dicts with 'x', 'y', 'radius' keys.
+        robot_radius: Robot body radius.
+        max_iterations: Max resolution passes (handles chain collisions).
+
+    Returns:
+        (x, y, theta, collision_occurred): Corrected position and whether
+        any collision was resolved. Heading (theta) is never modified.
+    """
+    if not obstacles:
+        return x, y, theta, False
+
+    collision_occurred = False
+
+    for _ in range(max_iterations):
+        resolved_any = False
+        for obs in obstacles:
+            dx = x - obs["x"]
+            dy = y - obs["y"]
+            dist = np.sqrt(dx * dx + dy * dy)
+            min_dist = obs["radius"] + robot_radius
+
+            if dist < min_dist:
+                collision_occurred = True
+                resolved_any = True
+
+                if dist < 1e-10:
+                    # Agent exactly at obstacle center — push along heading
+                    nx = np.cos(theta)
+                    ny = np.sin(theta)
+                else:
+                    # Push radially outward
+                    nx = dx / dist
+                    ny = dy / dist
+
+                x = obs["x"] + nx * min_dist
+                y = obs["y"] + ny * min_dist
+
+        if not resolved_any:
+            break
+
+    return x, y, theta, collision_occurred
+
+
 def clip_action(
     v: float,
     omega: float,

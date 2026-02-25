@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from envs.dynamics import clip_action, unicycle_step, wrap_angle
+from envs.dynamics import clip_action, resolve_obstacle_collisions, unicycle_step, wrap_angle
 
 
 class TestWrapAngle:
@@ -182,3 +182,129 @@ class TestClipAction:
         assert omega == pytest.approx(2.84)
         v, omega = clip_action(0.5, -5.0, 1.0, 2.84)
         assert omega == pytest.approx(-2.84)
+
+
+class TestResolveObstacleCollisions:
+    """Tests for obstacle collision resolution (physical barrier enforcement)."""
+
+    ROBOT_R = 0.15
+
+    def test_agent_inside_pushed_to_surface(self):
+        """Agent inside obstacle is pushed to the obstacle surface."""
+        obstacles = [{"x": 3.0, "y": 3.0, "radius": 1.0}]
+        # Place agent inside: 0.5m from center, min_dist = 1.0 + 0.15 = 1.15
+        x, y, theta, collided = resolve_obstacle_collisions(
+            3.3, 3.0, 0.0, obstacles, self.ROBOT_R,
+        )
+        dist = np.sqrt((x - 3.0)**2 + (y - 3.0)**2)
+        assert collided is True
+        assert dist == pytest.approx(1.0 + self.ROBOT_R, abs=1e-10)
+
+    def test_agent_at_boundary_not_modified(self):
+        """Agent exactly at min_dist boundary is not moved, no collision."""
+        obstacles = [{"x": 3.0, "y": 3.0, "radius": 1.0}]
+        min_dist = 1.0 + self.ROBOT_R  # 1.15
+        x_start = 3.0 + min_dist
+        x, y, theta, collided = resolve_obstacle_collisions(
+            x_start, 3.0, 0.0, obstacles, self.ROBOT_R,
+        )
+        assert collided is False
+        assert x == pytest.approx(x_start, abs=1e-10)
+        assert y == pytest.approx(3.0, abs=1e-10)
+
+    def test_agent_outside_not_modified(self):
+        """Agent safely away from obstacle is not modified."""
+        obstacles = [{"x": 3.0, "y": 3.0, "radius": 1.0}]
+        x, y, theta, collided = resolve_obstacle_collisions(
+            6.0, 3.0, 0.0, obstacles, self.ROBOT_R,
+        )
+        assert collided is False
+        assert x == pytest.approx(6.0, abs=1e-10)
+        assert y == pytest.approx(3.0, abs=1e-10)
+
+    def test_agent_at_obstacle_center_uses_heading(self):
+        """Agent exactly at obstacle center is pushed along heading direction."""
+        obstacles = [{"x": 3.0, "y": 3.0, "radius": 1.0}]
+        theta = np.pi / 4  # heading northeast
+        x, y, theta_out, collided = resolve_obstacle_collisions(
+            3.0, 3.0, theta, obstacles, self.ROBOT_R,
+        )
+        assert collided is True
+        dist = np.sqrt((x - 3.0)**2 + (y - 3.0)**2)
+        assert dist == pytest.approx(1.0 + self.ROBOT_R, abs=1e-10)
+        # Direction should match heading
+        direction = np.arctan2(y - 3.0, x - 3.0)
+        assert direction == pytest.approx(theta, abs=1e-6)
+
+    def test_heading_never_modified(self):
+        """Heading (theta) must never be changed by collision resolution."""
+        obstacles = [{"x": 3.0, "y": 3.0, "radius": 1.0}]
+        for theta_in in [0.0, np.pi / 2, -np.pi / 4, np.pi, -2.5]:
+            _, _, theta_out, _ = resolve_obstacle_collisions(
+                3.0, 3.0, theta_in, obstacles, self.ROBOT_R,
+            )
+            assert theta_out == pytest.approx(theta_in, abs=1e-10)
+
+    def test_multiple_obstacles_both_resolved(self):
+        """Agent overlapping two obstacles gets pushed out of both."""
+        # Obstacles spaced 3.0m apart (enough room for robot between them)
+        obstacles = [
+            {"x": 0.0, "y": 0.0, "radius": 1.0},
+            {"x": 3.0, "y": 0.0, "radius": 1.0},
+        ]
+        # Place agent inside first obstacle (dist=0.5 < 1.15)
+        x, y, theta, collided = resolve_obstacle_collisions(
+            0.5, 0.0, 0.0, obstacles, self.ROBOT_R,
+        )
+        assert collided is True
+        # Should be outside the first obstacle
+        d0 = np.sqrt(x**2 + y**2)
+        assert d0 >= 1.0 + self.ROBOT_R - 1e-6
+
+    def test_multiple_obstacles_both_detected(self):
+        """Agent that overlaps two separate obstacles triggers collision for both."""
+        obstacles = [
+            {"x": -2.0, "y": 0.0, "radius": 1.0},
+            {"x": 2.0, "y": 0.0, "radius": 1.0},
+        ]
+        # Place agent inside first obstacle
+        x, y, theta, c1 = resolve_obstacle_collisions(
+            -1.5, 0.0, 0.0, obstacles, self.ROBOT_R,
+        )
+        assert c1 is True
+        # Place agent inside second obstacle
+        x, y, theta, c2 = resolve_obstacle_collisions(
+            1.5, 0.0, 0.0, obstacles, self.ROBOT_R,
+        )
+        assert c2 is True
+
+    def test_empty_obstacles_noop(self):
+        """Empty obstacles list should be a no-op."""
+        x, y, theta, collided = resolve_obstacle_collisions(
+            1.0, 2.0, 0.5, [], self.ROBOT_R,
+        )
+        assert collided is False
+        assert x == pytest.approx(1.0, abs=1e-10)
+        assert y == pytest.approx(2.0, abs=1e-10)
+        assert theta == pytest.approx(0.5, abs=1e-10)
+
+    def test_cannot_tunnel_through_obstacle(self):
+        """500-step integration: agent driving toward obstacle cannot pass through."""
+        obstacles = [{"x": 3.0, "y": 0.0, "radius": 1.0}]
+        x, y, theta = 0.0, 0.0, 0.0  # heading east toward obstacle
+        dt = 0.05
+        v = 1.0
+
+        for _ in range(500):
+            # Euler step
+            x += v * np.cos(theta) * dt
+            y += v * np.sin(theta) * dt
+            # Resolve
+            x, y, theta, _ = resolve_obstacle_collisions(
+                x, y, theta, obstacles, self.ROBOT_R,
+            )
+
+        # Agent should be stuck at obstacle surface, NOT past x=3.0+1.0
+        dist_to_obs = np.sqrt((x - 3.0)**2 + y**2)
+        assert dist_to_obs >= 1.0 + self.ROBOT_R - 1e-6
+        assert x <= 3.0 + 1.0 + self.ROBOT_R + 0.01  # cannot pass through

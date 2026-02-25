@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-02-23
+## Last Updated: 2026-02-25 (S50)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -54,6 +54,13 @@
 | 41 | 2026-02-22 | **Phase 3 Session 3**: AMS-DRL self-play — opponent adapter, NavigationEnv, CheckpointManager, health callbacks, AMSDRLSelfPlay orchestrator, NE tools, 38 tests (474 total) | [S41](worklogs/2026-02-22_S41.md) |
 | 42 | 2026-02-23 | **Phase 3 Session 5**: Curriculum learning — CurriculumManager (4-level progressive difficulty), AMS-DRL integration, --curriculum CLI flag, 29 tests (503 total) | [S42](worklogs/2026-02-23_S42.md) |
 | 43 | 2026-02-23 | **Phase 3 Session 7**: Opponent pool for self-play diversity — OpponentPool class, per-sub-env sampling, FIFO eviction, 16 tests | [S43](worklogs/2026-02-23_S43.md) |
+| 44 | 2026-02-24 | **Phase 3 Research**: PBRS obstacle-seeking — literature review (5 papers), sensory feasibility analysis, arena size impact, research report | [S44](worklogs/2026-02-24_S44.md) |
+| 45 | 2026-02-24 | **Phase 3 Implementation**: PBRS obstacle-seeking — `nearest_obstacle_distance()`, `w_obs_approach` param, env tracking, 17 new tests (all pass) | [S45](worklogs/2026-02-24_S45.md) |
+| 46 | 2026-02-24 | **Phase 3 Research**: Self-play collapse prevention — 6 approaches (asymmetric training, dual-criteria curriculum, PBT, FSP/PSRO, PAIRED, exploitability), 20 papers, action plan | [S46](worklogs/2026-02-24_S46.md) |
+| 47 | 2026-02-24 | **Phase 3 Analysis**: Run P failed (L3+ collapse persists) — 3 root causes identified, 3-pronged fix proposed, 21 BibTeX refs added | [S47](worklogs/2026-02-24_S47.md) |
+| 48 | 2026-02-24 | **Phase 3 Fix**: Three-pronged fix (dual-criteria gate, regression, asymmetric training), reward rebalancing (timeout=-100, survival_bonus=0), equal speeds. Run Q+R launched. 14 new tests (590 pass) | [S48](worklogs/2026-02-24_S48.md) |
+| 49 | 2026-02-25 | **Phase 3 Monitoring**: Run Q killed (L4 collapse). Run R collapsing at L3 (gate=0.05 too low). Launched Runs S (20x20, gate=0.15) + T (10x10, gate=0.15). 3-run experimental matrix. | [S49](worklogs/2026-02-25_S49.md) |
+| 50 | 2026-02-25 | **Obstacle Physics Fix**: `resolve_obstacle_collisions()` — hard projection with tangential sliding, `w_collision` penalty, 13 new tests (603 total passing) | [S50](worklogs/2026-02-25_S50.md) |
 
 ## Paper Reading Status
 
@@ -118,6 +125,8 @@
 | claudedocs/final_literature_review.md | Comprehensive final review | COMPLETE |
 | docs/workflow_tracker.md | This file | ACTIVE |
 | docs/worklogs/ | Per-session detailed worklogs | ACTIVE |
+| docs/research_self_play_collapse_prevention.md | Self-play collapse analysis: 6 approaches, 20 papers, ranked action plan | COMPLETE |
+| docs/run_p_analysis.md | Run P training dynamics: phase-by-phase, 3 root causes, PBRS effectiveness | COMPLETE |
 | papers/README.md | Paper collection index | COMPLETE |
 
 ## Research Pathways (from initial report, to be refined in final review)

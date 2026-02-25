@@ -31,6 +31,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 
 from agents.partial_obs_policy import PartialObsFeaturesExtractor
 from envs.dcbf_action_wrapper import DCBFActionWrapper
+from envs.rewards import RewardComputer
 from envs.navigation_env import NavigationEnv
 from envs.opponent_adapter import PartialObsOpponentAdapter
 from envs.partial_obs_wrapper import PartialObsWrapper
@@ -66,6 +67,14 @@ def _make_partial_obs_env(
     fixed_speed: bool = False,
     min_init_distance: float = 3.0,
     max_init_distance: float = 15.0,
+    w_occlusion: float = 0.0,
+    use_visibility_reward: bool = False,
+    visibility_weight: float = 1.0,
+    survival_bonus: float = 0.0,
+    prep_steps: int = 0,
+    w_obs_approach: float = 0.0,
+    timeout_penalty: float = -100.0,
+    w_collision: float = 0.0,
 ) -> tuple:
     """Create an environment stack for one agent.
 
@@ -76,21 +85,42 @@ def _make_partial_obs_env(
         fixed_speed: If True, fix v=v_max and only learn omega (1D action).
         min_init_distance: Minimum initial agent separation.
         max_init_distance: Maximum initial agent separation.
+        w_occlusion: Weight on evader occlusion bonus (Mode A, 0 = off).
+        use_visibility_reward: Enable visibility-based evader reward (Mode B).
+        visibility_weight: Scale for +1/-1 visibility signal (Mode B).
+        survival_bonus: Per-step survival bonus for evader (Mode B).
+        prep_steps: Freeze pursuer for first N steps per episode (0 = off).
+        w_obs_approach: PBRS obstacle-seeking weight for evader (0 = off).
 
     Returns:
         (env, base_env) where env is the fully-wrapped env and
         base_env is the underlying PursuitEvasionEnv.
     """
+    # Build reward computer
+    arena_diagonal = np.sqrt(arena_width**2 + arena_height**2)
+    reward_computer = RewardComputer(
+        distance_scale=distance_scale,
+        d_max=arena_diagonal,
+        w_occlusion=w_occlusion,
+        use_visibility_reward=use_visibility_reward,
+        visibility_weight=visibility_weight,
+        survival_bonus=survival_bonus,
+        w_obs_approach=w_obs_approach,
+        timeout_penalty=timeout_penalty,
+    )
+
     base_env = PursuitEvasionEnv(
         arena_width=arena_width,
         arena_height=arena_height,
         max_steps=max_steps,
         capture_radius=capture_radius,
         n_obstacles=n_obstacles,
-        distance_scale=distance_scale,
         pursuer_v_max=pursuer_v_max,
         min_init_distance=min_init_distance,
         max_init_distance=max_init_distance,
+        reward_computer=reward_computer,
+        prep_steps=prep_steps,
+        w_collision=w_collision,
     )
     single_env = SingleAgentPEWrapper(base_env, role=role)
 
@@ -266,6 +296,9 @@ def _evaluate_head_to_head(
     fixed_speed: bool = False,
     min_init_distance: float = 3.0,
     max_init_distance: float = 15.0,
+    prep_steps: int = 0,
+    w_collision: float = 0.0,
+    **kwargs,
 ) -> dict:
     """Evaluate pursuer vs evader head-to-head using full-state obs.
 
@@ -282,6 +315,8 @@ def _evaluate_head_to_head(
         pursuer_v_max=pursuer_v_max,
         min_init_distance=min_init_distance,
         max_init_distance=max_init_distance,
+        prep_steps=prep_steps,
+        w_collision=w_collision,
     )
 
     # Create adapters for both agents
@@ -350,6 +385,9 @@ def _evaluate_head_to_head_full_obs(
     fixed_speed: bool = False,
     min_init_distance: float = 3.0,
     max_init_distance: float = 15.0,
+    prep_steps: int = 0,
+    w_collision: float = 0.0,
+    **kwargs,
 ) -> dict:
     """Evaluate pursuer vs evader with full-state observations (diagnostic mode)."""
     base_env = PursuitEvasionEnv(
@@ -362,6 +400,8 @@ def _evaluate_head_to_head_full_obs(
         pursuer_v_max=pursuer_v_max,
         min_init_distance=min_init_distance,
         max_init_distance=max_init_distance,
+        prep_steps=prep_steps,
+        w_collision=w_collision,
     )
 
     captures = 0
@@ -470,6 +510,17 @@ class AMSDRLSelfPlay:
         batch_size: int = 256,
         curriculum: bool = False,
         opponent_pool_size: int = 0,
+        w_occlusion: float = 0.0,
+        use_visibility_reward: bool = False,
+        visibility_weight: float = 1.0,
+        survival_bonus: float = 0.0,
+        prep_steps: int = 0,
+        w_obs_approach: float = 0.0,
+        timeout_penalty: float = -100.0,
+        w_collision: float = 0.0,
+        evader_training_multiplier: float = 1.0,
+        min_escape_rate: float = 0.0,
+        min_phases_per_level: int = 1,
         verbose: int = 1,
     ):
         self.output_dir = Path(output_dir)
@@ -504,8 +555,17 @@ class AMSDRLSelfPlay:
             "capture_radius": capture_radius,
             "distance_scale": distance_scale,
             "pursuer_v_max": pursuer_v_max,
+            "w_occlusion": w_occlusion,
+            "use_visibility_reward": use_visibility_reward,
+            "visibility_weight": visibility_weight,
+            "survival_bonus": survival_bonus,
+            "prep_steps": prep_steps,
+            "w_obs_approach": w_obs_approach,
+            "timeout_penalty": timeout_penalty,
+            "w_collision": w_collision,
         }
         self.fixed_speed = fixed_speed
+        self.evader_training_multiplier = evader_training_multiplier
 
         # Curriculum learning
         self.curriculum = None
@@ -513,6 +573,8 @@ class AMSDRLSelfPlay:
             self.curriculum = CurriculumManager(
                 arena_width=arena_width,
                 arena_height=arena_height,
+                min_escape_rate=min_escape_rate,
+                min_phases_per_level=min_phases_per_level,
             )
             # Apply Level 1 overrides immediately
             overrides = self.curriculum.get_env_overrides()
@@ -570,6 +632,17 @@ class AMSDRLSelfPlay:
             print(f"  Fixed speed: {self.fixed_speed}")
             print(f"  Curriculum: {self.curriculum is not None}")
             print(f"  Opponent pool: {self.opponent_pool_size if self.opponent_pool_size > 0 else 'disabled'}")
+            prep = self.env_kwargs.get("prep_steps", 0)
+            if prep > 0:
+                print(f"  Prep phase: {prep} steps (pursuer frozen)")
+            if self.env_kwargs.get("use_visibility_reward", False):
+                print(f"  Reward mode: VISIBILITY (OpenAI H&S style)")
+                print(f"    Visibility weight: {self.env_kwargs.get('visibility_weight', 1.0)}")
+                print(f"    Survival bonus: {self.env_kwargs.get('survival_bonus', 0.0)}")
+            else:
+                w_occ = self.env_kwargs.get("w_occlusion", 0.0)
+                if w_occ > 0:
+                    print(f"  Occlusion bonus: {w_occ}")
             print(f"  Seed: {self.seed}")
             print(f"  Device: {self.device}")
             print("=" * 60)
@@ -609,16 +682,26 @@ class AMSDRLSelfPlay:
             metrics["phase"] = f"S{phase}"
             metrics["role"] = role
 
-            # Curriculum: log level and check advancement
+            # Curriculum: log level and check advancement / regression
             if self.curriculum:
                 metrics.update(self.curriculum.get_status())
-                advanced = self.curriculum.check_advancement(metrics["capture_rate"])
+                advanced = self.curriculum.check_advancement(
+                    metrics["capture_rate"], metrics["escape_rate"]
+                )
                 if advanced:
                     # Apply new level's env overrides for subsequent phases
                     overrides = self.curriculum.get_env_overrides()
                     self.env_kwargs["min_init_distance"] = overrides["min_init_distance"]
                     self.env_kwargs["max_init_distance"] = overrides["max_init_distance"]
                     self.n_obstacles = overrides["n_obstacles"]
+                else:
+                    # Check for regression (evader collapse)
+                    regressed = self.curriculum.check_regression(metrics["escape_rate"])
+                    if regressed:
+                        overrides = self.curriculum.get_env_overrides()
+                        self.env_kwargs["min_init_distance"] = overrides["min_init_distance"]
+                        self.env_kwargs["max_init_distance"] = overrides["max_init_distance"]
+                        self.n_obstacles = overrides["n_obstacles"]
 
             self.history.append(metrics)
 
@@ -632,12 +715,16 @@ class AMSDRLSelfPlay:
                     status += f", Level={self.curriculum.current_level}"
                 print(status)
 
-            # Check convergence
-            if ne_gap < self.eta:
+            # Check convergence (require max curriculum level if curriculum is active)
+            curriculum_ready = (self.curriculum is None) or self.curriculum.at_max_level
+            if ne_gap < self.eta and curriculum_ready:
                 converged = True
                 if self.verbose:
                     print(f"  *** Converged at phase {phase}! (NE gap {ne_gap:.3f} < {self.eta}) ***")
                 break
+            elif ne_gap < self.eta and not curriculum_ready:
+                if self.verbose:
+                    print(f"  NE gap {ne_gap:.3f} < {self.eta} but curriculum not at max level ({self.curriculum.current_level}/{self.curriculum.max_level}) — continuing")
 
         # Save final models
         self._save_final()
@@ -726,7 +813,19 @@ class AMSDRLSelfPlay:
             return
 
         # Partial-obs mode: pre-train evader with NavigationEnv
-        base_env = PursuitEvasionEnv(**self.env_kwargs, n_obstacles=self.n_obstacles)
+        # Filter env_kwargs: reward params are handled by RewardComputer, not PursuitEvasionEnv
+        _reward_keys = {"w_occlusion", "use_visibility_reward", "visibility_weight", "survival_bonus", "w_obs_approach", "timeout_penalty"}
+        pe_kwargs = {k: v for k, v in self.env_kwargs.items() if k not in _reward_keys}
+        reward_params = {k: v for k, v in self.env_kwargs.items() if k in _reward_keys}
+        if any(v for k, v in reward_params.items() if k != "w_occlusion" and v) or reward_params.get("w_occlusion", 0.0) > 0:
+            arena_diag = np.sqrt(pe_kwargs["arena_width"]**2 + pe_kwargs["arena_height"]**2)
+            rc = RewardComputer(
+                distance_scale=pe_kwargs.get("distance_scale", 1.0),
+                d_max=arena_diag,
+                **reward_params,
+            )
+            pe_kwargs["reward_computer"] = rc
+        base_env = PursuitEvasionEnv(**pe_kwargs, n_obstacles=self.n_obstacles)
         nav_env = NavigationEnv(
             base_env,
             role="evader",
@@ -918,9 +1017,17 @@ class AMSDRLSelfPlay:
         # Build callbacks
         callbacks = self._build_callbacks(role, ckpt_mgr, phase)
 
+        # Determine training timesteps (asymmetric for evader at obstacle levels)
+        phase_timesteps = self.timesteps_per_phase
+        if role == "evader" and self.n_obstacles > 0 and self.evader_training_multiplier != 1.0:
+            phase_timesteps = int(self.timesteps_per_phase * self.evader_training_multiplier)
+            if self.verbose:
+                print(f"  Asymmetric training: evader gets {phase_timesteps} steps "
+                      f"({self.evader_training_multiplier}x at obstacle level)")
+
         # Train
         active_model.learn(
-            total_timesteps=self.timesteps_per_phase,
+            total_timesteps=phase_timesteps,
             callback=callbacks,
             reset_num_timesteps=False,
             progress_bar=True,
@@ -956,8 +1063,10 @@ class AMSDRLSelfPlay:
 
         # Baseline evaluation (only for pursuer — evaluates against scripted evaders)
         if role == "pursuer":
+            _rk = {"w_occlusion", "use_visibility_reward", "visibility_weight", "survival_bonus", "w_obs_approach"}
+            baseline_kwargs = {k: v for k, v in self.env_kwargs.items() if k not in _rk}
             eval_env = PursuitEvasionEnv(
-                **self.env_kwargs, n_obstacles=self.n_obstacles
+                **baseline_kwargs, n_obstacles=self.n_obstacles
             )
             if self.full_obs:
                 # Full-obs: model.predict works directly with flat obs
