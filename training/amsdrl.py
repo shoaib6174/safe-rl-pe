@@ -1557,6 +1557,7 @@ class AMSDRLSelfPlay:
         total_steps = 0
         role = "pursuer"
         converged = False
+        convergence_streak = 0  # consecutive evals with gap < eta
 
         # Calculate max micro-phases
         if self.max_total_steps > 0:
@@ -1682,14 +1683,22 @@ class AMSDRLSelfPlay:
                 self._save_history_incremental(
                     converged=False, elapsed=time.time() - start_time)
 
-                # Check convergence
+                # Check convergence (require consecutive evals below threshold)
                 curriculum_ready = (self.curriculum is None) or self.curriculum.at_max_level
                 if ne_gap < self.eta and curriculum_ready:
-                    converged = True
-                    if self.verbose:
-                        print(f"  *** Converged at M{micro}! "
-                              f"(NE gap {ne_gap:.3f} < {self.eta}) ***")
-                    break
+                    convergence_streak += 1
+                    if convergence_streak >= self.ne_gap_consecutive:
+                        converged = True
+                        if self.verbose:
+                            print(f"  *** Converged at M{micro}! "
+                                  f"(NE gap < {self.eta} for "
+                                  f"{self.ne_gap_consecutive} consecutive evals) ***")
+                        break
+                    elif self.verbose:
+                        print(f"    (convergence streak: {convergence_streak}"
+                              f"/{self.ne_gap_consecutive})")
+                else:
+                    convergence_streak = 0
             else:
                 # Compact progress line every 10 micro-phases
                 if micro % 10 == 0 and self.verbose:
