@@ -353,6 +353,31 @@ class SmoothCurriculumManager:
             "n_obstacles": self.n_obstacles,
         }
 
+    def _advance(self):
+        """Force advancement by one distance increment.
+
+        Called externally by NE-gap-based advancement in AMSDRLSelfPlay.
+        """
+        if self.at_max_level:
+            return
+        old_max = self.max_init_distance
+        self.max_init_distance = min(
+            self.max_init_distance + self.distance_increment,
+            self.final_max_distance,
+        )
+        self.advancement_count += 1
+        self.phases_at_level = 0
+        self.consecutive_floor_phases = 0
+
+        obs_msg = ""
+        if old_max < self.obstacles_after_distance <= self.max_init_distance:
+            obs_msg = f", obstacles now active ({self._n_obstacles})"
+
+        print(
+            f"[SMOOTH-CURRICULUM] Advanced: max_distance {old_max:.1f} → "
+            f"{self.max_init_distance:.1f}{obs_msg}"
+        )
+
     def check_advancement(self, capture_rate: float, escape_rate: float = 0.0) -> bool:
         """Check if distance should increase."""
         self.phases_at_level += 1
@@ -374,24 +399,8 @@ class SmoothCurriculumManager:
         phases_ok = self.phases_at_level >= self.min_phases_per_level
 
         if cr_ok and er_ok and phases_ok:
-            old_max = self.max_init_distance
-            self.max_init_distance = min(
-                self.max_init_distance + self.distance_increment,
-                self.final_max_distance,
-            )
-            self.advancement_count += 1
-            self.phases_at_level = 0
-            self.consecutive_floor_phases = 0
+            self._advance()
             self.level_history[-1]["advanced"] = True
-
-            obs_msg = ""
-            if old_max < self.obstacles_after_distance <= self.max_init_distance:
-                obs_msg = f", obstacles now active ({self._n_obstacles})"
-
-            print(
-                f"[SMOOTH-CURRICULUM] Advanced: max_distance {old_max:.1f} → "
-                f"{self.max_init_distance:.1f}{obs_msg}"
-            )
             return True
 
         if not cr_ok:

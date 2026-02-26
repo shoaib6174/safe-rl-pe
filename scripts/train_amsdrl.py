@@ -138,6 +138,16 @@ def parse_args():
     parser.add_argument("--smooth_curriculum_increment", type=float, default=0.5,
                         help="Distance increment per advancement in smooth curriculum (default: 0.5)")
 
+    # Phase warmup and NE-gap advancement (S52 fixes)
+    parser.add_argument("--phase_warmup", action="store_true", default=False,
+                        help="Enable phase length warmup (100K→200K→300K→500K)")
+    parser.add_argument("--ne_gap_advancement", action="store_true", default=False,
+                        help="Use NE-gap-based curriculum advancement instead of capture-rate threshold")
+    parser.add_argument("--ne_gap_threshold", type=float, default=0.15,
+                        help="NE gap threshold for curriculum advancement (default: 0.15)")
+    parser.add_argument("--ne_gap_consecutive", type=int, default=2,
+                        help="Consecutive balanced phases required for advancement (default: 2)")
+
     # Tier 3: EWC (catastrophic forgetting prevention)
     parser.add_argument("--ewc_lambda", type=float, default=0.0,
                         help="EWC regularization strength (0=disabled, e.g. 1000.0)")
@@ -252,6 +262,10 @@ def main():
         mixed_level_ratio=args.mixed_level_ratio,
         smooth_curriculum=args.smooth_curriculum,
         smooth_curriculum_increment=args.smooth_curriculum_increment,
+        phase_warmup=args.phase_warmup,
+        ne_gap_advancement=args.ne_gap_advancement,
+        ne_gap_threshold=args.ne_gap_threshold,
+        ne_gap_consecutive=args.ne_gap_consecutive,
         ewc_lambda=args.ewc_lambda,
         ewc_fisher_samples=args.ewc_fisher_samples,
         rnd_coef=args.rnd_coef,

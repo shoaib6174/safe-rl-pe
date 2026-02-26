@@ -546,6 +546,11 @@ class AMSDRLSelfPlay:
         mixed_level_ratio: float = 0.0,
         smooth_curriculum: bool = False,
         smooth_curriculum_increment: float = 0.5,
+        phase_warmup: bool = False,
+        phase_warmup_schedule: list[tuple[int, int]] | None = None,
+        ne_gap_advancement: bool = False,
+        ne_gap_threshold: float = 0.15,
+        ne_gap_consecutive: int = 2,
         ewc_lambda: float = 0.0,
         ewc_fisher_samples: int = 1024,
         rnd_coef: float = 0.0,
@@ -603,6 +608,26 @@ class AMSDRLSelfPlay:
         self.warm_start_evader = warm_start_evader
         self.warm_start_timesteps = warm_start_timesteps
         self.mixed_level_ratio = mixed_level_ratio
+
+        # Phase warmup: shorter phases early, ramp to full length
+        self.phase_warmup = phase_warmup
+        if phase_warmup and phase_warmup_schedule is None:
+            # Default schedule: (phase_number, timesteps)
+            # S1-S2: 100K, S3-S4: 200K, S5-S6: 300K, S7+: full
+            phase_warmup_schedule = [
+                (1, 100_000), (2, 100_000),
+                (3, 200_000), (4, 200_000),
+                (5, 300_000), (6, 300_000),
+            ]
+        self.phase_warmup_schedule = {
+            p: t for p, t in (phase_warmup_schedule or [])
+        }
+
+        # NE-gap-based advancement: advance when balanced, not when dominated
+        self.ne_gap_advancement = ne_gap_advancement
+        self.ne_gap_threshold = ne_gap_threshold
+        self.ne_gap_consecutive = ne_gap_consecutive
+        self._ne_gap_streak = 0  # consecutive phases with NE gap below threshold
 
         # Curriculum learning
         self.curriculum = None
@@ -713,6 +738,14 @@ class AMSDRLSelfPlay:
             if self.rnd_coef > 0:
                 print(f"  RND: coef={self.rnd_coef}, embed={self.rnd_embed_dim}, "
                       f"hidden={self.rnd_hidden_dim}, update_freq={self.rnd_update_freq}")
+            if self.phase_warmup:
+                schedule_str = ", ".join(
+                    f"S{p}:{t//1000}K" for p, t in sorted(self.phase_warmup_schedule.items())
+                )
+                print(f"  Phase warmup: {schedule_str}, then {self.timesteps_per_phase//1000}K")
+            if self.ne_gap_advancement:
+                print(f"  NE-gap advancement: threshold={self.ne_gap_threshold}, "
+                      f"consecutive={self.ne_gap_consecutive}")
             print(f"  Seed: {self.seed}")
             print(f"  Device: {self.device}")
             print("=" * 60)
@@ -760,9 +793,37 @@ class AMSDRLSelfPlay:
             # Curriculum: log level and check advancement / regression
             if self.curriculum:
                 metrics.update(self.curriculum.get_status())
-                advanced = self.curriculum.check_advancement(
-                    metrics["capture_rate"], metrics["escape_rate"]
-                )
+
+                # NE-gap advancement: advance when balanced for N consecutive phases
+                if self.ne_gap_advancement:
+                    _ne_gap = abs(metrics["capture_rate"] - metrics["escape_rate"])
+                    self.curriculum.phases_at_level += 1
+                    self.curriculum.level_history.append({
+                        "level": self.curriculum.current_level,
+                        "capture_rate": metrics["capture_rate"],
+                        "escape_rate": metrics["escape_rate"],
+                        "ne_gap": _ne_gap,
+                        "advanced": False,
+                    })
+                    if _ne_gap < self.ne_gap_threshold:
+                        self._ne_gap_streak += 1
+                    else:
+                        self._ne_gap_streak = 0
+                    advanced = (
+                        self._ne_gap_streak >= self.ne_gap_consecutive
+                        and not self.curriculum.at_max_level
+                    )
+                    if advanced:
+                        self.curriculum._advance()
+                        self.curriculum.level_history[-1]["advanced"] = True
+                        self._ne_gap_streak = 0
+                        if self.verbose:
+                            print(f"  [NE-GAP ADV] Balanced for {self.ne_gap_consecutive} phases "
+                                  f"(gap={_ne_gap:.3f} < {self.ne_gap_threshold}), advancing curriculum")
+                else:
+                    advanced = self.curriculum.check_advancement(
+                        metrics["capture_rate"], metrics["escape_rate"]
+                    )
                 if advanced:
                     # EWC: snapshot evader before changing level
                     if self.ewc is not None and self.evader_model is not None:
@@ -975,6 +1036,22 @@ class AMSDRLSelfPlay:
         )
         p_env.close()
 
+        # Save evader as rolling checkpoint so bilateral rollback works in S1
+        self.evader_ckpt.save_rolling(
+            model=self.evader_model,
+            encoder=getattr(self.evader_model.policy, "features_extractor", None),
+            step=0,
+            meta={"phase": "S0", "role": "evader", "source": "cold_start"},
+        )
+        # Also save milestone for warm-start reference
+        self.evader_ckpt.save_milestone(
+            model=self.evader_model,
+            encoder=getattr(self.evader_model.policy, "features_extractor", None),
+            phase=0,
+            role="evader",
+            meta={"source": "cold_start"},
+        )
+
         if self.verbose:
             print(f"  Cold-start complete: {self.cold_start_timesteps} steps")
 
@@ -1091,7 +1168,17 @@ class AMSDRLSelfPlay:
                 obs, _ = tmp_env.reset()
         tmp_env.close()
 
-        obs_batch = torch.FloatTensor(np.array(obs_list[:self.ewc.fisher_samples]))
+        # Flatten Dict observations (from PartialObsWrapper) to flat arrays
+        samples = obs_list[:self.ewc.fisher_samples]
+        if isinstance(samples[0], dict):
+            flat = []
+            for obs_dict in samples:
+                parts = [np.asarray(obs_dict[k]).flatten()
+                         for k in sorted(obs_dict.keys())]
+                flat.append(np.concatenate(parts))
+            obs_batch = torch.FloatTensor(np.array(flat))
+        else:
+            obs_batch = torch.FloatTensor(np.array(samples))
         obs_batch = obs_batch.to(self.evader_model.device)
 
         self.ewc.snapshot(self.evader_model, obs_batch)
@@ -1195,15 +1282,26 @@ class AMSDRLSelfPlay:
         if (self.mixed_level_ratio > 0
                 and self.curriculum is not None
                 and self.curriculum.current_level > 1):
-            prev_level = self.curriculum.levels[self.curriculum.current_level - 1]
+            from training.curriculum import SmoothCurriculumManager
+            if isinstance(self.curriculum, SmoothCurriculumManager):
+                # Smooth curriculum: step back by one distance_increment
+                prev_max = self.curriculum.max_init_distance - self.curriculum.distance_increment
+                prev_min = self.curriculum.min_init_distance
+                prev_label = f"max_dist={prev_max:.1f}"
+            else:
+                # Discrete curriculum: use the previous level's config
+                prev_level = self.curriculum.levels[self.curriculum.current_level - 1]
+                prev_max = prev_level["max_init_distance"]
+                prev_min = prev_level["min_init_distance"]
+                prev_label = f"L{self.curriculum.current_level - 1}"
             n_mixed = max(1, int(self.n_envs * self.mixed_level_ratio))
             for i in range(n_mixed):
                 if i < len(base_envs):
-                    base_envs[i].min_init_distance = prev_level["min_init_distance"]
-                    base_envs[i].max_init_distance = prev_level["max_init_distance"]
+                    base_envs[i].min_init_distance = prev_min
+                    base_envs[i].max_init_distance = prev_max
             if self.verbose:
                 print(f"  [MIXED-LEVEL] {n_mixed}/{self.n_envs} envs using "
-                      f"L{self.curriculum.current_level - 1} distances")
+                      f"{prev_label} distances")
 
         # Determine roles and models
         if role == "pursuer":
@@ -1277,10 +1375,19 @@ class AMSDRLSelfPlay:
         # Build callbacks
         callbacks = self._build_callbacks(role, ckpt_mgr, phase)
 
-        # Determine training timesteps (asymmetric for evader at obstacle levels)
+        # Determine training timesteps
         phase_timesteps = self.timesteps_per_phase
+
+        # Phase warmup: use shorter phases early in training
+        if self.phase_warmup and phase in self.phase_warmup_schedule:
+            phase_timesteps = self.phase_warmup_schedule[phase]
+            if self.verbose:
+                print(f"  [PHASE-WARMUP] {phase_timesteps} steps "
+                      f"(ramps to {self.timesteps_per_phase} at S{max(self.phase_warmup_schedule.keys()) + 1}+)")
+
+        # Asymmetric evader training at obstacle levels
         if role == "evader" and self.n_obstacles > 0 and self.evader_training_multiplier != 1.0:
-            phase_timesteps = int(self.timesteps_per_phase * self.evader_training_multiplier)
+            phase_timesteps = int(phase_timesteps * self.evader_training_multiplier)
             if self.verbose:
                 print(f"  Asymmetric training: evader gets {phase_timesteps} steps "
                       f"({self.evader_training_multiplier}x at obstacle level)")

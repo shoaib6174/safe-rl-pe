@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-02-26 (S52)
+## Last Updated: 2026-02-26 (S54)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -62,7 +62,9 @@
 | 49 | 2026-02-25 | **Phase 3 Monitoring**: Run Q killed (L4 collapse). Run R collapsing at L3 (gate=0.05 too low). Launched Runs S (20x20, gate=0.15) + T (10x10, gate=0.15). 3-run experimental matrix. | [S49](worklogs/2026-02-25_S49.md) |
 | 50 | 2026-02-25 | **Obstacle Physics Fix**: `resolve_obstacle_collisions()` — hard projection with tangential sliding, `w_collision` penalty, 13 new tests (603 total passing) | [S50](worklogs/2026-02-25_S50.md) |
 | 51 | 2026-02-25 | **Wall Penalty + L2 Collapse Investigation**: `w_wall` impl, penalty lit review (N16–N20), killed R/S/T, Run U collapsed at L2, root cause analysis (8 causes, 9 fixes) | [S51](worklogs/2026-02-25_S51.md) |
-| 52 | 2026-02-26 | **L2 Collapse Countermeasures**: Tier 1+2 fixes (bilateral rollback, evader-first, warm-start, mixed-level, smooth curriculum), Tier 3 (EWC + RND), 4 runs launched (V/W/X/Y), 40 new tests (654 pass) | [S52](worklogs/2026-02-26_S52.md) |
+| 52 | 2026-02-26 | **L2 Collapse Countermeasures + L1 Oscillation Fixes**: Tier 1-3 (EWC+RND), 2 bugs fixed, seed sensitivity discovery (massive variance). 3 structural fixes: cold-start checkpoint, phase warmup (100K→500K), NE-gap curriculum advancement. Runs Z1/Z2 launched. 57 new tests (687 pass) | [S52](worklogs/2026-02-26_S52.md) |
+| 53 | 2026-02-26 | **Self-Play Stabilization Research**: 30+ papers reviewed — simultaneous vs alternating (SimGD diverges), PSRO/FSP/league (population prevents cycling), phase length (10K-50K not 500K), PE-specific methods, simple baselines, cycling theory. Key finding: our long frozen phases are fundamentally wrong. | [S53](worklogs/2026-02-26_S53.md) |
+| 54 | 2026-02-26 | **PE Design Choices Survey**: 15+ papers benchmarked — arena sizes (0.9m-20km), speed ratios (0.8-1.3x), episode lengths (25-3000 steps), reward designs (dense/sparse/zero-sum), curricula, action spaces. Key finding: equal-speed 1v1 in bounded domain is trivially solvable; most papers give evader 10-30% speed advantage. | [S54](worklogs/2026-02-26_S54.md) |
 
 ## Paper Reading Status
 
