@@ -67,6 +67,8 @@ def parse_args():
                         help="Dense distance reward scale factor (default: 1.0)")
     parser.add_argument("--pursuer_v_max", type=float, default=1.0,
                         help="Pursuer max linear velocity (default: 1.0)")
+    parser.add_argument("--evader_v_max", type=float, default=1.0,
+                        help="Evader max linear velocity (default: 1.0)")
     parser.add_argument("--fixed_speed", action="store_true", default=False,
                         help="Fix v=v_max, only learn omega (1D action space)")
 
@@ -91,6 +93,8 @@ def parse_args():
                         help="Per-step survival bonus for evader (e.g. 1.0)")
     parser.add_argument("--timeout_penalty", type=float, default=-100.0,
                         help="Pursuer penalty on timeout / evader reward on escape (default: -100.0)")
+    parser.add_argument("--capture_bonus", type=float, default=100.0,
+                        help="Terminal capture reward magnitude (default: 100.0)")
 
     # Preparation phase
     parser.add_argument("--prep_steps", type=int, default=0,
@@ -104,6 +108,11 @@ def parse_args():
     # Wall collision penalty
     parser.add_argument("--w_wall", type=float, default=0.0,
                         help="Wall collision penalty weight (default: 0.0, off)")
+
+    # Obstacle observation
+    parser.add_argument("--n_obstacle_obs", type=int, default=0,
+                        help="Number of nearest obstacles in observation vector (default: 0). "
+                             "Set to match n_obstacles for agents to see obstacles.")
 
     # PBRS obstacle-seeking
     parser.add_argument("--w_obs_approach", type=float, default=0.0,
@@ -120,6 +129,8 @@ def parse_args():
                         help="Minimum phases at each curriculum level before advancement (default: 1)")
     parser.add_argument("--min_escape_rate", type=float, default=0.0,
                         help="Minimum evader escape rate required for curriculum advancement (default: 0.0)")
+    parser.add_argument("--min_obstacles", type=int, default=0,
+                        help="Minimum obstacle count floor (never go below, default: 0)")
 
     # L2 collapse countermeasures (S52)
     parser.add_argument("--bilateral_rollback", action="store_true", default=False,
@@ -147,6 +158,17 @@ def parse_args():
                         help="NE gap threshold for curriculum advancement (default: 0.15)")
     parser.add_argument("--ne_gap_consecutive", type=int, default=2,
                         help="Consecutive balanced phases required for advancement (default: 2)")
+
+    # Micro-phase rapid alternation (RA redesign, S53)
+    parser.add_argument("--micro_phase_steps", type=int, default=0,
+                        help="Steps per micro-phase (0=disabled, use legacy alternation). "
+                             "E.g. 2048 for 1 PPO rollout per micro-phase.")
+    parser.add_argument("--eval_interval_micro", type=int, default=50,
+                        help="Evaluate every N micro-phases (default: 50)")
+    parser.add_argument("--snapshot_freq_micro", type=int, default=5,
+                        help="Save opponent snapshot every N micro-phases (default: 5)")
+    parser.add_argument("--max_total_steps", type=int, default=0,
+                        help="Maximum total training steps for micro-phase mode (0=unlimited)")
 
     # Tier 3: EWC (catastrophic forgetting prevention)
     parser.add_argument("--ewc_lambda", type=float, default=0.0,
@@ -238,6 +260,7 @@ def main():
         full_obs=args.full_obs,
         distance_scale=args.distance_scale,
         pursuer_v_max=args.pursuer_v_max,
+        evader_v_max=args.evader_v_max,
         fixed_speed=args.fixed_speed,
         n_steps=args.n_steps,
         batch_size=args.batch_size,
@@ -250,11 +273,14 @@ def main():
         prep_steps=args.prep_steps,
         w_obs_approach=args.w_obs_approach,
         timeout_penalty=args.timeout_penalty,
+        capture_bonus=args.capture_bonus,
         w_collision=args.w_collision,
         w_wall=args.w_wall,
+        n_obstacle_obs=args.n_obstacle_obs,
         evader_training_multiplier=args.evader_multiplier,
         min_escape_rate=args.min_escape_rate,
         min_phases_per_level=args.min_phases_per_level,
+        min_obstacles=args.min_obstacles,
         bilateral_rollback=args.bilateral_rollback,
         evader_first_on_advance=args.evader_first_on_advance,
         warm_start_evader=args.warm_start_evader,
@@ -266,6 +292,10 @@ def main():
         ne_gap_advancement=args.ne_gap_advancement,
         ne_gap_threshold=args.ne_gap_threshold,
         ne_gap_consecutive=args.ne_gap_consecutive,
+        micro_phase_steps=args.micro_phase_steps,
+        eval_interval_micro=args.eval_interval_micro,
+        snapshot_freq_micro=args.snapshot_freq_micro,
+        max_total_steps=args.max_total_steps,
         ewc_lambda=args.ewc_lambda,
         ewc_fisher_samples=args.ewc_fisher_samples,
         rnd_coef=args.rnd_coef,

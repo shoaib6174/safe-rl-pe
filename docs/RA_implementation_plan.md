@@ -1,5 +1,9 @@
 # Implementation Plan: Runs RA1 and RA2
 
+## Status: IMPLEMENTED (S54)
+
+All code changes below have been implemented and smoke-tested. Ready for launch on niro-2.
+
 ## Overview
 
 Both runs share the same code changes (the "RA redesign"). They differ only in CLI arguments:
@@ -8,181 +12,60 @@ Both runs share the same code changes (the "RA redesign"). They differ only in C
 
 ---
 
-## Code Changes (7 files, ~15 edits)
+## Code Changes Implemented
 
-### 1. Environment: Add `evader_v_max` plumbing
+### 1. Parameter Plumbing: `evader_v_max`, `capture_bonus`, `n_obstacle_obs`
 
-**File: `envs/pursuit_evasion_env.py`** — Already has `evader_v_max` parameter (line 50, default 1.0). No change needed here.
+**`training/amsdrl.py` → `_make_partial_obs_env()`**
+- Added parameters: `evader_v_max`, `capture_bonus`, `n_obstacle_obs`
+- Passed through to `PursuitEvasionEnv()` and `RewardComputer()`
+- CRITICAL FIX: `n_obstacle_obs` was missing — agents were blind to obstacles in `--full_obs` mode
 
-**File: `training/amsdrl.py` → `_make_partial_obs_env()`** (line 54)
-- **Add parameter**: `evader_v_max: float = 1.0`
-- **Pass through** to `PursuitEvasionEnv(evader_v_max=evader_v_max, ...)`
-- Currently the function creates `PursuitEvasionEnv` but never passes `evader_v_max`, so it always defaults to 1.0.
+**`training/amsdrl.py` → `AMSDRLSelfPlay.__init__()`**
+- Added: `evader_v_max`, `capture_bonus`, `n_obstacle_obs`, `min_obstacles`, `micro_phase_steps`, `eval_interval_micro`, `snapshot_freq_micro`, `max_total_steps`
+- All stored in `self.env_kwargs` for propagation
 
-**File: `training/amsdrl.py` → `_make_vec_env()`** (line 145)
-- **Add parameter**: `evader_v_max: float = 1.0`
-- **Pass through** to `_make_partial_obs_env(evader_v_max=evader_v_max, ...)`
+**`scripts/train_amsdrl.py`**
+- 8 new CLI args added (see table below)
+- All passed through to `AMSDRLSelfPlay`
 
-**File: `training/amsdrl.py` → `AMSDRLSelfPlay.__init__()`** (line 498)
-- **Add parameter**: `evader_v_max: float = 1.0`
-- **Store in `self.env_kwargs`**: `"evader_v_max": evader_v_max`
+### 2. Evaluation Functions Fixed
 
-**File: `scripts/train_amsdrl.py` → `parse_args()`**
-- **Add CLI arg**: `--evader_v_max` (float, default 1.0)
-- **Pass to AMSDRLSelfPlay**: `evader_v_max=args.evader_v_max`
+**`_evaluate_head_to_head_full_obs()` and `_evaluate_head_to_head()`**
+- Added `evader_v_max` and `n_obstacle_obs` parameters
+- Now eval envs match training envs exactly
 
-### 2. Rewards: Add `capture_bonus` plumbing + new defaults
+### 3. Curriculum: `min_obstacles` Floor
 
-**File: `training/amsdrl.py` → `_make_partial_obs_env()`**
-- **Add parameter**: `capture_bonus: float = 100.0`
-- **Pass through** to `RewardComputer(capture_bonus=capture_bonus, ...)`
+**`training/curriculum.py` → `SmoothCurriculumManager`**
+- Added `min_obstacles: int = 0` parameter
+- `n_obstacles` property now returns `max(self.min_obstacles, ...)` instead of 0
 
-**File: `training/amsdrl.py` → `AMSDRLSelfPlay.__init__()`**
-- **Add parameter**: `capture_bonus: float = 100.0`
-- **Store in `self.env_kwargs`**: `"capture_bonus": capture_bonus`
+### 4. Micro-Phase Rapid Alternation (`_run_micro_phases()`)
 
-**File: `scripts/train_amsdrl.py` → `parse_args()`**
-- **Add CLI arg**: `--capture_bonus` (float, default 100.0)
+Core new method (~200 lines) implementing:
+- **Persistent environments**: Created once, reused across all micro-phases
+- **n_envs mismatch handling**: Save/reload pattern when cold-start uses 1 env
+- **Opponent weight sync**: `_sync_opponent_weights_vec()` copies `state_dict` in-place
+- **Opponent pool integration**: `_resample_pool_opponents_vec()` with 50/50 current/historical
+- **Periodic evaluation**: Every `eval_interval_micro` micro-phases
+- **Progress logging**: Compact status line every 10 micro-phases, full eval summary at intervals
+- **Checkpointing**: Models saved at every eval interval for crash recovery
+- **Incremental history**: `history.json` saved at each eval for monitoring
+- **NE-gap curriculum**: Integrated with micro-phase eval loop
+- **Convergence detection**: Stops when NE gap < eta at max curriculum level
+- **No rollback**: `SelfPlayHealthMonitorCallback` not attached in micro-phase mode
 
-### 3. Self-Play: Micro-Phase Alternation
+Key helper methods:
+- `_set_opponents_in_vec_env()`: Set opponents in all sub-envs of a vec_env
+- `_sync_opponent_weights_vec()`: Copy policy weights without recreating envs/adapters
+- `_resample_pool_opponents_vec()`: 50% current, 50% pool sampling
+- `_save_micro_snapshot()`: Save to opponent pool
+- `_save_history_incremental()`: Crash recovery
 
-This is the most significant change. The current `run()` method calls `_train_phase()` once per phase, and `_train_phase()` creates+destroys environments each time.
+### 5. Dispatch in `run()`
 
-**File: `training/amsdrl.py` → New method `_run_micro_phases()`**
-
-Replace the alternating training loop in `run()` with a new mode when `micro_phase_steps > 0`:
-
-```
-def _run_micro_phases(self):
-    """Rapid alternation self-play with micro-phases."""
-
-    # 1. Create PERSISTENT environment sets (one for pursuer training, one for evader training)
-    #    These are created ONCE and reused across all micro-phases.
-    pursuer_vec_env, pursuer_base_envs = _make_vec_env(role="pursuer", ...)
-    evader_vec_env, evader_base_envs = _make_vec_env(role="evader", ...)
-
-    # 2. Set initial opponents
-    _set_opponents(pursuer_base_envs, self.evader_model, "evader")
-    _set_opponents(evader_base_envs, self.pursuer_model, "pursuer")
-
-    # 3. Attach models to their environments
-    self.pursuer_model.set_env(pursuer_vec_env)
-    self.evader_model.set_env(evader_vec_env)
-
-    # 4. Main loop: alternate micro-phases
-    total_steps = 0
-    role = "pursuer"
-    eval_interval = self.eval_interval_micro  # e.g. 50 micro-phases
-    snapshot_interval = ...  # e.g. every 5 micro-phases = 20K steps
-
-    for micro in range(max_micro_phases):
-        # Train active agent for micro_phase_steps
-        if role == "pursuer":
-            model = self.pursuer_model
-        else:
-            model = self.evader_model
-
-        model.learn(
-            total_timesteps=self.micro_phase_steps,
-            reset_num_timesteps=False,
-            progress_bar=False,
-        )
-        total_steps += self.micro_phase_steps
-
-        # Sync opponent: copy just-trained agent's weights to the other env's opponent
-        if role == "pursuer":
-            _sync_opponent(evader_base_envs, self.pursuer_model, "pursuer")
-        else:
-            _sync_opponent(pursuer_base_envs, self.evader_model, "evader")
-
-        # Snapshot to opponent pool
-        if micro % snapshot_interval == 0:
-            _save_snapshot(...)
-
-        # Periodic evaluation
-        if micro % eval_interval == 0:
-            metrics = self._evaluate()
-            # Check NE-gap advancement (if curriculum enabled)
-            # Log to history
-
-        # Alternate role
-        role = "evader" if role == "pursuer" else "pursuer"
-
-    # Cleanup
-    pursuer_vec_env.close()
-    evader_vec_env.close()
-```
-
-**Key helper functions needed:**
-
-```python
-def _set_opponents(base_envs, opponent_model, opponent_role):
-    """Set the frozen opponent in each sub-env's SingleAgentPEWrapper."""
-    for base_env in base_envs:
-        # Traverse wrapper stack to find SingleAgentPEWrapper
-        # Set opponent adapter with the model
-        ...
-
-def _sync_opponent(base_envs, updated_model, role):
-    """Copy updated model weights into the opponent adapters in base_envs."""
-    # For each sub-env, update the opponent's policy weights
-    # WITHOUT recreating the environment or adapter
-    for base_env in base_envs:
-        wrapper = _find_wrapper(base_env, SingleAgentPEWrapper)
-        if wrapper.opponent is not None:
-            # Update opponent model reference weights
-            wrapper.opponent.model.policy.load_state_dict(
-                updated_model.policy.state_dict()
-            )
-```
-
-**File: `training/amsdrl.py` → `AMSDRLSelfPlay.__init__()`**
-- **Add parameters**:
-  - `micro_phase_steps: int = 0` (0 = disabled, use legacy alternating)
-  - `eval_interval_micro: int = 50` (evaluate every N micro-phases)
-  - `snapshot_freq_micro: int = 5` (save snapshot every N micro-phases)
-
-**File: `training/amsdrl.py` → `AMSDRLSelfPlay.run()`**
-- **Add dispatch**: If `self.micro_phase_steps > 0`, call `_run_micro_phases()` instead of the legacy phase loop.
-
-**File: `scripts/train_amsdrl.py` → `parse_args()`**
-- **Add CLI args**:
-  - `--micro_phase_steps` (int, default 0)
-  - `--eval_interval_micro` (int, default 50)
-  - `--snapshot_freq_micro` (int, default 5)
-
-### 4. Opponent Pool Integration with Micro-Phases
-
-**File: `training/amsdrl.py` → `_run_micro_phases()`**
-
-Within the micro-phase loop, when sampling opponents for sub-envs:
-- 50% of sub-envs get the current opponent (latest weights)
-- 50% sample from the opponent pool (historical snapshots)
-
-This reuses the existing `OpponentPool` class from S43. The pool is populated by saving snapshots every `snapshot_freq_micro` micro-phases.
-
-### 5. Curriculum Changes: `min_obstacles` floor
-
-**File: `training/curriculum.py` → `SmoothCurriculumManager`**
-- **Add parameter**: `min_obstacles: int = 0`
-- **Modify `n_obstacles` property** (line 342): Return `max(self.min_obstacles, ...)` instead of 0 when below threshold.
-
-**File: `training/amsdrl.py` → `AMSDRLSelfPlay.__init__()`**
-- **Add parameter**: `min_obstacles: int = 0`
-- **Pass through** to `SmoothCurriculumManager(min_obstacles=min_obstacles, ...)`
-
-**File: `scripts/train_amsdrl.py`**
-- **Add CLI arg**: `--min_obstacles` (int, default 0)
-
-### 6. Remove Rollback for Micro-Phase Mode
-
-**File: `training/amsdrl.py` → `_run_micro_phases()`**
-- Do NOT attach `SelfPlayHealthMonitorCallback` in micro-phase mode.
-- Only attach `EntropyMonitorCallback` for logging.
-
-### 7. Episode Length Default
-
-**No code change needed** — `max_steps` is already a CLI parameter (default 1200). We'll pass `--max_steps 600` at launch time.
+After cold-start + eval, if `self.micro_phase_steps > 0`, calls `_run_micro_phases()` instead of legacy phase loop. Legacy mode fully preserved for backwards compatibility.
 
 ---
 
@@ -192,20 +75,22 @@ This reuses the existing `OpponentPool` class from S43. The pool is populated by
 |----------|------|---------|-------------|
 | `--evader_v_max` | float | 1.0 | Evader max speed (1.15 for speed advantage) |
 | `--capture_bonus` | float | 100.0 | Terminal capture reward magnitude |
-| `--micro_phase_steps` | int | 0 | Steps per micro-phase (0=disabled, use legacy) |
+| `--n_obstacle_obs` | int | 0 | Nearest obstacles in obs vector (set to 2 for RA runs) |
+| `--min_obstacles` | int | 0 | Minimum obstacle count floor |
+| `--micro_phase_steps` | int | 0 | Steps per micro-phase (0=disabled) |
 | `--eval_interval_micro` | int | 50 | Evaluate every N micro-phases |
 | `--snapshot_freq_micro` | int | 5 | Save opponent snapshot every N micro-phases |
-| `--min_obstacles` | int | 0 | Minimum obstacle count (floor, never go below) |
+| `--max_total_steps` | int | 0 | Max total steps (0=unlimited) |
 
 ## Summary of All Modified Files
 
 | File | Changes |
 |------|---------|
-| `training/amsdrl.py` | Add `evader_v_max`/`capture_bonus` plumbing, `_run_micro_phases()` method, `_sync_opponent()` helper, dispatch in `run()` |
-| `training/curriculum.py` | Add `min_obstacles` floor to `SmoothCurriculumManager` |
-| `scripts/train_amsdrl.py` | 6 new CLI args, pass-through to `AMSDRLSelfPlay` |
+| `training/amsdrl.py` | `evader_v_max`/`capture_bonus`/`n_obstacle_obs` plumbing, `_run_micro_phases()` + 5 helper methods, dispatch in `run()`, eval functions fixed |
+| `training/curriculum.py` | `min_obstacles` floor in `SmoothCurriculumManager` |
+| `scripts/train_amsdrl.py` | 8 new CLI args, pass-through to `AMSDRLSelfPlay` |
 | `envs/rewards.py` | No changes (already parameterized) |
-| `envs/pursuit_evasion_env.py` | No changes (already has `evader_v_max`) |
+| `envs/pursuit_evasion_env.py` | No changes (already has `evader_v_max`, `n_obstacle_obs`) |
 
 ---
 
@@ -215,11 +100,13 @@ This reuses the existing `OpponentPool` class from S43. The pool is populated by
 
 ```bash
 cd ~/claude_pursuit_evasion
+mkdir -p results/run_RA1_no_curriculum
 
 PYTHONUNBUFFERED=1 nohup ./venv/bin/python scripts/train_amsdrl.py \
-    --micro_phase_steps 4096 \
+    --micro_phase_steps 2048 \
     --eval_interval_micro 50 \
     --snapshot_freq_micro 5 \
+    --max_total_steps 10000000 \
     --evader_v_max 1.15 \
     --capture_bonus 10.0 \
     --timeout_penalty -10.0 \
@@ -228,8 +115,7 @@ PYTHONUNBUFFERED=1 nohup ./venv/bin/python scripts/train_amsdrl.py \
     --visibility_weight 0.1 \
     --n_obstacles 2 \
     --min_obstacles 2 \
-    --min_init_distance 2.0 \
-    --max_init_distance 10.0 \
+    --n_obstacle_obs 2 \
     --max_steps 600 \
     --max_phases 1000 \
     --opponent_pool_size 20 \
@@ -247,26 +133,27 @@ PYTHONUNBUFFERED=1 nohup ./venv/bin/python scripts/train_amsdrl.py \
 ```
 
 **Key parameters explained:**
-- `--micro_phase_steps 4096`: 1 PPO rollout per micro-phase (4 envs × 512 n_steps × 2 = 4096)
-- `--eval_interval_micro 50`: Evaluate every 50 micro-phases = every ~200K total steps
+- `--micro_phase_steps 2048`: 1 PPO rollout per micro-phase (4 envs × 512 n_steps = 2048)
+- `--eval_interval_micro 50`: Evaluate every 50 micro-phases = every ~100K total steps
+- `--max_total_steps 10000000`: 10M step budget (~2-4 hours on GPU)
 - `--evader_v_max 1.15`: 15% evader speed advantage
 - `--capture_bonus 10.0 --timeout_penalty -10.0`: Rebalanced terminal rewards
 - `--survival_bonus 0.02`: Evader gets +0.02 per step alive
 - `--visibility_weight 0.1`: Toned-down visibility reward
-- `--n_obstacles 2 --min_obstacles 2`: Always 2 obstacles
+- `--n_obstacles 2 --min_obstacles 2 --n_obstacle_obs 2`: Always 2 obstacles, visible in obs
 - `--max_steps 600`: 30-second episodes
-- `--opponent_pool_size 20`: Historical opponent pool with 20 slots
-- `--max_phases 1000`: High limit since each "phase" is one micro-phase now (ignored in micro-phase mode — runs until convergence or wall time)
 
 ### RA2: Distance Curriculum
 
 ```bash
 cd ~/claude_pursuit_evasion
+mkdir -p results/run_RA2_distance_curriculum
 
 PYTHONUNBUFFERED=1 nohup ./venv/bin/python scripts/train_amsdrl.py \
-    --micro_phase_steps 4096 \
+    --micro_phase_steps 2048 \
     --eval_interval_micro 50 \
     --snapshot_freq_micro 5 \
+    --max_total_steps 10000000 \
     --evader_v_max 1.15 \
     --capture_bonus 10.0 \
     --timeout_penalty -10.0 \
@@ -275,6 +162,7 @@ PYTHONUNBUFFERED=1 nohup ./venv/bin/python scripts/train_amsdrl.py \
     --visibility_weight 0.1 \
     --n_obstacles 2 \
     --min_obstacles 2 \
+    --n_obstacle_obs 2 \
     --max_steps 600 \
     --smooth_curriculum \
     --smooth_curriculum_increment 1.0 \
@@ -298,24 +186,9 @@ PYTHONUNBUFFERED=1 nohup ./venv/bin/python scripts/train_amsdrl.py \
 
 **Differences from RA1:**
 - `--smooth_curriculum`: Enables distance-only curriculum (starts at 2–5m)
-- `--smooth_curriculum_increment 1.0`: +1m per advancement (coarser than 0.5m, faster progression)
+- `--smooth_curriculum_increment 1.0`: +1m per advancement
 - `--ne_gap_advancement --ne_gap_threshold 0.15 --ne_gap_consecutive 3`: Advance when balanced for 3 consecutive eval windows
 - `--min_phases_per_level 2`: At least 2 eval windows at each distance level
-- No `--min_init_distance` / `--max_init_distance` (curriculum manager sets these)
-
----
-
-## Implementation Order
-
-1. **Plumbing** (~30 min): `evader_v_max` and `capture_bonus` through `_make_partial_obs_env` → `_make_vec_env` → `AMSDRLSelfPlay.__init__` → CLI
-2. **`min_obstacles` floor** (~15 min): `SmoothCurriculumManager` property change + CLI arg
-3. **`_run_micro_phases()` method** (~2–3 hours): The core new method with env caching, opponent sync, periodic eval, pool integration
-4. **`_sync_opponent()` helper** (~30 min): Weight copy without env recreation
-5. **Dispatch in `run()`** (~10 min): If `micro_phase_steps > 0`, call `_run_micro_phases()`
-6. **Tests** (~1 hour): Test micro-phase training runs for 2–3 micro-phases without crashing
-7. **Launch on niro-2** (~30 min): Push, pull, kill old runs, start RA1 + RA2
-
-**Total estimated: ~5–6 hours**
 
 ---
 
@@ -325,7 +198,7 @@ After ~2M total steps (~30–60 min wall time on niro-2):
 
 | Metric | Target | Failure |
 |--------|--------|---------|
-| NE gap (|SR_P - SR_E|) | < 0.30 sustained | > 0.80 for 500K+ steps |
+| NE gap (\|SR_P - SR_E\|) | < 0.30 sustained | > 0.80 for 500K+ steps |
 | Rollbacks triggered | 0 (disabled) | N/A |
 | SR_P oscillation amplitude | < 0.30 between evals | > 0.70 swings |
 | Curriculum advancement (RA2) | At least 1 level | Stuck at initial level after 2M steps |
@@ -335,8 +208,22 @@ After ~2M total steps (~30–60 min wall time on niro-2):
 
 ```bash
 # Quick status check
-cat ~/claude_pursuit_evasion/results/run_RA1_no_curriculum/train.log | tr '\r' '\n' | grep -E "(SR_P|Phase|Eval|NE.gap|micro|Pool)"
+cat ~/claude_pursuit_evasion/results/run_RA1_no_curriculum/train.log | tr '\r' '\n' | grep -E "(SR_P|M\s*[0-9]|Eval|gap=|pool=|Converged)"
 
 # Tail live
 tail -f ~/claude_pursuit_evasion/results/run_RA1_no_curriculum/train.log | tr '\r' '\n'
+
+# Check history.json
+cat ~/claude_pursuit_evasion/results/run_RA1_no_curriculum/history.json | python3 -m json.tool | tail -20
 ```
+
+## Spec Panel Fixes Applied
+
+1. **CRITICAL**: Added `--n_obstacle_obs` CLI arg — agents can now see obstacles in `--full_obs` mode
+2. **HIGH**: n_envs mismatch after cold-start handled via save/reload pattern
+3. **HIGH**: Corrected micro_phase_steps math: 2048 = 1 rollout (n_envs=4 × n_steps=512)
+4. **HIGH**: Added progress logging (every 10 micro-phases) and full eval summaries
+5. **HIGH**: Added checkpointing at eval intervals + incremental history saves
+6. **HIGH**: Opponent adapter traversal through full wrapper stack (Monitor → FixedSpeed → SingleAgent)
+7. **MEDIUM**: Added `--max_total_steps` for convergence detection
+8. **MEDIUM**: Pool resampling at snapshot intervals (not every micro-phase)

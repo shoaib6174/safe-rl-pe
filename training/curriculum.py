@@ -301,6 +301,7 @@ class SmoothCurriculumManager:
         regression_patience: int = 3,
         obstacles_after_distance: float = 8.0,
         n_obstacles: int = 3,
+        min_obstacles: int = 0,
     ):
         self.arena_width = arena_width
         self.arena_height = arena_height
@@ -309,6 +310,7 @@ class SmoothCurriculumManager:
         self.min_phases_per_level = min_phases_per_level
         self.regression_floor = regression_floor
         self.regression_patience = regression_patience
+        self.min_obstacles = min_obstacles
 
         max_possible = 0.8 * np.hypot(arena_width, arena_height)
         self.min_init_distance = initial_min_distance
@@ -343,8 +345,8 @@ class SmoothCurriculumManager:
     @property
     def n_obstacles(self) -> int:
         if self.max_init_distance >= self.obstacles_after_distance:
-            return self._n_obstacles
-        return 0
+            return max(self.min_obstacles, self._n_obstacles)
+        return self.min_obstacles
 
     def get_env_overrides(self) -> dict:
         return {

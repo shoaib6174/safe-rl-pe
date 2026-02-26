@@ -66,6 +66,7 @@ def _make_partial_obs_env(
     full_obs: bool = False,
     distance_scale: float = 1.0,
     pursuer_v_max: float = 1.0,
+    evader_v_max: float = 1.0,
     fixed_speed: bool = False,
     min_init_distance: float = 3.0,
     max_init_distance: float = 15.0,
@@ -76,8 +77,10 @@ def _make_partial_obs_env(
     prep_steps: int = 0,
     w_obs_approach: float = 0.0,
     timeout_penalty: float = -100.0,
+    capture_bonus: float = 100.0,
     w_collision: float = 0.0,
     w_wall: float = 0.0,
+    n_obstacle_obs: int = 0,
 ) -> tuple:
     """Create an environment stack for one agent.
 
@@ -85,6 +88,7 @@ def _make_partial_obs_env(
         full_obs: If True, skip PartialObsWrapper (full-state observations).
         distance_scale: Scale factor for dense distance reward.
         pursuer_v_max: Maximum linear velocity for pursuer.
+        evader_v_max: Maximum linear velocity for evader.
         fixed_speed: If True, fix v=v_max and only learn omega (1D action).
         min_init_distance: Minimum initial agent separation.
         max_init_distance: Maximum initial agent separation.
@@ -94,6 +98,8 @@ def _make_partial_obs_env(
         survival_bonus: Per-step survival bonus for evader (Mode B).
         prep_steps: Freeze pursuer for first N steps per episode (0 = off).
         w_obs_approach: PBRS obstacle-seeking weight for evader (0 = off).
+        capture_bonus: Terminal capture reward magnitude.
+        n_obstacle_obs: Number of nearest obstacles in observation (0 = none).
 
     Returns:
         (env, base_env) where env is the fully-wrapped env and
@@ -110,6 +116,7 @@ def _make_partial_obs_env(
         survival_bonus=survival_bonus,
         w_obs_approach=w_obs_approach,
         timeout_penalty=timeout_penalty,
+        capture_bonus=capture_bonus,
     )
 
     base_env = PursuitEvasionEnv(
@@ -119,12 +126,14 @@ def _make_partial_obs_env(
         capture_radius=capture_radius,
         n_obstacles=n_obstacles,
         pursuer_v_max=pursuer_v_max,
+        evader_v_max=evader_v_max,
         min_init_distance=min_init_distance,
         max_init_distance=max_init_distance,
         reward_computer=reward_computer,
         prep_steps=prep_steps,
         w_collision=w_collision,
         w_wall=w_wall,
+        n_obstacle_obs=n_obstacle_obs,
     )
     single_env = SingleAgentPEWrapper(base_env, role=role)
 
@@ -306,12 +315,14 @@ def _evaluate_head_to_head(
     n_obstacles: int = 0,
     distance_scale: float = 1.0,
     pursuer_v_max: float = 1.0,
+    evader_v_max: float = 1.0,
     fixed_speed: bool = False,
     min_init_distance: float = 3.0,
     max_init_distance: float = 15.0,
     prep_steps: int = 0,
     w_collision: float = 0.0,
     w_wall: float = 0.0,
+    n_obstacle_obs: int = 0,
     **kwargs,
 ) -> dict:
     """Evaluate pursuer vs evader head-to-head using full-state obs.
@@ -327,11 +338,13 @@ def _evaluate_head_to_head(
         n_obstacles=n_obstacles,
         distance_scale=distance_scale,
         pursuer_v_max=pursuer_v_max,
+        evader_v_max=evader_v_max,
         min_init_distance=min_init_distance,
         max_init_distance=max_init_distance,
         prep_steps=prep_steps,
         w_collision=w_collision,
         w_wall=w_wall,
+        n_obstacle_obs=n_obstacle_obs,
     )
 
     # Create adapters for both agents
@@ -397,12 +410,14 @@ def _evaluate_head_to_head_full_obs(
     n_obstacles: int = 0,
     distance_scale: float = 1.0,
     pursuer_v_max: float = 1.0,
+    evader_v_max: float = 1.0,
     fixed_speed: bool = False,
     min_init_distance: float = 3.0,
     max_init_distance: float = 15.0,
     prep_steps: int = 0,
     w_collision: float = 0.0,
     w_wall: float = 0.0,
+    n_obstacle_obs: int = 0,
     **kwargs,
 ) -> dict:
     """Evaluate pursuer vs evader with full-state observations (diagnostic mode)."""
@@ -414,11 +429,13 @@ def _evaluate_head_to_head_full_obs(
         n_obstacles=n_obstacles,
         distance_scale=distance_scale,
         pursuer_v_max=pursuer_v_max,
+        evader_v_max=evader_v_max,
         min_init_distance=min_init_distance,
         max_init_distance=max_init_distance,
         prep_steps=prep_steps,
         w_collision=w_collision,
         w_wall=w_wall,
+        n_obstacle_obs=n_obstacle_obs,
     )
 
     captures = 0
@@ -522,6 +539,7 @@ class AMSDRLSelfPlay:
         full_obs: bool = False,
         distance_scale: float = 1.0,
         pursuer_v_max: float = 1.0,
+        evader_v_max: float = 1.0,
         fixed_speed: bool = False,
         n_steps: int = 512,
         batch_size: int = 256,
@@ -534,8 +552,10 @@ class AMSDRLSelfPlay:
         prep_steps: int = 0,
         w_obs_approach: float = 0.0,
         timeout_penalty: float = -100.0,
+        capture_bonus: float = 100.0,
         w_collision: float = 0.0,
         w_wall: float = 0.0,
+        n_obstacle_obs: int = 0,
         evader_training_multiplier: float = 1.0,
         min_escape_rate: float = 0.0,
         min_phases_per_level: int = 1,
@@ -546,11 +566,16 @@ class AMSDRLSelfPlay:
         mixed_level_ratio: float = 0.0,
         smooth_curriculum: bool = False,
         smooth_curriculum_increment: float = 0.5,
+        min_obstacles: int = 0,
         phase_warmup: bool = False,
         phase_warmup_schedule: list[tuple[int, int]] | None = None,
         ne_gap_advancement: bool = False,
         ne_gap_threshold: float = 0.15,
         ne_gap_consecutive: int = 2,
+        micro_phase_steps: int = 0,
+        eval_interval_micro: int = 50,
+        snapshot_freq_micro: int = 5,
+        max_total_steps: int = 0,
         ewc_lambda: float = 0.0,
         ewc_fisher_samples: int = 1024,
         rnd_coef: float = 0.0,
@@ -591,6 +616,7 @@ class AMSDRLSelfPlay:
             "capture_radius": capture_radius,
             "distance_scale": distance_scale,
             "pursuer_v_max": pursuer_v_max,
+            "evader_v_max": evader_v_max,
             "w_occlusion": w_occlusion,
             "use_visibility_reward": use_visibility_reward,
             "visibility_weight": visibility_weight,
@@ -598,8 +624,10 @@ class AMSDRLSelfPlay:
             "prep_steps": prep_steps,
             "w_obs_approach": w_obs_approach,
             "timeout_penalty": timeout_penalty,
+            "capture_bonus": capture_bonus,
             "w_collision": w_collision,
             "w_wall": w_wall,
+            "n_obstacle_obs": n_obstacle_obs,
         }
         self.fixed_speed = fixed_speed
         self.evader_training_multiplier = evader_training_multiplier
@@ -629,6 +657,12 @@ class AMSDRLSelfPlay:
         self.ne_gap_consecutive = ne_gap_consecutive
         self._ne_gap_streak = 0  # consecutive phases with NE gap below threshold
 
+        # Micro-phase rapid alternation (RA redesign)
+        self.micro_phase_steps = micro_phase_steps
+        self.eval_interval_micro = eval_interval_micro
+        self.snapshot_freq_micro = snapshot_freq_micro
+        self.max_total_steps = max_total_steps
+
         # Curriculum learning
         self.curriculum = None
         if smooth_curriculum:
@@ -638,6 +672,7 @@ class AMSDRLSelfPlay:
                 distance_increment=smooth_curriculum_increment,
                 min_escape_rate=min_escape_rate,
                 min_phases_per_level=min_phases_per_level,
+                min_obstacles=min_obstacles,
             )
             overrides = self.curriculum.get_env_overrides()
             self.env_kwargs["min_init_distance"] = overrides["min_init_distance"]
@@ -719,9 +754,12 @@ class AMSDRLSelfPlay:
             print(f"  Full-obs: {self.full_obs}")
             print(f"  Distance scale: {self.env_kwargs['distance_scale']}")
             print(f"  Pursuer v_max: {self.env_kwargs['pursuer_v_max']}")
+            print(f"  Evader v_max: {self.env_kwargs['evader_v_max']}")
             print(f"  Fixed speed: {self.fixed_speed}")
             print(f"  Curriculum: {self.curriculum is not None}")
             print(f"  Opponent pool: {self.opponent_pool_size if self.opponent_pool_size > 0 else 'disabled'}")
+            if self.micro_phase_steps > 0:
+                print(f"  Mode: MICRO-PHASE (steps={self.micro_phase_steps})")
             prep = self.env_kwargs.get("prep_steps", 0)
             if prep > 0:
                 print(f"  Prep phase: {prep} steps (pursuer frozen)")
@@ -729,10 +767,15 @@ class AMSDRLSelfPlay:
                 print(f"  Reward mode: VISIBILITY (OpenAI H&S style)")
                 print(f"    Visibility weight: {self.env_kwargs.get('visibility_weight', 1.0)}")
                 print(f"    Survival bonus: {self.env_kwargs.get('survival_bonus', 0.0)}")
+                print(f"    Capture bonus: {self.env_kwargs.get('capture_bonus', 100.0)}")
+                print(f"    Timeout penalty: {self.env_kwargs.get('timeout_penalty', -100.0)}")
             else:
                 w_occ = self.env_kwargs.get("w_occlusion", 0.0)
                 if w_occ > 0:
                     print(f"  Occlusion bonus: {w_occ}")
+            n_obs_obs = self.env_kwargs.get("n_obstacle_obs", 0)
+            if n_obs_obs > 0:
+                print(f"  Obstacle obs: {n_obs_obs} nearest obstacles in obs vector")
             if self.ewc_lambda > 0:
                 print(f"  EWC: lambda={self.ewc_lambda}, fisher_samples={self.ewc.fisher_samples}")
             if self.rnd_coef > 0:
@@ -770,7 +813,11 @@ class AMSDRLSelfPlay:
             print(f"  Cold-start eval: capture_rate={cs_metrics['capture_rate']:.2f}, "
                   f"escape_rate={cs_metrics['escape_rate']:.2f}")
 
-        # ─── Alternating Training Phases ───
+        # ─── Dispatch: Micro-Phase or Legacy ───
+        if self.micro_phase_steps > 0:
+            return self._run_micro_phases()
+
+        # ─── Legacy: Alternating Training Phases ───
         converged = False
         force_next_role = None  # Override alternation for evader-first
         for phase in range(1, self.max_phases + 1):
@@ -1432,6 +1479,433 @@ class AMSDRLSelfPlay:
                 self.evader_pool.add_checkpoint(str(milestone_dir))
 
         train_vec_env.close()
+
+    def _run_micro_phases(self):
+        """Rapid alternation self-play with micro-phases (RA redesign).
+
+        Instead of long frozen phases (100K-500K steps), alternate training
+        every micro_phase_steps (e.g. 2048 = 1 PPO rollout). Environments
+        are created once and reused. Opponent weights are synced in-place.
+        """
+        start_time = time.time()
+
+        if self.verbose:
+            rollout_steps = self.n_envs * self.n_steps
+            print(f"\n{'=' * 60}")
+            print("Micro-Phase Rapid Alternation Mode")
+            print(f"  Steps per micro-phase: {self.micro_phase_steps}")
+            print(f"  PPO rollout size: {rollout_steps} "
+                  f"(n_envs={self.n_envs} x n_steps={self.n_steps})")
+            print(f"  Eval interval: every {self.eval_interval_micro} micro-phases")
+            print(f"  Snapshot interval: every {self.snapshot_freq_micro} micro-phases")
+            if self.max_total_steps > 0:
+                print(f"  Max total steps: {self.max_total_steps:,}")
+            print(f"{'=' * 60}")
+
+        # 1. Create persistent environment sets
+        pursuer_vec_env, pursuer_base_envs = _make_vec_env(
+            role="pursuer",
+            n_envs=self.n_envs,
+            use_dcbf=(self.use_dcbf),
+            gamma=self.gamma,
+            history_length=self.history_length,
+            n_obstacles=self.n_obstacles,
+            seed=self.seed + 1000,
+            full_obs=self.full_obs,
+            fixed_speed=self.fixed_speed,
+            **self.env_kwargs,
+        )
+        evader_vec_env, evader_base_envs = _make_vec_env(
+            role="evader",
+            n_envs=self.n_envs,
+            use_dcbf=False,
+            gamma=self.gamma,
+            history_length=self.history_length,
+            n_obstacles=self.n_obstacles,
+            seed=self.seed + 2000,
+            full_obs=self.full_obs,
+            fixed_speed=self.fixed_speed,
+            **self.env_kwargs,
+        )
+
+        # 2. Handle n_envs mismatch from cold-start (which uses 1 env)
+        #    SB3 requires save/reload when n_envs changes.
+        for role_name, vec_env in [("pursuer", pursuer_vec_env),
+                                    ("evader", evader_vec_env)]:
+            model = self.pursuer_model if role_name == "pursuer" else self.evader_model
+            if model.n_envs != vec_env.num_envs:
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp) / "model.zip"
+                    model.save(tmp_path)
+                    reloaded = PPO.load(tmp_path, env=vec_env, device=self.device)
+                if role_name == "pursuer":
+                    self.pursuer_model = reloaded
+                else:
+                    self.evader_model = reloaded
+                if self.verbose:
+                    print(f"  [{role_name}] Reloaded model for n_envs={vec_env.num_envs}")
+            else:
+                model.set_env(vec_env)
+
+        # 3. Set initial opponents in each sub-env
+        self._set_opponents_in_vec_env(
+            pursuer_vec_env, pursuer_base_envs, self.evader_model, "evader")
+        self._set_opponents_in_vec_env(
+            evader_vec_env, evader_base_envs, self.pursuer_model, "pursuer")
+
+        # 4. Main micro-phase loop
+        total_steps = 0
+        role = "pursuer"
+        converged = False
+
+        # Calculate max micro-phases
+        if self.max_total_steps > 0:
+            max_micro = self.max_total_steps // self.micro_phase_steps
+        else:
+            max_micro = self.max_phases * (self.timesteps_per_phase // self.micro_phase_steps)
+
+        if self.verbose:
+            print(f"  Max micro-phases: {max_micro}")
+            print(f"\n--- Starting micro-phase training ---")
+
+        last_micro = 0
+        for micro in range(1, max_micro + 1):
+            last_micro = micro
+
+            # Select active model
+            if role == "pursuer":
+                active_model = self.pursuer_model
+            else:
+                active_model = self.evader_model
+
+            # Train for one micro-phase
+            active_model.learn(
+                total_timesteps=self.micro_phase_steps,
+                reset_num_timesteps=False,
+                progress_bar=False,
+            )
+            total_steps += self.micro_phase_steps
+
+            # Sync opponent weights: copy just-trained model into the other env
+            if role == "pursuer":
+                self._sync_opponent_weights_vec(evader_vec_env, self.pursuer_model)
+            else:
+                self._sync_opponent_weights_vec(pursuer_vec_env, self.evader_model)
+
+            # Snapshot to opponent pool
+            if (self.opponent_pool_size > 0
+                    and micro % self.snapshot_freq_micro == 0):
+                self._save_micro_snapshot(role, micro)
+
+                # Resample diverse opponents for both env sets
+                self._resample_pool_opponents_vec(
+                    pursuer_vec_env, pursuer_base_envs,
+                    self.evader_pool, "evader",
+                    current_model=self.evader_model,
+                )
+                self._resample_pool_opponents_vec(
+                    evader_vec_env, evader_base_envs,
+                    self.pursuer_pool, "pursuer",
+                    current_model=self.pursuer_model,
+                )
+
+            # Periodic evaluation
+            if micro % self.eval_interval_micro == 0:
+                metrics = self._evaluate()
+                sr_p = metrics["capture_rate"]
+                sr_e = metrics["escape_rate"]
+                ne_gap = abs(sr_p - sr_e)
+
+                elapsed = time.time() - start_time
+                entry = {
+                    "phase": f"M{micro}",
+                    "role": role,
+                    "total_steps": total_steps,
+                    **metrics,
+                }
+
+                # Curriculum handling
+                if self.curriculum:
+                    entry.update(self.curriculum.get_status())
+
+                    if self.ne_gap_advancement:
+                        self.curriculum.phases_at_level += 1
+                        self.curriculum.level_history.append({
+                            "level": self.curriculum.current_level,
+                            "capture_rate": sr_p,
+                            "escape_rate": sr_e,
+                            "ne_gap": ne_gap,
+                            "advanced": False,
+                        })
+                        if ne_gap < self.ne_gap_threshold:
+                            self._ne_gap_streak += 1
+                        else:
+                            self._ne_gap_streak = 0
+                        if (self._ne_gap_streak >= self.ne_gap_consecutive
+                                and not self.curriculum.at_max_level):
+                            self.curriculum._advance()
+                            self.curriculum.level_history[-1]["advanced"] = True
+                            self._ne_gap_streak = 0
+                            overrides = self.curriculum.get_env_overrides()
+                            self.env_kwargs["min_init_distance"] = overrides["min_init_distance"]
+                            self.env_kwargs["max_init_distance"] = overrides["max_init_distance"]
+                            self.n_obstacles = overrides["n_obstacles"]
+                            if self.verbose:
+                                print(f"  [NE-GAP ADV] Curriculum advanced at M{micro}")
+                                print(f"    New: dist={overrides['min_init_distance']:.1f}-"
+                                      f"{overrides['max_init_distance']:.1f}m, "
+                                      f"obstacles={overrides['n_obstacles']}")
+
+                self.history.append(entry)
+
+                if self.verbose:
+                    status = (f"  [M{micro:>5d}] steps={total_steps:>9,} | "
+                              f"SR_P={sr_p:.3f} SR_E={sr_e:.3f} gap={ne_gap:.3f} | "
+                              f"t={elapsed/60:.0f}m")
+                    if self.curriculum:
+                        status += f" | L={self.curriculum.current_level}"
+                    if self.opponent_pool_size > 0:
+                        p_pool = len(self.pursuer_pool) if self.pursuer_pool else 0
+                        e_pool = len(self.evader_pool) if self.evader_pool else 0
+                        status += f" | pool=P{p_pool}/E{e_pool}"
+                    print(status)
+
+                # Save checkpoint at eval intervals
+                self.pursuer_ckpt.save_milestone(
+                    model=self.pursuer_model, phase=micro, role="pursuer",
+                )
+                self.evader_ckpt.save_milestone(
+                    model=self.evader_model, phase=micro, role="evader",
+                )
+
+                # Save history incrementally
+                self._save_history_incremental(
+                    converged=False, elapsed=time.time() - start_time)
+
+                # Check convergence
+                curriculum_ready = (self.curriculum is None) or self.curriculum.at_max_level
+                if ne_gap < self.eta and curriculum_ready:
+                    converged = True
+                    if self.verbose:
+                        print(f"  *** Converged at M{micro}! "
+                              f"(NE gap {ne_gap:.3f} < {self.eta}) ***")
+                    break
+            else:
+                # Compact progress line every 10 micro-phases
+                if micro % 10 == 0 and self.verbose:
+                    elapsed = time.time() - start_time
+                    steps_per_sec = total_steps / max(elapsed, 1)
+                    print(f"  [M{micro:>5d}] steps={total_steps:>9,} "
+                          f"role={role:>7s} | {steps_per_sec:.0f} steps/s")
+
+            # Alternate role
+            role = "evader" if role == "pursuer" else "pursuer"
+
+        # Cleanup
+        pursuer_vec_env.close()
+        evader_vec_env.close()
+
+        # Final save
+        self._save_final()
+        elapsed = time.time() - start_time
+
+        result = {
+            "converged": converged,
+            "total_micro_phases": last_micro,
+            "total_steps": total_steps,
+            "history": self.history,
+            "elapsed_seconds": elapsed,
+        }
+        if self.curriculum:
+            result["curriculum_final_level"] = self.curriculum.current_level
+            result["curriculum_history"] = self.curriculum.level_history
+        with open(self.output_dir / "history.json", "w") as f:
+            json.dump(result, f, indent=2, default=str)
+
+        if self.verbose:
+            print(f"\n{'=' * 60}")
+            print(f"Micro-phase training complete. Converged: {converged}")
+            print(f"Total steps: {total_steps:,}")
+            print(f"Total time: {elapsed / 3600:.1f}h")
+            print(f"Results saved to: {self.output_dir}")
+            print(f"{'=' * 60}")
+
+        return {
+            "pursuer_model": self.pursuer_model,
+            "evader_model": self.evader_model,
+            "history": self.history,
+            "converged": converged,
+        }
+
+    def _set_opponents_in_envs(self, base_envs, opponent_model, opponent_role):
+        """Deprecated stub — use _set_opponents_in_vec_env instead."""
+        raise NotImplementedError("Use _set_opponents_in_vec_env")
+
+    def _set_opponents_in_vec_env(self, vec_env, base_envs, opponent_model, opponent_role):
+        """Set frozen opponent in each sub-env of a vectorized env.
+
+        Args:
+            vec_env: The DummyVecEnv/VecMonitor wrapper.
+            base_envs: List of base PursuitEvasionEnv instances.
+            opponent_model: Model to use as opponent (or None for random).
+            opponent_role: 'pursuer' or 'evader'.
+        """
+        # Access underlying DummyVecEnv
+        inner_vec = vec_env.venv if hasattr(vec_env, "venv") else vec_env
+
+        use_pool = False
+        opponent_pool = None
+        if opponent_role == "evader" and self.evader_pool is not None and len(self.evader_pool) > 0:
+            opponent_pool = self.evader_pool
+            use_pool = True
+        elif opponent_role == "pursuer" and self.pursuer_pool is not None and len(self.pursuer_pool) > 0:
+            opponent_pool = self.pursuer_pool
+            use_pool = True
+
+        if use_pool:
+            sampled_ckpts = opponent_pool.sample(len(base_envs))
+        else:
+            sampled_ckpts = [None] * len(base_envs)
+
+        for i, base_env in enumerate(base_envs):
+            if use_pool:
+                ckpt_path = sampled_ckpts[i]
+                if ckpt_path is None:
+                    opp_model = opponent_model  # Use current model instead of random
+                else:
+                    opp_model = opponent_pool.get_model(ckpt_path, device=self.device)
+            else:
+                opp_model = opponent_model
+
+            opponent = self._wrap_opponent_model(opp_model, opponent_role, base_env)
+
+            # Traverse wrapper stack to find SingleAgentPEWrapper
+            sub_env = inner_vec.envs[i]
+            wrapper = sub_env
+            while hasattr(wrapper, "env"):
+                if isinstance(wrapper, SingleAgentPEWrapper):
+                    break
+                wrapper = wrapper.env
+            if isinstance(wrapper, SingleAgentPEWrapper):
+                wrapper.set_opponent(opponent)
+
+    def _sync_opponent_weights(self, base_envs, updated_model):
+        """Deprecated stub — use _sync_opponent_weights_vec instead."""
+        raise NotImplementedError("Use _sync_opponent_weights_vec")
+
+    def _sync_opponent_weights_vec(self, vec_env, updated_model):
+        """Copy updated model weights into opponent adapters in a vec_env.
+
+        Updates the policy state_dict of the opponent model in each sub-env
+        without recreating the env or adapter objects.
+        """
+        inner_vec = vec_env.venv if hasattr(vec_env, "venv") else vec_env
+
+        for i in range(len(inner_vec.envs)):
+            sub_env = inner_vec.envs[i]
+            # Traverse to SingleAgentPEWrapper
+            wrapper = sub_env
+            while hasattr(wrapper, "env"):
+                if isinstance(wrapper, SingleAgentPEWrapper):
+                    break
+                wrapper = wrapper.env
+
+            if not isinstance(wrapper, SingleAgentPEWrapper):
+                continue
+
+            opp = wrapper.opponent_policy
+            if opp is None:
+                continue
+
+            # Extract the underlying PPO model from any adapter
+            target_model = None
+            if isinstance(opp, FixedSpeedModelAdapter):
+                target_model = opp.model
+            elif isinstance(opp, PartialObsOpponentAdapter):
+                inner = opp.model
+                if isinstance(inner, FixedSpeedModelAdapter):
+                    target_model = inner.model
+                else:
+                    target_model = inner
+            elif isinstance(opp, PPO):
+                target_model = opp
+
+            if target_model is not None and hasattr(target_model, "policy"):
+                target_model.policy.load_state_dict(
+                    updated_model.policy.state_dict()
+                )
+
+    def _save_micro_snapshot(self, role, micro):
+        """Save a snapshot to the opponent pool during micro-phase training."""
+        if role == "pursuer":
+            model = self.pursuer_model
+            ckpt_mgr = self.pursuer_ckpt
+            pool = self.pursuer_pool
+        else:
+            model = self.evader_model
+            ckpt_mgr = self.evader_ckpt
+            pool = self.evader_pool
+
+        if pool is None:
+            return
+
+        # Save as milestone checkpoint
+        ckpt_mgr.save_milestone(model=model, phase=micro, role=role)
+        milestone_dir = ckpt_mgr.checkpoint_dir / f"milestone_phase{micro}_{role}"
+        pool.add_checkpoint(str(milestone_dir))
+
+    def _resample_pool_opponents(self, base_envs_target, opponent_pool,
+                                  opponent_role, current_model):
+        """Deprecated stub — use _resample_pool_opponents_vec instead."""
+        raise NotImplementedError("Use _resample_pool_opponents_vec")
+
+    def _resample_pool_opponents_vec(self, vec_env, base_envs, opponent_pool,
+                                      opponent_role, current_model):
+        """Resample opponents from pool into vec_env sub-envs.
+
+        50% of sub-envs get current model weights, 50% sample from pool.
+        """
+        if opponent_pool is None or len(opponent_pool) == 0:
+            return
+
+        inner_vec = vec_env.venv if hasattr(vec_env, "venv") else vec_env
+        n = len(base_envs)
+
+        for i, base_env in enumerate(base_envs):
+            if i % 2 == 0:
+                # Current model
+                opp_model = current_model
+            else:
+                # Sample from pool
+                sampled = opponent_pool.sample(1)[0]
+                if sampled is None:
+                    opp_model = current_model
+                else:
+                    opp_model = opponent_pool.get_model(sampled, device=self.device)
+
+            opponent = self._wrap_opponent_model(opp_model, opponent_role, base_env)
+
+            sub_env = inner_vec.envs[i]
+            wrapper = sub_env
+            while hasattr(wrapper, "env"):
+                if isinstance(wrapper, SingleAgentPEWrapper):
+                    break
+                wrapper = wrapper.env
+            if isinstance(wrapper, SingleAgentPEWrapper):
+                wrapper.set_opponent(opponent)
+
+    def _save_history_incremental(self, converged, elapsed):
+        """Save history to disk incrementally for crash recovery."""
+        result = {
+            "converged": converged,
+            "history": self.history,
+            "elapsed_seconds": elapsed,
+        }
+        if self.curriculum:
+            result["curriculum_final_level"] = self.curriculum.current_level
+            result["curriculum_history"] = self.curriculum.level_history
+        with open(self.output_dir / "history.json", "w") as f:
+            json.dump(result, f, indent=2, default=str)
 
     def _build_callbacks(self, role: str, ckpt_mgr: CheckpointManager, phase: int):
         """Build callback list for a training phase."""
