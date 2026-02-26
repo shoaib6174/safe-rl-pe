@@ -8,7 +8,8 @@ Design:
   - Stores checkpoint directory paths (not models) for memory efficiency.
   - Lazy-loads and caches PPO models on first use.
   - Optionally includes a random policy (None sentinel) in the pool.
-  - FIFO eviction when pool exceeds max_size.
+  - Eviction strategy: "reservoir" (default) preserves uniform coverage
+    across full training history; "fifo" evicts oldest first.
 """
 
 from __future__ import annotations
@@ -29,18 +30,36 @@ class OpponentPool:
     Args:
         max_size: Maximum number of checkpoints to retain.
         include_random: Whether to include random policy (None) as a candidate.
+        eviction_strategy: "reservoir" for reservoir sampling (uniform coverage
+            across full history) or "fifo" for oldest-first eviction.
     """
 
-    def __init__(self, max_size: int = 10, include_random: bool = True):
+    def __init__(
+        self,
+        max_size: int = 10,
+        include_random: bool = True,
+        eviction_strategy: str = "reservoir",
+    ):
+        if eviction_strategy not in ("reservoir", "fifo"):
+            raise ValueError(
+                f"eviction_strategy must be 'reservoir' or 'fifo', "
+                f"got '{eviction_strategy}'"
+            )
         self.max_size = max_size
         self.include_random = include_random
+        self.eviction_strategy = eviction_strategy
         self.checkpoints: list[str] = []  # checkpoint dir paths
         self._cache: dict[str, PPO] = {}  # path -> loaded PPO model
+        self._total_added: int = 0  # total checkpoints ever offered (for reservoir)
 
     def add_checkpoint(self, ckpt_path: str) -> None:
         """Add a milestone checkpoint path to the pool.
 
-        If the pool is full, the oldest checkpoint is evicted (FIFO).
+        When the pool is full:
+          - "fifo": evicts the oldest checkpoint.
+          - "reservoir": uses reservoir sampling (probability max_size / total_added)
+            to decide whether to replace a random existing entry. This preserves
+            uniform coverage across the full training history.
 
         Args:
             ckpt_path: Path to checkpoint directory containing ppo.zip.
@@ -52,12 +71,23 @@ class OpponentPool:
         if ckpt_path in self.checkpoints:
             return
 
-        self.checkpoints.append(ckpt_path)
+        self._total_added += 1
 
-        # FIFO eviction
-        if len(self.checkpoints) > self.max_size:
+        if len(self.checkpoints) < self.max_size:
+            # Pool not full yet — always add
+            self.checkpoints.append(ckpt_path)
+        elif self.eviction_strategy == "fifo":
+            # FIFO: evict oldest
             old = self.checkpoints.pop(0)
             self._cache.pop(old, None)
+            self.checkpoints.append(ckpt_path)
+        else:
+            # Reservoir sampling: accept with probability max_size / total_added
+            if random.random() < self.max_size / self._total_added:
+                idx = random.randrange(self.max_size)
+                evicted = self.checkpoints[idx]
+                self._cache.pop(evicted, None)
+                self.checkpoints[idx] = ckpt_path
 
     def sample(self, n: int) -> list[str | None]:
         """Sample n opponents from the pool.
@@ -107,6 +137,8 @@ class OpponentPool:
     def __repr__(self) -> str:
         return (
             f"OpponentPool(size={len(self.checkpoints)}/{self.max_size}, "
+            f"strategy={self.eviction_strategy}, "
+            f"total_added={self._total_added}, "
             f"include_random={self.include_random}, "
             f"cached={len(self._cache)})"
         )

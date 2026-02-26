@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-02-26 (S55)
+## Last Updated: 2026-02-27 (S56)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -66,6 +66,7 @@
 | 53 | 2026-02-26 | **Self-Play Stabilization Research**: 30+ papers reviewed — simultaneous vs alternating (SimGD diverges), PSRO/FSP/league (population prevents cycling), phase length (10K-50K not 500K), PE-specific methods, simple baselines, cycling theory. Key finding: our long frozen phases are fundamentally wrong. | [S53](worklogs/2026-02-26_S53.md) |
 | 54 | 2026-02-26 | **PE Design Choices Survey**: 15+ papers benchmarked — arena sizes (0.9m-20km), speed ratios (0.8-1.3x), episode lengths (25-3000 steps), reward designs (dense/sparse/zero-sum), curricula, action spaces. Key finding: equal-speed 1v1 in bounded domain is trivially solvable; most papers give evader 10-30% speed advantage. | [S54](worklogs/2026-02-26_S54.md) |
 | 55 | 2026-02-26 | **RA Redesign Implementation**: Implemented micro-phase rapid alternation (2048-step phases), evader speed advantage (1.15x), rebalanced rewards (±10), obstacle observability fix, opponent pool integration. 8 new CLI args, 5 new methods, 3 files modified. Smoke-tested both RA1 and RA2. All 687 existing tests pass. | [S55](worklogs/2026-02-26_S55.md) |
+| 56 | 2026-02-27 | **Pool Reservoir + Convergence Fix**: Reservoir sampling in OpponentPool (uniform history coverage, replaces FIFO), convergence_consecutive=5 (was 2 via ne_gap_consecutive), 9 new tests (696 total). Prevents RA1/RA2 collapse pattern. | [S56](worklogs/2026-02-27_S56.md) |
 
 ## Paper Reading Status
 

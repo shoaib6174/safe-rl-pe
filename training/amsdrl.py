@@ -576,6 +576,7 @@ class AMSDRLSelfPlay:
         eval_interval_micro: int = 50,
         snapshot_freq_micro: int = 5,
         max_total_steps: int = 0,
+        convergence_consecutive: int = 5,
         ewc_lambda: float = 0.0,
         ewc_fisher_samples: int = 1024,
         rnd_coef: float = 0.0,
@@ -662,6 +663,7 @@ class AMSDRLSelfPlay:
         self.eval_interval_micro = eval_interval_micro
         self.snapshot_freq_micro = snapshot_freq_micro
         self.max_total_steps = max_total_steps
+        self.convergence_consecutive = convergence_consecutive
 
         # Curriculum learning
         self.curriculum = None
@@ -710,10 +712,12 @@ class AMSDRLSelfPlay:
         self.opponent_pool_size = opponent_pool_size
         if opponent_pool_size > 0:
             self.pursuer_pool = OpponentPool(
-                max_size=opponent_pool_size, include_random=True
+                max_size=opponent_pool_size, include_random=True,
+                eviction_strategy="reservoir",
             )
             self.evader_pool = OpponentPool(
-                max_size=opponent_pool_size, include_random=True
+                max_size=opponent_pool_size, include_random=True,
+                eviction_strategy="reservoir",
             )
         else:
             self.pursuer_pool = None
@@ -1498,8 +1502,14 @@ class AMSDRLSelfPlay:
                   f"(n_envs={self.n_envs} x n_steps={self.n_steps})")
             print(f"  Eval interval: every {self.eval_interval_micro} micro-phases")
             print(f"  Snapshot interval: every {self.snapshot_freq_micro} micro-phases")
+            print(f"  Convergence: {self.convergence_consecutive} consecutive "
+                  f"evals with gap < {self.eta}")
             if self.max_total_steps > 0:
                 print(f"  Max total steps: {self.max_total_steps:,}")
+            if self.opponent_pool_size > 0:
+                strategy = self.pursuer_pool.eviction_strategy
+                print(f"  Opponent pool: size={self.opponent_pool_size}, "
+                      f"strategy={strategy}")
             print(f"{'=' * 60}")
 
         # 1. Create persistent environment sets
@@ -1684,19 +1694,22 @@ class AMSDRLSelfPlay:
                     converged=False, elapsed=time.time() - start_time)
 
                 # Check convergence (require consecutive evals below threshold)
+                # Uses convergence_consecutive (not ne_gap_consecutive, which
+                # controls curriculum advancement). Default 5 prevents premature
+                # convergence declaration from transient balanced evals.
                 curriculum_ready = (self.curriculum is None) or self.curriculum.at_max_level
                 if ne_gap < self.eta and curriculum_ready:
                     convergence_streak += 1
-                    if convergence_streak >= self.ne_gap_consecutive:
+                    if convergence_streak >= self.convergence_consecutive:
                         converged = True
                         if self.verbose:
                             print(f"  *** Converged at M{micro}! "
                                   f"(NE gap < {self.eta} for "
-                                  f"{self.ne_gap_consecutive} consecutive evals) ***")
+                                  f"{self.convergence_consecutive} consecutive evals) ***")
                         break
                     elif self.verbose:
                         print(f"    (convergence streak: {convergence_streak}"
-                              f"/{self.ne_gap_consecutive})")
+                              f"/{self.convergence_consecutive})")
                 else:
                     convergence_streak = 0
             else:

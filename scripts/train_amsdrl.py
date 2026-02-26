@@ -169,6 +169,8 @@ def parse_args():
                         help="Save opponent snapshot every N micro-phases (default: 5)")
     parser.add_argument("--max_total_steps", type=int, default=0,
                         help="Maximum total training steps for micro-phase mode (0=unlimited)")
+    parser.add_argument("--convergence_consecutive", type=int, default=5,
+                        help="Consecutive balanced evals required for convergence (default: 5)")
 
     # Tier 3: EWC (catastrophic forgetting prevention)
     parser.add_argument("--ewc_lambda", type=float, default=0.0,
@@ -296,6 +298,7 @@ def main():
         eval_interval_micro=args.eval_interval_micro,
         snapshot_freq_micro=args.snapshot_freq_micro,
         max_total_steps=args.max_total_steps,
+        convergence_consecutive=args.convergence_consecutive,
         ewc_lambda=args.ewc_lambda,
         ewc_fisher_samples=args.ewc_fisher_samples,
         rnd_coef=args.rnd_coef,

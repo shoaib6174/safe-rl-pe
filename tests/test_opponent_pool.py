@@ -1,14 +1,16 @@
-"""Tests for Session 7: Opponent Pool for Self-Play Diversity.
+"""Tests for Opponent Pool for Self-Play Diversity.
 
 Tests cover:
-  - OpponentPool: add, sample, eviction, caching, repr
+  - OpponentPool: add, sample, eviction (FIFO + reservoir), caching, repr
   - Pool with random policy included/excluded
+  - Reservoir sampling: default strategy, size bounds, uniform coverage, cache eviction
   - Integration: AMSDRLSelfPlay accepts opponent_pool_size param
 """
 
 from __future__ import annotations
 
 import tempfile
+from collections import Counter
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -62,11 +64,11 @@ class TestOpponentPool:
         pool.add_checkpoint("/path/to/ckpt1")
         assert len(pool) == 1
 
-    def test_fifo_eviction(self):
-        """Oldest checkpoint is evicted when pool exceeds max_size."""
+    def test_fifo_eviction_strategy(self):
+        """Oldest checkpoint is evicted when pool exceeds max_size (FIFO mode)."""
         from training.opponent_pool import OpponentPool
 
-        pool = OpponentPool(max_size=3, include_random=False)
+        pool = OpponentPool(max_size=3, include_random=False, eviction_strategy="fifo")
         pool.add_checkpoint("/ckpt/1")
         pool.add_checkpoint("/ckpt/2")
         pool.add_checkpoint("/ckpt/3")
@@ -80,10 +82,10 @@ class TestOpponentPool:
         assert "/ckpt/1" not in pool.checkpoints
 
     def test_eviction_clears_cache(self):
-        """Evicted checkpoints are removed from cache."""
+        """Evicted checkpoints are removed from cache (FIFO mode)."""
         from training.opponent_pool import OpponentPool
 
-        pool = OpponentPool(max_size=2)
+        pool = OpponentPool(max_size=2, eviction_strategy="fifo")
         pool.add_checkpoint("/ckpt/1")
         pool.add_checkpoint("/ckpt/2")
 
@@ -171,7 +173,7 @@ class TestOpponentPool:
         assert len(pool._cache) == 0
 
     def test_repr(self):
-        """__repr__ includes size and config info."""
+        """__repr__ includes size, strategy, and config info."""
         from training.opponent_pool import OpponentPool
 
         pool = OpponentPool(max_size=10, include_random=True)
@@ -179,6 +181,8 @@ class TestOpponentPool:
         r = repr(pool)
         assert "1/10" in r
         assert "include_random=True" in r
+        assert "strategy=reservoir" in r
+        assert "total_added=1" in r
 
     def test_len(self):
         """__len__ returns number of checkpoints (excludes random)."""
@@ -188,6 +192,137 @@ class TestOpponentPool:
         assert len(pool) == 0
         pool.add_checkpoint("/ckpt/1")
         assert len(pool) == 1
+
+    def test_invalid_eviction_strategy(self):
+        """Invalid eviction strategy raises ValueError."""
+        from training.opponent_pool import OpponentPool
+
+        with pytest.raises(ValueError, match="eviction_strategy"):
+            OpponentPool(max_size=5, eviction_strategy="invalid")
+
+
+class TestReservoirSampling:
+    """Tests for reservoir sampling eviction strategy."""
+
+    def test_default_strategy_is_reservoir(self):
+        """Default eviction strategy is reservoir."""
+        from training.opponent_pool import OpponentPool
+
+        pool = OpponentPool(max_size=5)
+        assert pool.eviction_strategy == "reservoir"
+
+    def test_reservoir_never_exceeds_max_size(self):
+        """Reservoir sampling never lets pool exceed max_size."""
+        from training.opponent_pool import OpponentPool
+
+        pool = OpponentPool(max_size=5, include_random=False,
+                            eviction_strategy="reservoir")
+        for i in range(200):
+            pool.add_checkpoint(f"/ckpt/{i}")
+            assert len(pool) <= 5
+
+        assert len(pool) == 5
+        assert pool._total_added == 200
+
+    def test_reservoir_uniform_coverage(self):
+        """Reservoir sampling produces approximately uniform coverage.
+
+        Over 5000 trials, each of 100 checkpoints added to a pool of size 10
+        should have roughly equal probability of being in the final pool.
+        We check that early, middle, and late checkpoints all appear.
+        """
+        import random as rand
+        from training.opponent_pool import OpponentPool
+
+        rand.seed(42)
+
+        n_trials = 5000
+        n_checkpoints = 100
+        pool_size = 10
+
+        # Count how often each checkpoint index ends up in the final pool
+        presence_count: Counter = Counter()
+
+        for _ in range(n_trials):
+            pool = OpponentPool(max_size=pool_size, include_random=False,
+                                eviction_strategy="reservoir")
+            for i in range(n_checkpoints):
+                pool.add_checkpoint(f"/ckpt/{i}")
+            for ckpt in pool.checkpoints:
+                idx = int(ckpt.split("/")[-1])
+                presence_count[idx] += 1
+
+        # Expected frequency: pool_size / n_checkpoints * n_trials = 10/100 * 5000 = 500
+        expected = pool_size / n_checkpoints * n_trials
+
+        # Check early checkpoints (0-9) are represented
+        early_total = sum(presence_count[i] for i in range(10))
+        assert early_total > 0, "Early checkpoints should appear in pool"
+
+        # Check middle checkpoints (45-54) are represented
+        mid_total = sum(presence_count[i] for i in range(45, 55))
+        assert mid_total > 0, "Middle checkpoints should appear in pool"
+
+        # Check late checkpoints (90-99) are represented
+        late_total = sum(presence_count[i] for i in range(90, 100))
+        assert late_total > 0, "Late checkpoints should appear in pool"
+
+        # Each group of 10 should have roughly expected_group = 10 * expected = 5000
+        # Allow generous tolerance (within 50% of expected)
+        expected_group = 10 * expected
+        for group_name, total in [("early", early_total), ("mid", mid_total),
+                                   ("late", late_total)]:
+            assert total > expected_group * 0.3, (
+                f"{group_name} group frequency {total} is too low "
+                f"(expected ~{expected_group})"
+            )
+            assert total < expected_group * 1.7, (
+                f"{group_name} group frequency {total} is too high "
+                f"(expected ~{expected_group})"
+            )
+
+    def test_reservoir_eviction_clears_cache(self):
+        """Reservoir eviction clears cached models for evicted checkpoints."""
+        import random as rand
+        from training.opponent_pool import OpponentPool
+
+        rand.seed(0)
+
+        pool = OpponentPool(max_size=3, include_random=False,
+                            eviction_strategy="reservoir")
+        # Fill pool
+        for i in range(3):
+            pool.add_checkpoint(f"/ckpt/{i}")
+            pool._cache[f"/ckpt/{i}"] = MagicMock()
+
+        assert len(pool._cache) == 3
+
+        # Add many more to trigger evictions
+        for i in range(3, 50):
+            pool.add_checkpoint(f"/ckpt/{i}")
+
+        # Cache should only contain entries still in the pool
+        for cached_path in list(pool._cache.keys()):
+            assert cached_path in pool.checkpoints, (
+                f"Cached path {cached_path} not in pool checkpoints"
+            )
+
+    def test_total_added_tracks_all_offers(self):
+        """_total_added counts all non-duplicate add_checkpoint calls."""
+        from training.opponent_pool import OpponentPool
+
+        pool = OpponentPool(max_size=3, eviction_strategy="reservoir")
+        for i in range(10):
+            pool.add_checkpoint(f"/ckpt/{i}")
+        assert pool._total_added == 10
+
+        # Duplicate should not increment
+        pool.add_checkpoint("/ckpt/0")
+        # /ckpt/0 might or might not be in pool (reservoir), but if it is,
+        # the duplicate check triggers first, so _total_added stays at 10
+        # If /ckpt/0 was evicted, it's treated as new, incrementing to 11
+        # Either way, the pool size should be <= 3
+        assert len(pool) <= 3
 
 
 # ─── AMSDRLSelfPlay Integration Tests ───
@@ -233,6 +368,59 @@ class TestAMSDRLOpponentPoolIntegration:
             assert sp.evader_pool is not None
             assert sp.pursuer_pool.max_size == 5
             assert sp.evader_pool.max_size == 5
+
+    def test_amsdrl_pools_use_reservoir_strategy(self):
+        """AMSDRLSelfPlay creates pools with reservoir eviction strategy."""
+        from training.amsdrl import AMSDRLSelfPlay
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = AMSDRLSelfPlay(
+                output_dir=tmp,
+                opponent_pool_size=10,
+                max_phases=1,
+                timesteps_per_phase=64,
+                cold_start_timesteps=64,
+                n_envs=1,
+                full_obs=True,
+                verbose=0,
+            )
+            assert sp.pursuer_pool.eviction_strategy == "reservoir"
+            assert sp.evader_pool.eviction_strategy == "reservoir"
+
+    def test_amsdrl_convergence_consecutive_default(self):
+        """AMSDRLSelfPlay defaults to convergence_consecutive=5."""
+        from training.amsdrl import AMSDRLSelfPlay
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = AMSDRLSelfPlay(
+                output_dir=tmp,
+                opponent_pool_size=0,
+                max_phases=1,
+                timesteps_per_phase=64,
+                cold_start_timesteps=64,
+                n_envs=1,
+                full_obs=True,
+                verbose=0,
+            )
+            assert sp.convergence_consecutive == 5
+
+    def test_amsdrl_convergence_consecutive_custom(self):
+        """AMSDRLSelfPlay accepts custom convergence_consecutive."""
+        from training.amsdrl import AMSDRLSelfPlay
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = AMSDRLSelfPlay(
+                output_dir=tmp,
+                opponent_pool_size=0,
+                max_phases=1,
+                timesteps_per_phase=64,
+                cold_start_timesteps=64,
+                n_envs=1,
+                full_obs=True,
+                verbose=0,
+                convergence_consecutive=10,
+            )
+            assert sp.convergence_consecutive == 10
 
     def test_wrap_opponent_model_none_returns_none(self):
         """_wrap_opponent_model with None model returns None (random)."""
