@@ -172,6 +172,19 @@ def parse_args():
     parser.add_argument("--convergence_consecutive", type=int, default=5,
                         help="Consecutive balanced evals required for convergence (default: 5)")
 
+    # Adaptive training ratio + LR dampening (anti-cycling, S56)
+    parser.add_argument("--adaptive_ratio_threshold", type=float, default=0.0,
+                        help="NE gap threshold to trigger adaptive training ratio "
+                             "(0=disabled, e.g. 0.3). When gap exceeds this, "
+                             "loser gets extra training phases.")
+    parser.add_argument("--adaptive_boost_phases", type=int, default=20,
+                        help="Number of extra micro-phases for losing agent "
+                             "when adaptive ratio triggers (default: 20)")
+    parser.add_argument("--lr_dampen_threshold", type=float, default=0.0,
+                        help="NE gap threshold for LR dampening "
+                             "(0=disabled, e.g. 0.3). When gap is below this, "
+                             "LR scales down proportionally to prevent overshooting.")
+
     # Tier 3: EWC (catastrophic forgetting prevention)
     parser.add_argument("--ewc_lambda", type=float, default=0.0,
                         help="EWC regularization strength (0=disabled, e.g. 1000.0)")
@@ -299,6 +312,9 @@ def main():
         snapshot_freq_micro=args.snapshot_freq_micro,
         max_total_steps=args.max_total_steps,
         convergence_consecutive=args.convergence_consecutive,
+        adaptive_ratio_threshold=args.adaptive_ratio_threshold,
+        adaptive_boost_phases=args.adaptive_boost_phases,
+        lr_dampen_threshold=args.lr_dampen_threshold,
         ewc_lambda=args.ewc_lambda,
         ewc_fisher_samples=args.ewc_fisher_samples,
         rnd_coef=args.rnd_coef,

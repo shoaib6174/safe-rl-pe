@@ -577,6 +577,9 @@ class AMSDRLSelfPlay:
         snapshot_freq_micro: int = 5,
         max_total_steps: int = 0,
         convergence_consecutive: int = 5,
+        adaptive_ratio_threshold: float = 0.0,
+        adaptive_boost_phases: int = 20,
+        lr_dampen_threshold: float = 0.0,
         ewc_lambda: float = 0.0,
         ewc_fisher_samples: int = 1024,
         rnd_coef: float = 0.0,
@@ -664,6 +667,11 @@ class AMSDRLSelfPlay:
         self.snapshot_freq_micro = snapshot_freq_micro
         self.max_total_steps = max_total_steps
         self.convergence_consecutive = convergence_consecutive
+
+        # Adaptive training ratio + LR dampening (anti-cycling)
+        self.adaptive_ratio_threshold = adaptive_ratio_threshold
+        self.adaptive_boost_phases = adaptive_boost_phases
+        self.lr_dampen_threshold = lr_dampen_threshold
 
         # Curriculum learning
         self.curriculum = None
@@ -1510,6 +1518,11 @@ class AMSDRLSelfPlay:
                 strategy = self.pursuer_pool.eviction_strategy
                 print(f"  Opponent pool: size={self.opponent_pool_size}, "
                       f"strategy={strategy}")
+            if self.adaptive_ratio_threshold > 0:
+                print(f"  Adaptive ratio: threshold={self.adaptive_ratio_threshold}, "
+                      f"boost_phases={self.adaptive_boost_phases}")
+            if self.lr_dampen_threshold > 0:
+                print(f"  LR dampening: threshold={self.lr_dampen_threshold}")
             print(f"{'=' * 60}")
 
         # 1. Create persistent environment sets
@@ -1569,6 +1582,11 @@ class AMSDRLSelfPlay:
         converged = False
         convergence_streak = 0  # consecutive evals with gap < eta
 
+        # Adaptive training ratio state
+        boost_remaining = 0
+        boost_role = "pursuer"
+        last_gap = None
+
         # Calculate max micro-phases
         if self.max_total_steps > 0:
             max_micro = self.max_total_steps // self.micro_phase_steps
@@ -1589,6 +1607,15 @@ class AMSDRLSelfPlay:
             else:
                 active_model = self.evader_model
 
+            # LR dampening: reduce LR when gap is small (near equilibrium)
+            lr_scale = 1.0
+            if self.lr_dampen_threshold > 0 and last_gap is not None:
+                if last_gap < self.lr_dampen_threshold:
+                    lr_scale = max(0.1, last_gap / self.lr_dampen_threshold)
+                    active_model.lr_schedule = lambda _: self.learning_rate * lr_scale
+                else:
+                    active_model.lr_schedule = lambda _: self.learning_rate
+
             # Train for one micro-phase
             active_model.learn(
                 total_timesteps=self.micro_phase_steps,
@@ -1596,6 +1623,10 @@ class AMSDRLSelfPlay:
                 progress_bar=False,
             )
             total_steps += self.micro_phase_steps
+
+            # Restore full LR after training step
+            if lr_scale < 1.0:
+                active_model.lr_schedule = lambda _: self.learning_rate
 
             # Sync opponent weights: copy just-trained model into the other env
             if role == "pursuer":
@@ -1679,6 +1710,10 @@ class AMSDRLSelfPlay:
                         p_pool = len(self.pursuer_pool) if self.pursuer_pool else 0
                         e_pool = len(self.evader_pool) if self.evader_pool else 0
                         status += f" | pool=P{p_pool}/E{e_pool}"
+                    if boost_remaining > 0:
+                        status += f" | boost={boost_role}({boost_remaining})"
+                    if lr_scale < 1.0:
+                        status += f" | lr_scale={lr_scale:.2f}"
                     print(status)
 
                 # Save checkpoint at eval intervals
@@ -1712,6 +1747,23 @@ class AMSDRLSelfPlay:
                               f"/{self.convergence_consecutive})")
                 else:
                     convergence_streak = 0
+
+                # Adaptive training ratio: give loser extra phases
+                if (self.adaptive_ratio_threshold > 0
+                        and ne_gap > self.adaptive_ratio_threshold):
+                    # Determine who is losing
+                    if sr_p > sr_e:
+                        boost_role = "evader"
+                    else:
+                        boost_role = "pursuer"
+                    boost_remaining = self.adaptive_boost_phases
+                    if self.verbose:
+                        print(f"    [BOOST] {boost_role} gets "
+                              f"{boost_remaining} extra phases "
+                              f"(gap={ne_gap:.3f} > {self.adaptive_ratio_threshold})")
+
+                # Track gap for LR dampening
+                last_gap = ne_gap
             else:
                 # Compact progress line every 10 micro-phases
                 if micro % 10 == 0 and self.verbose:
@@ -1720,8 +1772,12 @@ class AMSDRLSelfPlay:
                     print(f"  [M{micro:>5d}] steps={total_steps:>9,} "
                           f"role={role:>7s} | {steps_per_sec:.0f} steps/s")
 
-            # Alternate role
-            role = "evader" if role == "pursuer" else "pursuer"
+            # Alternate role (with adaptive boost override)
+            if boost_remaining > 0:
+                role = boost_role
+                boost_remaining -= 1
+            else:
+                role = "evader" if role == "pursuer" else "pursuer"
 
         # Cleanup
         pursuer_vec_env.close()

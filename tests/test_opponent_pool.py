@@ -422,6 +422,63 @@ class TestAMSDRLOpponentPoolIntegration:
             )
             assert sp.convergence_consecutive == 10
 
+    def test_amsdrl_adaptive_ratio_defaults(self):
+        """AMSDRLSelfPlay defaults to adaptive_ratio_threshold=0 (disabled)."""
+        from training.amsdrl import AMSDRLSelfPlay
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = AMSDRLSelfPlay(
+                output_dir=tmp,
+                opponent_pool_size=0,
+                max_phases=1,
+                timesteps_per_phase=64,
+                cold_start_timesteps=64,
+                n_envs=1,
+                full_obs=True,
+                verbose=0,
+            )
+            assert sp.adaptive_ratio_threshold == 0.0
+            assert sp.adaptive_boost_phases == 20
+
+    def test_amsdrl_lr_dampen_defaults(self):
+        """AMSDRLSelfPlay defaults to lr_dampen_threshold=0 (disabled)."""
+        from training.amsdrl import AMSDRLSelfPlay
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = AMSDRLSelfPlay(
+                output_dir=tmp,
+                opponent_pool_size=0,
+                max_phases=1,
+                timesteps_per_phase=64,
+                cold_start_timesteps=64,
+                n_envs=1,
+                full_obs=True,
+                verbose=0,
+            )
+            assert sp.lr_dampen_threshold == 0.0
+
+    def test_amsdrl_accepts_adaptive_params(self):
+        """AMSDRLSelfPlay accepts custom adaptive ratio + LR dampen params."""
+        from training.amsdrl import AMSDRLSelfPlay
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = AMSDRLSelfPlay(
+                output_dir=tmp,
+                opponent_pool_size=0,
+                max_phases=1,
+                timesteps_per_phase=64,
+                cold_start_timesteps=64,
+                n_envs=1,
+                full_obs=True,
+                verbose=0,
+                adaptive_ratio_threshold=0.3,
+                adaptive_boost_phases=15,
+                lr_dampen_threshold=0.25,
+            )
+            assert sp.adaptive_ratio_threshold == 0.3
+            assert sp.adaptive_boost_phases == 15
+            assert sp.lr_dampen_threshold == 0.25
+
     def test_wrap_opponent_model_none_returns_none(self):
         """_wrap_opponent_model with None model returns None (random)."""
         from training.amsdrl import AMSDRLSelfPlay
