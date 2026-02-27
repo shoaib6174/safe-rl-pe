@@ -1612,9 +1612,11 @@ class AMSDRLSelfPlay:
             if self.lr_dampen_threshold > 0 and last_gap is not None:
                 if last_gap < self.lr_dampen_threshold:
                     lr_scale = max(0.1, last_gap / self.lr_dampen_threshold)
-                    active_model.lr_schedule = lambda _: self.learning_rate * lr_scale
+                    dampened_lr = self.learning_rate * lr_scale
+                    active_model.lr_schedule = lambda _, lr=dampened_lr: lr
                 else:
-                    active_model.lr_schedule = lambda _: self.learning_rate
+                    base_lr = self.learning_rate
+                    active_model.lr_schedule = lambda _, lr=base_lr: lr
 
             # Train for one micro-phase
             active_model.learn(
@@ -1626,7 +1628,8 @@ class AMSDRLSelfPlay:
 
             # Restore full LR after training step
             if lr_scale < 1.0:
-                active_model.lr_schedule = lambda _: self.learning_rate
+                base_lr = self.learning_rate
+                active_model.lr_schedule = lambda _, lr=base_lr: lr
 
             # Sync opponent weights: copy just-trained model into the other env
             if role == "pursuer":
