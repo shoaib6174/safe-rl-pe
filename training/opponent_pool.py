@@ -110,6 +110,49 @@ class OpponentPool:
 
         return [random.choice(candidates) for _ in range(n)]
 
+    def sample_pfsp(self, n: int, bias_strength: float = 0.7) -> list[str | None]:
+        """Sample n opponents with PFSP-lite bias toward older/weaker opponents.
+
+        Older checkpoints (earlier in training) are more likely to be weaker,
+        so biasing toward them gives a collapsing agent beatable opponents
+        for recovery. Uses exponential decay weighting: older = higher weight.
+
+        Args:
+            n: Number of opponents to sample.
+            bias_strength: How strongly to bias toward older opponents.
+                0.0 = uniform (same as sample()), 1.0 = strong bias.
+
+        Returns:
+            List of checkpoint paths or None values.
+        """
+        candidates = list(self.checkpoints)
+        if self.include_random:
+            candidates.append(None)
+
+        if not candidates:
+            return [None] * n
+
+        if len(candidates) <= 1 or bias_strength <= 0:
+            return [random.choice(candidates) for _ in range(n)]
+
+        # Exponential decay weights: older (lower index) gets higher weight
+        # w_i = exp(-bias_strength * i / (len-1))
+        import math
+        num = len(candidates)
+        weights = []
+        for i in range(num):
+            # i=0 is oldest checkpoint, i=num-1 is newest
+            # None (random) is last — always gets some weight
+            w = math.exp(-bias_strength * i / max(num - 1, 1))
+            weights.append(w)
+
+        # Normalize to probabilities
+        total_w = sum(weights)
+        probs = [w / total_w for w in weights]
+
+        # Weighted sampling
+        return random.choices(candidates, weights=probs, k=n)
+
     def get_model(self, ckpt_path: str, device: str = "cpu") -> PPO:
         """Load and cache a PPO model from a checkpoint path.
 

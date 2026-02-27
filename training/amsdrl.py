@@ -580,6 +580,9 @@ class AMSDRLSelfPlay:
         adaptive_ratio_threshold: float = 0.0,
         adaptive_boost_phases: int = 20,
         lr_dampen_threshold: float = 0.0,
+        collapse_threshold: float = 0.0,
+        collapse_streak_limit: int = 3,
+        pfsp_enabled: bool = False,
         ewc_lambda: float = 0.0,
         ewc_fisher_samples: int = 1024,
         rnd_coef: float = 0.0,
@@ -672,6 +675,13 @@ class AMSDRLSelfPlay:
         self.adaptive_ratio_threshold = adaptive_ratio_threshold
         self.adaptive_boost_phases = adaptive_boost_phases
         self.lr_dampen_threshold = lr_dampen_threshold
+
+        # Collapse rollback: restore best checkpoint when agent collapses
+        self.collapse_threshold = collapse_threshold  # SR below this = collapsed
+        self.collapse_streak_limit = collapse_streak_limit  # consecutive evals
+
+        # PFSP-lite: bias opponent pool sampling when losing
+        self.pfsp_enabled = pfsp_enabled
 
         # Curriculum learning
         self.curriculum = None
@@ -1523,6 +1533,11 @@ class AMSDRLSelfPlay:
                       f"boost_phases={self.adaptive_boost_phases}")
             if self.lr_dampen_threshold > 0:
                 print(f"  LR dampening: threshold={self.lr_dampen_threshold}")
+            if self.collapse_threshold > 0:
+                print(f"  Collapse rollback: threshold={self.collapse_threshold}, "
+                      f"streak_limit={self.collapse_streak_limit}")
+            if self.pfsp_enabled:
+                print(f"  PFSP-lite: enabled (bias toward weaker opponents when losing)")
             print(f"{'=' * 60}")
 
         # 1. Create persistent environment sets
@@ -1587,6 +1602,14 @@ class AMSDRLSelfPlay:
         boost_role = "pursuer"
         last_gap = None
 
+        # Collapse rollback state
+        best_sr_pursuer = 0.0
+        best_sr_evader = 0.0
+        best_ckpt_pursuer = None  # (micro, path)
+        best_ckpt_evader = None
+        collapse_streak_pursuer = 0
+        collapse_streak_evader = 0
+
         # Calculate max micro-phases
         if self.max_total_steps > 0:
             max_micro = self.max_total_steps // self.micro_phase_steps
@@ -1643,15 +1666,22 @@ class AMSDRLSelfPlay:
                 self._save_micro_snapshot(role, micro)
 
                 # Resample diverse opponents for both env sets
+                # PFSP-lite: bias toward weaker opponents when agent is collapsing
+                pfsp_pursuer = (self.pfsp_enabled
+                                and collapse_streak_pursuer > 0)
+                pfsp_evader = (self.pfsp_enabled
+                               and collapse_streak_evader > 0)
                 self._resample_pool_opponents_vec(
                     pursuer_vec_env, pursuer_base_envs,
                     self.evader_pool, "evader",
                     current_model=self.evader_model,
+                    use_pfsp=pfsp_pursuer,
                 )
                 self._resample_pool_opponents_vec(
                     evader_vec_env, evader_base_envs,
                     self.pursuer_pool, "pursuer",
                     current_model=self.pursuer_model,
+                    use_pfsp=pfsp_evader,
                 )
 
             # Periodic evaluation
@@ -1750,6 +1780,70 @@ class AMSDRLSelfPlay:
                               f"/{self.convergence_consecutive})")
                 else:
                     convergence_streak = 0
+
+                # Collapse rollback: restore best checkpoint when agent degenerates
+                if self.collapse_threshold > 0:
+                    # Track best performance for each agent
+                    if sr_p > best_sr_pursuer:
+                        best_sr_pursuer = sr_p
+                        best_ckpt_pursuer = (micro, str(
+                            self.pursuer_ckpt.checkpoint_dir
+                            / f"milestone_phase{micro}_pursuer"))
+                    if sr_e > best_sr_evader:
+                        best_sr_evader = sr_e
+                        best_ckpt_evader = (micro, str(
+                            self.evader_ckpt.checkpoint_dir
+                            / f"milestone_phase{micro}_evader"))
+
+                    # Check pursuer collapse
+                    if sr_p < self.collapse_threshold:
+                        collapse_streak_pursuer += 1
+                    else:
+                        collapse_streak_pursuer = 0
+
+                    # Check evader collapse
+                    if sr_e < self.collapse_threshold:
+                        collapse_streak_evader += 1
+                    else:
+                        collapse_streak_evader = 0
+
+                    # Rollback pursuer if collapsed
+                    if (collapse_streak_pursuer >= self.collapse_streak_limit
+                            and best_ckpt_pursuer is not None):
+                        ckpt_micro, ckpt_path = best_ckpt_pursuer
+                        ckpt_file = Path(ckpt_path) / "ppo.zip"
+                        if ckpt_file.exists():
+                            if self.verbose:
+                                print(f"    [ROLLBACK] Pursuer collapsed "
+                                      f"(SR={sr_p:.3f} < {self.collapse_threshold} "
+                                      f"for {collapse_streak_pursuer} evals). "
+                                      f"Restoring M{ckpt_micro} "
+                                      f"(best SR={best_sr_pursuer:.3f})")
+                            self.pursuer_model = PPO.load(
+                                ckpt_file, env=pursuer_vec_env,
+                                device=self.device)
+                            self._sync_opponent_weights_vec(
+                                evader_vec_env, self.pursuer_model)
+                            collapse_streak_pursuer = 0
+
+                    # Rollback evader if collapsed
+                    if (collapse_streak_evader >= self.collapse_streak_limit
+                            and best_ckpt_evader is not None):
+                        ckpt_micro, ckpt_path = best_ckpt_evader
+                        ckpt_file = Path(ckpt_path) / "ppo.zip"
+                        if ckpt_file.exists():
+                            if self.verbose:
+                                print(f"    [ROLLBACK] Evader collapsed "
+                                      f"(SR={sr_e:.3f} < {self.collapse_threshold} "
+                                      f"for {collapse_streak_evader} evals). "
+                                      f"Restoring M{ckpt_micro} "
+                                      f"(best SR={best_sr_evader:.3f})")
+                            self.evader_model = PPO.load(
+                                ckpt_file, env=evader_vec_env,
+                                device=self.device)
+                            self._sync_opponent_weights_vec(
+                                pursuer_vec_env, self.evader_model)
+                            collapse_streak_evader = 0
 
                 # Adaptive training ratio: give loser extra phases
                 if (self.adaptive_ratio_threshold > 0
@@ -1941,10 +2035,12 @@ class AMSDRLSelfPlay:
         raise NotImplementedError("Use _resample_pool_opponents_vec")
 
     def _resample_pool_opponents_vec(self, vec_env, base_envs, opponent_pool,
-                                      opponent_role, current_model):
+                                      opponent_role, current_model,
+                                      use_pfsp: bool = False):
         """Resample opponents from pool into vec_env sub-envs.
 
         50% of sub-envs get current model weights, 50% sample from pool.
+        When use_pfsp=True, pool sampling biases toward older/weaker opponents.
         """
         if opponent_pool is None or len(opponent_pool) == 0:
             return
@@ -1957,8 +2053,11 @@ class AMSDRLSelfPlay:
                 # Current model
                 opp_model = current_model
             else:
-                # Sample from pool
-                sampled = opponent_pool.sample(1)[0]
+                # Sample from pool (PFSP-lite or uniform)
+                if use_pfsp:
+                    sampled = opponent_pool.sample_pfsp(1)[0]
+                else:
+                    sampled = opponent_pool.sample(1)[0]
                 if sampled is None:
                     opp_model = current_model
                 else:

@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-02-27 (S57)
+## Last Updated: 2026-02-28 (S58)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -67,7 +67,8 @@
 | 54 | 2026-02-26 | **PE Design Choices Survey**: 15+ papers benchmarked — arena sizes (0.9m-20km), speed ratios (0.8-1.3x), episode lengths (25-3000 steps), reward designs (dense/sparse/zero-sum), curricula, action spaces. Key finding: equal-speed 1v1 in bounded domain is trivially solvable; most papers give evader 10-30% speed advantage. | [S54](worklogs/2026-02-26_S54.md) |
 | 55 | 2026-02-26 | **RA Redesign Implementation**: Implemented micro-phase rapid alternation (2048-step phases), evader speed advantage (1.15x), rebalanced rewards (±10), obstacle observability fix, opponent pool integration. 8 new CLI args, 5 new methods, 3 files modified. Smoke-tested both RA1 and RA2. All 687 existing tests pass. | [S55](worklogs/2026-02-26_S55.md) |
 | 56 | 2026-02-27 | **Pool Reservoir + Convergence Fix + RA3-RA6**: Reservoir sampling, convergence_consecutive=5, 9 new tests (696 total). RA3/RA4 collapsed (44x PBRS reward asymmetry). Root cause analysis → launched RA5/RA6 with reward fix (10x10, 1.05x speed, ±50 terminal, PBRS 5.0 vs 0.0). | [S56](worklogs/2026-02-27_S56.md) |
-| 57 | 2026-02-27 | **Adaptive Training Ratio + LR Dampening**: Anti-cycling mechanisms — adaptive ratio gives loser extra training phases when gap > threshold, LR dampening scales LR down near equilibrium. 3 new CLI args, 3 new tests (699 total). Preparing RA7/RA8 launch. | [S57](worklogs/2026-02-27_S57.md) |
+| 57 | 2026-02-27 | **Adaptive Training Ratio + LR Dampening**: Anti-cycling mechanisms — adaptive ratio gives loser extra training phases when gap > threshold, LR dampening scales LR down near equilibrium. RA7b/RA8 completed 10M steps — both show evader collapse at M400, adaptive ratio insufficient. Root cause: vanishing reward gradient, no recovery mechanism. | [S57](worklogs/2026-02-27_S57.md) |
+| 58 | 2026-02-28 | **Collapse Rollback + PFSP-lite + Survival Bonus**: 3-pronged fix for evader collapse — collapse rollback (restore best checkpoint when SR < threshold for N evals), PFSP-lite (bias pool toward weaker opponents when losing), configurable survival_bonus. 7 new tests (706 total). Launching RA9/RA10. | [S58](worklogs/2026-02-28_S58.md) |
 
 ## Paper Reading Status
 

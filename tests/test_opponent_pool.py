@@ -552,3 +552,134 @@ class TestAMSDRLOpponentPoolIntegration:
 
             result = sp._wrap_opponent_model(mock_model, "evader", base_env)
             assert isinstance(result, FixedSpeedModelAdapter)
+
+
+# ─── Collapse Rollback + PFSP Tests ───
+
+
+class TestCollapseRollbackDefaults:
+    """Tests for collapse rollback and PFSP-lite parameter defaults."""
+
+    def test_collapse_rollback_disabled_by_default(self):
+        """Collapse rollback is disabled by default (threshold=0.0)."""
+        from training.amsdrl import AMSDRLSelfPlay
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = AMSDRLSelfPlay(
+                output_dir=tmp,
+                opponent_pool_size=0,
+                max_phases=1,
+                timesteps_per_phase=64,
+                cold_start_timesteps=64,
+                n_envs=1,
+                full_obs=True,
+                verbose=0,
+            )
+            assert sp.collapse_threshold == 0.0
+            assert sp.collapse_streak_limit == 3
+
+    def test_pfsp_disabled_by_default(self):
+        """PFSP-lite is disabled by default."""
+        from training.amsdrl import AMSDRLSelfPlay
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = AMSDRLSelfPlay(
+                output_dir=tmp,
+                opponent_pool_size=0,
+                max_phases=1,
+                timesteps_per_phase=64,
+                cold_start_timesteps=64,
+                n_envs=1,
+                full_obs=True,
+                verbose=0,
+            )
+            assert sp.pfsp_enabled is False
+
+    def test_amsdrl_accepts_collapse_and_pfsp_params(self):
+        """AMSDRLSelfPlay accepts custom collapse + PFSP params."""
+        from training.amsdrl import AMSDRLSelfPlay
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = AMSDRLSelfPlay(
+                output_dir=tmp,
+                opponent_pool_size=0,
+                max_phases=1,
+                timesteps_per_phase=64,
+                cold_start_timesteps=64,
+                n_envs=1,
+                full_obs=True,
+                verbose=0,
+                collapse_threshold=0.05,
+                collapse_streak_limit=5,
+                pfsp_enabled=True,
+            )
+            assert sp.collapse_threshold == 0.05
+            assert sp.collapse_streak_limit == 5
+            assert sp.pfsp_enabled is True
+
+
+class TestPFSPSampling:
+    """Tests for PFSP-lite sampling in OpponentPool."""
+
+    def test_pfsp_sample_returns_correct_count(self):
+        """sample_pfsp returns requested number of samples."""
+        from training.opponent_pool import OpponentPool
+
+        pool = OpponentPool(max_size=5, include_random=False)
+        for i in range(5):
+            pool.add_checkpoint(f"/tmp/ckpt_{i}")
+
+        samples = pool.sample_pfsp(4)
+        assert len(samples) == 4
+
+    def test_pfsp_sample_biases_toward_older(self):
+        """sample_pfsp with high bias_strength favors older (lower-index) entries."""
+        from training.opponent_pool import OpponentPool
+
+        pool = OpponentPool(max_size=10, include_random=False)
+        for i in range(10):
+            pool.add_checkpoint(f"/tmp/ckpt_{i}")
+
+        # With strong bias, older checkpoints should be sampled more often
+        counts = Counter()
+        n_samples = 5000
+        for _ in range(n_samples):
+            s = pool.sample_pfsp(1, bias_strength=2.0)[0]
+            counts[s] += 1
+
+        # Oldest checkpoint should appear more than newest
+        oldest_count = counts.get("/tmp/ckpt_0", 0)
+        newest_count = counts.get("/tmp/ckpt_9", 0)
+        assert oldest_count > newest_count, (
+            f"Expected oldest ({oldest_count}) > newest ({newest_count})"
+        )
+
+    def test_pfsp_sample_zero_bias_is_uniform(self):
+        """sample_pfsp with bias_strength=0 behaves like uniform."""
+        from training.opponent_pool import OpponentPool
+
+        pool = OpponentPool(max_size=3, include_random=False)
+        for i in range(3):
+            pool.add_checkpoint(f"/tmp/ckpt_{i}")
+
+        counts = Counter()
+        n_samples = 3000
+        for _ in range(n_samples):
+            s = pool.sample_pfsp(1, bias_strength=0.0)[0]
+            counts[s] += 1
+
+        # Each should be roughly equal (within 30% of expected)
+        expected = n_samples / 3
+        for ckpt, count in counts.items():
+            assert abs(count - expected) < expected * 0.3, (
+                f"Expected ~{expected:.0f} for {ckpt}, got {count}"
+            )
+
+    def test_pfsp_sample_empty_pool_returns_none(self):
+        """sample_pfsp on empty pool with include_random returns None values."""
+        from training.opponent_pool import OpponentPool
+
+        pool = OpponentPool(max_size=5, include_random=True)
+        samples = pool.sample_pfsp(3)
+        assert len(samples) == 3
+        assert all(s is None for s in samples)

@@ -185,6 +185,18 @@ def parse_args():
                              "(0=disabled, e.g. 0.3). When gap is below this, "
                              "LR scales down proportionally to prevent overshooting.")
 
+    # Collapse rollback + PFSP-lite (anti-collapse, S57)
+    parser.add_argument("--collapse_threshold", type=float, default=0.0,
+                        help="SR threshold below which an agent is considered collapsed "
+                             "(0=disabled, e.g. 0.05). Restores best checkpoint after "
+                             "collapse_streak_limit consecutive evals below this.")
+    parser.add_argument("--collapse_streak_limit", type=int, default=3,
+                        help="Consecutive evals below collapse_threshold before rollback "
+                             "(default: 3)")
+    parser.add_argument("--pfsp", action="store_true", default=False,
+                        help="Enable PFSP-lite: bias opponent pool sampling toward "
+                             "weaker/older opponents when an agent is collapsing.")
+
     # Tier 3: EWC (catastrophic forgetting prevention)
     parser.add_argument("--ewc_lambda", type=float, default=0.0,
                         help="EWC regularization strength (0=disabled, e.g. 1000.0)")
@@ -315,6 +327,9 @@ def main():
         adaptive_ratio_threshold=args.adaptive_ratio_threshold,
         adaptive_boost_phases=args.adaptive_boost_phases,
         lr_dampen_threshold=args.lr_dampen_threshold,
+        collapse_threshold=args.collapse_threshold,
+        collapse_streak_limit=args.collapse_streak_limit,
+        pfsp_enabled=args.pfsp,
         ewc_lambda=args.ewc_lambda,
         ewc_fisher_samples=args.ewc_fisher_samples,
         rnd_coef=args.rnd_coef,
