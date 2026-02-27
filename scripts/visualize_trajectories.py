@@ -310,6 +310,73 @@ def plot_overview(all_trajs, config, output_path):
     plt.close()
 
 
+def run_episode_full_obs(base_env, pursuer_model, evader_model, config, seed=0):
+    """Run one episode with full-obs models (flat obs vector, not dict)."""
+    obs, _ = base_env.reset(seed=seed)
+    fixed_speed = config.get("fixed_speed", False)
+    pursuer_v_max = config.get("pursuer_v_max", 1.0)
+    evader_v_max = config.get("evader_v_max", 1.0)
+
+    pursuer_traj = []
+    evader_traj = []
+    pursuer_headings = []
+    evader_headings = []
+    steps = 0
+    captured = False
+
+    done = False
+    while not done:
+        px, py, ptheta = base_env.pursuer_state
+        ex, ey, etheta = base_env.evader_state
+        pursuer_traj.append((px, py))
+        evader_traj.append((ex, ey))
+        pursuer_headings.append(ptheta)
+        evader_headings.append(etheta)
+
+        # Full-obs models expect flat obs vectors (from SingleAgentPEWrapper)
+        p_obs = obs["pursuer"]
+        e_obs = obs["evader"]
+        p_action, _ = pursuer_model.predict(p_obs, deterministic=True)
+        e_action, _ = evader_model.predict(e_obs, deterministic=True)
+
+        # Expand fixed-speed 1D [omega] -> 2D [v_max, omega]
+        if fixed_speed:
+            if p_action.shape[-1] == 1:
+                p_action = np.array([pursuer_v_max, p_action[0]], dtype=np.float32)
+            if e_action.shape[-1] == 1:
+                e_action = np.array([evader_v_max, e_action[0]], dtype=np.float32)
+
+        obs, rewards, terminated, truncated, info = base_env.step(p_action, e_action)
+        steps += 1
+        done = terminated or truncated
+
+    # Record final position
+    px, py, ptheta = base_env.pursuer_state
+    ex, ey, etheta = base_env.evader_state
+    pursuer_traj.append((px, py))
+    evader_traj.append((ex, ey))
+    pursuer_headings.append(ptheta)
+    evader_headings.append(etheta)
+
+    if "episode_metrics" in info:
+        captured = info["episode_metrics"]["captured"]
+
+    obstacles = []
+    if hasattr(base_env, "obstacles"):
+        for ob in base_env.obstacles:
+            obstacles.append({"x": ob["x"], "y": ob["y"], "r": ob["radius"]})
+
+    return {
+        "pursuer": np.array(pursuer_traj),
+        "evader": np.array(evader_traj),
+        "pursuer_headings": pursuer_headings,
+        "evader_headings": evader_headings,
+        "captured": captured,
+        "steps": steps,
+        "obstacles": obstacles,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Visualize game trajectories")
     parser.add_argument("--pursuer_model", type=str, required=True)
@@ -335,6 +402,8 @@ def main():
         config["n_obstacles"] = args.n_obstacles
     device = args.device
 
+    full_obs = config.get("full_obs", False)
+
     # Load models
     print(f"Loading pursuer model: {args.pursuer_model}")
     pursuer = PPO.load(args.pursuer_model, device=device)
@@ -349,24 +418,35 @@ def main():
         "capture_radius": config["capture_radius"],
         "distance_scale": config.get("distance_scale", 1.0),
         "pursuer_v_max": config.get("pursuer_v_max", 1.0),
+        "evader_v_max": config.get("evader_v_max", 1.0),
         "n_obstacles": config.get("n_obstacles", 0),
+        "n_obstacle_obs": config.get("n_obstacle_obs", 0),
     }
     base_env = PursuitEvasionEnv(**env_kwargs)
     print(f"Env: {config['arena_width']}x{config['arena_height']}m, "
-          f"{config.get('n_obstacles', 0)} obstacles, device={device}")
-
-    # Create partial-obs adapters for both agents (same as eval code)
-    p_adapter = PartialObsOpponentAdapter(
-        model=pursuer, role="pursuer", base_env=base_env, deterministic=True,
-    )
-    e_adapter = PartialObsOpponentAdapter(
-        model=evader, role="evader", base_env=base_env, deterministic=True,
-    )
+          f"{config.get('n_obstacles', 0)} obstacles, "
+          f"full_obs={full_obs}, device={device}")
 
     all_trajs = []
     for ep in range(args.n_episodes):
         print(f"Running episode {ep + 1}/{args.n_episodes}...")
-        traj = run_episode(base_env, p_adapter, e_adapter, config, seed=args.seed + ep)
+
+        if full_obs:
+            traj = run_episode_full_obs(
+                base_env, pursuer, evader, config, seed=args.seed + ep)
+        else:
+            # Create partial-obs adapters for both agents
+            p_adapter = PartialObsOpponentAdapter(
+                model=pursuer, role="pursuer", base_env=base_env,
+                deterministic=True,
+            )
+            e_adapter = PartialObsOpponentAdapter(
+                model=evader, role="evader", base_env=base_env,
+                deterministic=True,
+            )
+            traj = run_episode(
+                base_env, p_adapter, e_adapter, config, seed=args.seed + ep)
+
         all_trajs.append(traj)
 
         outcome = "Captured" if traj["captured"] else "Timeout"
