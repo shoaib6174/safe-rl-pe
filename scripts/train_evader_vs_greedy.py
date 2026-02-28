@@ -4,10 +4,9 @@ Tests whether the evader can learn evasion at all when the opponent
 is stable (no co-evolution). If the evader can't beat a greedy pursuer,
 the problem is fundamental (reward/obs/architecture). If it can, the
 problem is purely self-play dynamics.
-
-Uses identical env config to RA9/RA10 for fair comparison.
 """
 import argparse
+import json
 import time
 from pathlib import Path
 
@@ -22,33 +21,42 @@ from envs.wrappers import SingleAgentPEWrapper, FixedSpeedWrapper
 from training.baselines import GreedyPursuerPolicy
 
 
+def _make_reward_computer(env_kwargs):
+    """Create RewardComputer from env_kwargs dict."""
+    arena_w = env_kwargs["arena_width"]
+    arena_h = env_kwargs["arena_height"]
+    diagonal = np.sqrt(arena_w**2 + arena_h**2)
+    return RewardComputer(
+        distance_scale=env_kwargs.get("distance_scale", 1.0),
+        d_max=diagonal,
+        use_visibility_reward=env_kwargs.get("use_visibility_reward", False),
+        visibility_weight=env_kwargs.get("visibility_weight", 0.1),
+        survival_bonus=env_kwargs.get("survival_bonus", 0.0),
+        timeout_penalty=env_kwargs.get("timeout_penalty", -50.0),
+        capture_bonus=env_kwargs.get("capture_bonus", 50.0),
+    )
+
+
+def _make_base_env(env_kwargs):
+    """Create PursuitEvasionEnv from env_kwargs dict."""
+    reward_computer = _make_reward_computer(env_kwargs)
+    return PursuitEvasionEnv(
+        arena_width=env_kwargs["arena_width"],
+        arena_height=env_kwargs["arena_height"],
+        max_steps=env_kwargs.get("max_steps", 600),
+        capture_radius=env_kwargs.get("capture_radius", 0.5),
+        n_obstacles=env_kwargs.get("n_obstacles", 2),
+        pursuer_v_max=env_kwargs.get("pursuer_v_max", 1.0),
+        evader_v_max=env_kwargs.get("evader_v_max", 1.0),
+        n_obstacle_obs=env_kwargs.get("n_obstacle_obs", 2),
+        reward_computer=reward_computer,
+    )
+
+
 def make_env(seed, greedy_pursuer, env_kwargs):
     """Create a single evader env with greedy pursuer opponent."""
     def _init():
-        arena_w = env_kwargs["arena_width"]
-        arena_h = env_kwargs["arena_height"]
-        diagonal = np.sqrt(arena_w**2 + arena_h**2)
-
-        reward_computer = RewardComputer(
-            distance_scale=env_kwargs.get("distance_scale", 1.0),
-            d_max=diagonal,
-            use_visibility_reward=env_kwargs.get("use_visibility_reward", False),
-            visibility_weight=env_kwargs.get("visibility_weight", 0.1),
-            survival_bonus=env_kwargs.get("survival_bonus", 0.0),
-            timeout_penalty=env_kwargs.get("timeout_penalty", -50.0),
-            capture_bonus=env_kwargs.get("capture_bonus", 50.0),
-        )
-
-        base_env = PursuitEvasionEnv(
-            arena_width=arena_w,
-            arena_height=arena_h,
-            max_steps=env_kwargs.get("max_steps", 600),
-            capture_radius=env_kwargs.get("capture_radius", 0.5),
-            n_obstacles=env_kwargs.get("n_obstacles", 2),
-            pursuer_v_max=env_kwargs.get("pursuer_v_max", 1.0),
-            evader_v_max=env_kwargs.get("evader_v_max", 1.05),
-            n_obstacle_obs=env_kwargs.get("n_obstacle_obs", 2),
-        )
+        base_env = _make_base_env(env_kwargs)
         single_env = SingleAgentPEWrapper(
             base_env, role="evader", opponent_policy=greedy_pursuer,
         )
@@ -61,30 +69,7 @@ def make_env(seed, greedy_pursuer, env_kwargs):
 
 def evaluate(model, greedy_pursuer, env_kwargs, n_episodes=100):
     """Evaluate evader escape rate against greedy pursuer."""
-    arena_w = env_kwargs["arena_width"]
-    arena_h = env_kwargs["arena_height"]
-    diagonal = np.sqrt(arena_w**2 + arena_h**2)
-
-    reward_computer = RewardComputer(
-        distance_scale=env_kwargs.get("distance_scale", 1.0),
-        d_max=diagonal,
-        use_visibility_reward=env_kwargs.get("use_visibility_reward", False),
-        visibility_weight=env_kwargs.get("visibility_weight", 0.1),
-        survival_bonus=env_kwargs.get("survival_bonus", 0.0),
-        timeout_penalty=env_kwargs.get("timeout_penalty", -50.0),
-        capture_bonus=env_kwargs.get("capture_bonus", 50.0),
-    )
-
-    base_env = PursuitEvasionEnv(
-        arena_width=arena_w,
-        arena_height=arena_h,
-        max_steps=env_kwargs.get("max_steps", 600),
-        capture_radius=env_kwargs.get("capture_radius", 0.5),
-        n_obstacles=env_kwargs.get("n_obstacles", 2),
-        pursuer_v_max=env_kwargs.get("pursuer_v_max", 1.0),
-        evader_v_max=env_kwargs.get("evader_v_max", 1.05),
-        n_obstacle_obs=env_kwargs.get("n_obstacle_obs", 2),
-    )
+    base_env = _make_base_env(env_kwargs)
     single_env = SingleAgentPEWrapper(
         base_env, role="evader", opponent_policy=greedy_pursuer,
     )
@@ -103,7 +88,8 @@ def evaluate(model, greedy_pursuer, env_kwargs, n_episodes=100):
             done = terminated or truncated
             ep_steps += 1
 
-        if info.get("timeout", False):
+        # truncated = timeout = escape
+        if truncated:
             escapes += 1
         total_steps_list.append(ep_steps)
 
@@ -128,6 +114,8 @@ def main():
     parser.add_argument("--seed", type=int, default=47)
     parser.add_argument("--survival_bonus", type=float, default=0.03,
                         help="Evader survival bonus per step")
+    parser.add_argument("--visibility_weight", type=float, default=0.1,
+                        help="Visibility reward weight")
     parser.add_argument("--arena_width", type=float, default=10.0)
     parser.add_argument("--arena_height", type=float, default=10.0)
     parser.add_argument("--evader_v_max", type=float, default=1.05)
@@ -148,11 +136,11 @@ def main():
         "evader_v_max": args.evader_v_max,
         "distance_scale": 1.0,
         "use_visibility_reward": True,
-        "visibility_weight": 0.1,
+        "visibility_weight": args.visibility_weight,
         "survival_bonus": args.survival_bonus,
         "timeout_penalty": -50.0,
         "capture_bonus": 50.0,
-        "n_obstacle_obs": 2,
+        "n_obstacle_obs": args.n_obstacles,
     }
 
     # Create greedy pursuer opponent
@@ -169,6 +157,7 @@ def main():
     print(f"  Arena: {args.arena_width}x{args.arena_height}")
     print(f"  Evader speed: {args.evader_v_max}x")
     print(f"  Obstacles: {args.n_obstacles}")
+    print(f"  Visibility weight: {args.visibility_weight}")
     print(f"  Survival bonus: {args.survival_bonus}")
     print(f"  Max episode steps: {args.max_steps}")
     print(f"  Total training: {args.total_steps:,} steps")
@@ -177,27 +166,8 @@ def main():
     print("=" * 60)
 
     # Baseline: random evader vs greedy pursuer
-    from training.baselines import RandomPolicy
-    random_evader = type('MockModel', (), {
-        'predict': lambda self, obs, deterministic=False: (
-            np.array([np.random.uniform(-2.84, 2.84)], dtype=np.float32), None
-        )
-    })()
-    # Quick eval with random policy
     print("\nBaseline: Random evader vs greedy pursuer...")
-    # Use the model-less eval by creating a simple random
-    base_env_test = PursuitEvasionEnv(
-        arena_width=args.arena_width, arena_height=args.arena_height,
-        max_steps=args.max_steps, n_obstacles=args.n_obstacles,
-        pursuer_v_max=1.0, evader_v_max=args.evader_v_max,
-        n_obstacle_obs=2,
-        reward_computer=RewardComputer(
-            d_max=np.sqrt(args.arena_width**2 + args.arena_height**2),
-            use_visibility_reward=True, visibility_weight=0.1,
-            survival_bonus=args.survival_bonus,
-            timeout_penalty=-50.0, capture_bonus=50.0,
-        ),
-    )
+    base_env_test = _make_base_env(env_kwargs)
     rand_escapes = 0
     for _ in range(100):
         obs, _ = base_env_test.reset()
@@ -210,7 +180,7 @@ def main():
             obs, rewards, terminated, truncated, info = base_env_test.step(
                 p_action, e_action)
             done = terminated or truncated
-        if info.get("timeout", False):
+        if truncated:
             rand_escapes += 1
     base_env_test.close()
     print(f"  Random evader escape rate: {rand_escapes/100:.2f}")
@@ -222,7 +192,7 @@ def main():
     ])
     vec_env = VecMonitor(vec_env)
 
-    # Create PPO model (same hyperparams as RA9)
+    # Create PPO model
     model = PPO(
         "MlpPolicy",
         vec_env,
@@ -269,7 +239,6 @@ def main():
 
     # Save model and results
     model.save(str(output_dir / "evader_final"))
-    import json
     with open(output_dir / "eval_log.json", "w") as f:
         json.dump(log_data, f, indent=2)
 
