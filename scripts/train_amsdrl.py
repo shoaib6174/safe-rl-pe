@@ -213,6 +213,16 @@ def parse_args():
     parser.add_argument("--rnd_update_freq", type=int, default=256,
                         help="RND predictor training frequency in steps (default: 256)")
 
+    # Warm-seeded self-play (pre-trained model initialization)
+    parser.add_argument("--init_pursuer_model", type=str, default=None,
+                        help="Path to pre-trained pursuer model (.zip) for warm-seeded "
+                             "self-play. If both --init_pursuer_model and "
+                             "--init_evader_model are set, skips cold-start.")
+    parser.add_argument("--init_evader_model", type=str, default=None,
+                        help="Path to pre-trained evader model (.zip) for warm-seeded "
+                             "self-play. If both --init_pursuer_model and "
+                             "--init_evader_model are set, skips cold-start.")
+
     # Safety
     parser.add_argument("--use_dcbf", action="store_true", default=True,
                         help="Use DCBF safety filter for pursuer (default: True)")
@@ -336,6 +346,8 @@ def main():
         rnd_embed_dim=args.rnd_embed_dim,
         rnd_hidden_dim=args.rnd_hidden_dim,
         rnd_update_freq=args.rnd_update_freq,
+        init_pursuer_path=args.init_pursuer_model,
+        init_evader_path=args.init_evader_model,
     )
 
     result = amsdrl.run()

@@ -683,3 +683,48 @@ class TestPFSPSampling:
         samples = pool.sample_pfsp(3)
         assert len(samples) == 3
         assert all(s is None for s in samples)
+
+
+# ─── Warm-Seed Self-Play Tests ───
+
+
+class TestWarmSeedSelfPlay:
+    """Tests for warm-seeded self-play initialization."""
+
+    def test_amsdrl_accepts_init_model_paths(self):
+        """AMSDRLSelfPlay accepts init_pursuer_path and init_evader_path."""
+        from training.amsdrl import AMSDRLSelfPlay
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = AMSDRLSelfPlay(
+                output_dir=tmp,
+                opponent_pool_size=0,
+                max_phases=1,
+                timesteps_per_phase=64,
+                cold_start_timesteps=64,
+                n_envs=1,
+                full_obs=True,
+                verbose=0,
+                init_pursuer_path="/some/pursuer.zip",
+                init_evader_path="/some/evader.zip",
+            )
+            assert sp.init_pursuer_path == "/some/pursuer.zip"
+            assert sp.init_evader_path == "/some/evader.zip"
+
+    def test_amsdrl_init_model_paths_default_none(self):
+        """AMSDRLSelfPlay defaults init model paths to None."""
+        from training.amsdrl import AMSDRLSelfPlay
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = AMSDRLSelfPlay(
+                output_dir=tmp,
+                opponent_pool_size=0,
+                max_phases=1,
+                timesteps_per_phase=64,
+                cold_start_timesteps=64,
+                n_envs=1,
+                full_obs=True,
+                verbose=0,
+            )
+            assert sp.init_pursuer_path is None
+            assert sp.init_evader_path is None

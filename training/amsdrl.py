@@ -589,6 +589,8 @@ class AMSDRLSelfPlay:
         rnd_embed_dim: int = 64,
         rnd_hidden_dim: int = 128,
         rnd_update_freq: int = 256,
+        init_pursuer_path: str | None = None,
+        init_evader_path: str | None = None,
         verbose: int = 1,
     ):
         self.output_dir = Path(output_dir)
@@ -755,7 +757,11 @@ class AMSDRLSelfPlay:
         self.rnd_embed_dim = rnd_embed_dim
         self.rnd_hidden_dim = rnd_hidden_dim
         self.rnd_update_freq = rnd_update_freq
-        self.rnd_module = None  # Created lazily when env obs_dim is known
+        self.rnd_module = None
+
+        # Pre-trained model paths for warm-seeded self-play
+        self.init_pursuer_path = init_pursuer_path
+        self.init_evader_path = init_evader_path  # Created lazily when env obs_dim is known
 
     def run(self) -> dict:
         """Execute the full AMS-DRL protocol.
@@ -811,15 +817,23 @@ class AMSDRLSelfPlay:
             if self.ne_gap_advancement:
                 print(f"  NE-gap advancement: threshold={self.ne_gap_threshold}, "
                       f"consecutive={self.ne_gap_consecutive}")
+            if self.init_pursuer_path and self.init_evader_path:
+                print(f"  Init mode: WARM-SEED (pre-trained models)")
+                print(f"    Pursuer: {self.init_pursuer_path}")
+                print(f"    Evader: {self.init_evader_path}")
             print(f"  Seed: {self.seed}")
             print(f"  Device: {self.device}")
             print("=" * 60)
 
-        # ─── Phase S0: Cold-Start ───
-        if self.verbose:
-            print("\n=== Phase S0: Cold-Start (Evader Pre-training) ===")
-
-        self._cold_start()
+        # ─── Phase S0: Cold-Start or Warm-Seed ───
+        if self.init_pursuer_path and self.init_evader_path:
+            if self.verbose:
+                print("\n=== Phase S0: Warm-Seed (Loading Pre-trained Models) ===")
+            self._warm_seed()
+        else:
+            if self.verbose:
+                print("\n=== Phase S0: Cold-Start (Evader Pre-training) ===")
+            self._cold_start()
 
         # Evaluate cold-start
         cs_metrics = self._evaluate()
@@ -975,6 +989,60 @@ class AMSDRLSelfPlay:
             "history": self.history,
             "converged": converged,
         }
+
+    def _warm_seed(self):
+        """Phase S0 alternative: load pre-trained models and seed opponent pools.
+
+        Used when init_pursuer_path and init_evader_path are provided.
+        Models are loaded directly via PPO.load() to preserve their
+        original architecture. Training hyperparameters (lr, ent_coef, etc.)
+        are overridden to match the self-play config.
+
+        The _run_micro_phases() method handles env attachment and n_envs
+        mismatch via its save/reload cycle, so no environment setup is
+        needed here.
+        """
+        # Load pre-trained models directly (preserves architecture)
+        self.pursuer_model = PPO.load(
+            self.init_pursuer_path, device=self.device)
+        self.evader_model = PPO.load(
+            self.init_evader_path, device=self.device)
+
+        # Override training hyperparameters to match self-play config
+        for model, role in [(self.pursuer_model, "pursuer"),
+                            (self.evader_model, "evader")]:
+            model.learning_rate = self.learning_rate
+            model.ent_coef = self.ent_coef
+            model.n_steps = self.n_steps
+            model.batch_size = self.batch_size
+            model.tensorboard_log = str(self.output_dir / "tb" / role)
+            model.seed = self.seed if role == "pursuer" else self.seed + 1
+
+        if self.verbose:
+            print(f"  Loaded pursuer from: {self.init_pursuer_path}")
+            print(f"  Loaded evader from: {self.init_evader_path}")
+            print(f"  Overridden: lr={self.learning_rate}, "
+                  f"ent_coef={self.ent_coef}, "
+                  f"n_steps={self.n_steps}, batch_size={self.batch_size}")
+
+        # Save initial checkpoints
+        self.pursuer_ckpt.save_milestone(
+            model=self.pursuer_model, phase=0, role="pursuer",
+        )
+        self.evader_ckpt.save_milestone(
+            model=self.evader_model, phase=0, role="evader",
+        )
+
+        # Seed opponent pools with the pre-trained models
+        if self.opponent_pool_size > 0:
+            self._save_micro_snapshot("pursuer", 0)
+            self._save_micro_snapshot("evader", 0)
+            if self.verbose:
+                print(f"  Seeded opponent pools (P:{len(self.pursuer_pool)}, "
+                      f"E:{len(self.evader_pool)})")
+
+        if self.verbose:
+            print("  Warm-seed complete: both models loaded from checkpoints")
 
     def _cold_start(self):
         """Phase S0: Pre-train evader with NavigationEnv (or init both for full-obs)."""
