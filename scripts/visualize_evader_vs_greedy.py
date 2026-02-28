@@ -77,8 +77,9 @@ def run_episode(model, greedy_pursuer, env_kwargs, seed=None):
         pursuer_traj.append((base_env.pursuer_state[0], base_env.pursuer_state[1]))
         evader_traj.append((base_env.evader_state[0], base_env.evader_state[1]))
 
-    escaped = info.get("timeout", False)
-    captured = info.get("captured", False)
+    # terminated = capture, truncated = timeout (escape)
+    escaped = truncated
+    captured = terminated
     env.close()
 
     return {
