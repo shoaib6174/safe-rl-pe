@@ -59,14 +59,13 @@ def run_episode(model, greedy_pursuer, env_kwargs, seed=None):
     evader_traj = []
     obstacles = []
 
-    # Record initial positions
-    state = base_env.state
-    pursuer_traj.append((state["pursuer_x"], state["pursuer_y"]))
-    evader_traj.append((state["evader_x"], state["evader_y"]))
+    # Record initial positions (state is np.array([x, y, theta]))
+    pursuer_traj.append((base_env.pursuer_state[0], base_env.pursuer_state[1]))
+    evader_traj.append((base_env.evader_state[0], base_env.evader_state[1]))
 
-    # Record obstacles
+    # Record obstacles (obstacles are dicts with 'x', 'y', 'radius' keys)
     for obs_obj in base_env.obstacles:
-        obstacles.append((obs_obj.x, obs_obj.y, obs_obj.radius))
+        obstacles.append((obs_obj["x"], obs_obj["y"], obs_obj["radius"]))
 
     steps = 0
     while not done:
@@ -75,9 +74,8 @@ def run_episode(model, greedy_pursuer, env_kwargs, seed=None):
         done = terminated or truncated
         steps += 1
 
-        state = base_env.state
-        pursuer_traj.append((state["pursuer_x"], state["pursuer_y"]))
-        evader_traj.append((state["evader_x"], state["evader_y"]))
+        pursuer_traj.append((base_env.pursuer_state[0], base_env.pursuer_state[1]))
+        evader_traj.append((base_env.evader_state[0], base_env.evader_state[1]))
 
     escaped = info.get("timeout", False)
     captured = info.get("captured", False)
@@ -113,11 +111,13 @@ def plot_trajectories(episodes, title, output_path):
         arena_w = ep["arena_w"]
         arena_h = ep["arena_h"]
 
-        # Arena boundary
-        ax.set_xlim(-0.5, arena_w + 0.5)
-        ax.set_ylim(-0.5, arena_h + 0.5)
+        # Arena boundary (env uses center-origin: [-W/2, W/2] x [-H/2, H/2])
+        half_w = arena_w / 2
+        half_h = arena_h / 2
+        ax.set_xlim(-half_w - 0.5, half_w + 0.5)
+        ax.set_ylim(-half_h - 0.5, half_h + 0.5)
         ax.add_patch(patches.Rectangle(
-            (0, 0), arena_w, arena_h,
+            (-half_w, -half_h), arena_w, arena_h,
             linewidth=2, edgecolor="black", facecolor="lightyellow",
         ))
 
