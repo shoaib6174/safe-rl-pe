@@ -47,7 +47,12 @@ def run_episode(model, greedy_pursuer, env_kwargs, seed=None):
     single_env = SingleAgentPEWrapper(
         base_env, role="evader", opponent_policy=greedy_pursuer,
     )
-    env = FixedSpeedWrapper(single_env, v_max=base_env.evader_v_max)
+    # Auto-detect: if model has 1D action space, use FixedSpeedWrapper
+    action_dim = model.action_space.shape[0]
+    if action_dim == 1:
+        env = FixedSpeedWrapper(single_env, v_max=base_env.evader_v_max)
+    else:
+        env = single_env
 
     obs, _ = env.reset()
     done = False
