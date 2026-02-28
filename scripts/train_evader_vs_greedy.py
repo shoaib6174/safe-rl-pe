@@ -116,6 +116,12 @@ def main():
                         help="Evader survival bonus per step")
     parser.add_argument("--visibility_weight", type=float, default=0.1,
                         help="Visibility reward weight")
+    parser.add_argument("--capture_bonus", type=float, default=50.0,
+                        help="Terminal reward for capture (pursuer+, evader-)")
+    parser.add_argument("--timeout_penalty", type=float, default=-50.0,
+                        help="Terminal reward for timeout (pursuer-, evader+)")
+    parser.add_argument("--ent_coef", type=float, default=0.01,
+                        help="PPO entropy coefficient")
     parser.add_argument("--arena_width", type=float, default=10.0)
     parser.add_argument("--arena_height", type=float, default=10.0)
     parser.add_argument("--evader_v_max", type=float, default=1.05)
@@ -138,8 +144,8 @@ def main():
         "use_visibility_reward": True,
         "visibility_weight": args.visibility_weight,
         "survival_bonus": args.survival_bonus,
-        "timeout_penalty": -50.0,
-        "capture_bonus": 50.0,
+        "timeout_penalty": args.timeout_penalty,
+        "capture_bonus": args.capture_bonus,
         "n_obstacle_obs": args.n_obstacles,
     }
 
@@ -159,6 +165,9 @@ def main():
     print(f"  Obstacles: {args.n_obstacles}")
     print(f"  Visibility weight: {args.visibility_weight}")
     print(f"  Survival bonus: {args.survival_bonus}")
+    print(f"  Capture bonus: {args.capture_bonus}")
+    print(f"  Timeout penalty: {args.timeout_penalty}")
+    print(f"  Entropy coef: {args.ent_coef}")
     print(f"  Max episode steps: {args.max_steps}")
     print(f"  Total training: {args.total_steps:,} steps")
     print(f"  Eval every: {args.eval_freq:,} steps")
@@ -169,9 +178,11 @@ def main():
     print("\nBaseline: Random evader vs greedy pursuer...")
     base_env_test = _make_base_env(env_kwargs)
     rand_escapes = 0
+    rand_steps = []
     for _ in range(100):
         obs, _ = base_env_test.reset()
         done = False
+        ep_steps = 0
         while not done:
             p_action = greedy_pursuer.predict(obs["pursuer"])[0]
             e_action = np.array([args.evader_v_max,
@@ -180,10 +191,13 @@ def main():
             obs, rewards, terminated, truncated, info = base_env_test.step(
                 p_action, e_action)
             done = terminated or truncated
+            ep_steps += 1
         if truncated:
             rand_escapes += 1
+        rand_steps.append(ep_steps)
     base_env_test.close()
-    print(f"  Random evader escape rate: {rand_escapes/100:.2f}")
+    print(f"  Random escape rate: {rand_escapes/100:.2f}, "
+          f"avg survival: {np.mean(rand_steps):.0f} steps")
 
     # Create vectorized training env
     vec_env = DummyVecEnv([
@@ -201,7 +215,7 @@ def main():
         batch_size=256,
         n_epochs=10,
         gamma=0.99,
-        ent_coef=0.01,
+        ent_coef=args.ent_coef,
         seed=args.seed,
         verbose=0,
     )
