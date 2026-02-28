@@ -20,20 +20,26 @@ from envs.wrappers import SingleAgentPEWrapper, FixedSpeedWrapper
 
 
 class PPOOpponentPolicy:
-    """Wraps a PPO model trained with FixedSpeedWrapper as an opponent.
+    """Wraps a PPO model as an opponent for SingleAgentPEWrapper.
 
-    The PPO model outputs 1D [omega] actions, but SingleAgentPEWrapper
-    expects 2D [v, omega]. This adapter converts between them.
+    Auto-detects action dimension:
+    - 1D model (fixed speed): outputs [omega], converted to [v_max, omega]
+    - 2D model (variable speed): outputs [v, omega] directly
     """
 
     def __init__(self, model_path: str, v_max: float = 1.0):
         self.model = PPO.load(model_path, device="cpu")
         self.v_max = v_max
+        self.action_dim = self.model.action_space.shape[0]
 
     def predict(self, obs, deterministic=False):
         action, _ = self.model.predict(obs, deterministic=deterministic)
-        # Model outputs [omega], convert to [v_max, omega]
-        full_action = np.array([self.v_max, action[0]], dtype=np.float32)
+        if self.action_dim == 1:
+            # Fixed speed model: [omega] -> [v_max, omega]
+            full_action = np.array([self.v_max, action[0]], dtype=np.float32)
+        else:
+            # Variable speed model: [v, omega] directly
+            full_action = action
         return full_action, None
 
 
@@ -69,27 +75,30 @@ def _make_base_env(env_kwargs):
     )
 
 
-def make_env(seed, evader_opponent, env_kwargs):
+def make_env(seed, evader_opponent, env_kwargs, fixed_speed=False):
     """Create a single pursuer env with fixed evader opponent."""
     def _init():
         base_env = _make_base_env(env_kwargs)
         single_env = SingleAgentPEWrapper(
             base_env, role="pursuer", opponent_policy=evader_opponent,
         )
-        # Fixed speed: pursuer only controls omega
-        v_max = base_env.pursuer_v_max
-        env = FixedSpeedWrapper(single_env, v_max=v_max)
+        env = single_env
+        if fixed_speed:
+            env = FixedSpeedWrapper(env, v_max=base_env.pursuer_v_max)
         return Monitor(env)
     return _init
 
 
-def evaluate(model, evader_opponent, env_kwargs, n_episodes=100):
+def evaluate(model, evader_opponent, env_kwargs, n_episodes=100,
+             fixed_speed=False):
     """Evaluate pursuer capture rate against fixed evader."""
     base_env = _make_base_env(env_kwargs)
     single_env = SingleAgentPEWrapper(
         base_env, role="pursuer", opponent_policy=evader_opponent,
     )
-    env = FixedSpeedWrapper(single_env, v_max=base_env.pursuer_v_max)
+    env = single_env
+    if fixed_speed:
+        env = FixedSpeedWrapper(env, v_max=base_env.pursuer_v_max)
 
     captures = 0
     total_steps_list = []
@@ -146,6 +155,9 @@ def main():
     parser.add_argument("--evader_v_max", type=float, default=1.0)
     parser.add_argument("--n_obstacles", type=int, default=2)
     parser.add_argument("--max_steps", type=int, default=600)
+    parser.add_argument("--fixed_speed", action="store_true",
+                        help="Fix v=v_max, only learn omega (1D action). "
+                             "Default: variable speed (2D action [v, omega]).")
     args = parser.parse_args()
 
     output_dir = Path(args.output)
@@ -174,11 +186,14 @@ def main():
         args.evader_model, v_max=args.evader_v_max,
     )
 
+    action_mode = "1D [omega] (fixed speed)" if args.fixed_speed else "2D [v, omega] (variable speed)"
     print("=" * 60)
     print("Diagnostic: Pursuer vs Fixed Learned Evader")
     print(f"  Arena: {args.arena_width}x{args.arena_height}")
     print(f"  Pursuer speed: {args.pursuer_v_max}x")
     print(f"  Evader speed: {args.evader_v_max}x (fixed S1 model)")
+    print(f"  Action mode: {action_mode}")
+    print(f"  Evader model action dim: {evader_opponent.action_dim}D")
     print(f"  Obstacles: {args.n_obstacles}")
     print(f"  Capture bonus: {args.capture_bonus}")
     print(f"  Timeout penalty: {args.timeout_penalty}")
@@ -248,7 +263,8 @@ def main():
 
     # Create vectorized training env
     vec_env = DummyVecEnv([
-        make_env(args.seed + i, evader_opponent, env_kwargs)
+        make_env(args.seed + i, evader_opponent, env_kwargs,
+                 fixed_speed=args.fixed_speed)
         for i in range(args.n_envs)
     ])
     vec_env = VecMonitor(vec_env)
@@ -284,7 +300,8 @@ def main():
         steps_trained += chunk
 
         capture_rate, avg_steps = evaluate(
-            model, evader_opponent, env_kwargs, n_episodes=100)
+            model, evader_opponent, env_kwargs, n_episodes=100,
+            fixed_speed=args.fixed_speed)
         elapsed = time.time() - start_time
 
         log_data.append({

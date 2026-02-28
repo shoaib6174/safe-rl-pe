@@ -55,17 +55,26 @@ def run_episode(pursuer_model, evader_model, env_kwargs, seed=None):
     for obs_obj in base_env.obstacles:
         obstacles.append((obs_obj["x"], obs_obj["y"], obs_obj["radius"]))
 
+    p_action_dim = pursuer_model.action_space.shape[0]
+    e_action_dim = evader_model.action_space.shape[0]
+
     steps = 0
     done = False
     while not done:
-        # Both models output 1D [omega], need to convert to 2D [v, omega]
-        p_omega, _ = pursuer_model.predict(obs["pursuer"], deterministic=True)
-        e_omega, _ = evader_model.predict(obs["evader"], deterministic=True)
+        p_raw, _ = pursuer_model.predict(obs["pursuer"], deterministic=True)
+        e_raw, _ = evader_model.predict(obs["evader"], deterministic=True)
 
-        p_action = np.array(
-            [base_env.pursuer_v_max, p_omega[0]], dtype=np.float32)
-        e_action = np.array(
-            [base_env.evader_v_max, e_omega[0]], dtype=np.float32)
+        # Auto-detect: 1D [omega] -> expand to [v_max, omega]; 2D -> use directly
+        if p_action_dim == 1:
+            p_action = np.array(
+                [base_env.pursuer_v_max, p_raw[0]], dtype=np.float32)
+        else:
+            p_action = p_raw
+        if e_action_dim == 1:
+            e_action = np.array(
+                [base_env.evader_v_max, e_raw[0]], dtype=np.float32)
+        else:
+            e_action = e_raw
 
         obs, rewards, terminated, truncated, info = base_env.step(
             p_action, e_action)

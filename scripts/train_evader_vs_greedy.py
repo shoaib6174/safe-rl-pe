@@ -53,27 +53,30 @@ def _make_base_env(env_kwargs):
     )
 
 
-def make_env(seed, greedy_pursuer, env_kwargs):
+def make_env(seed, greedy_pursuer, env_kwargs, fixed_speed=False):
     """Create a single evader env with greedy pursuer opponent."""
     def _init():
         base_env = _make_base_env(env_kwargs)
         single_env = SingleAgentPEWrapper(
             base_env, role="evader", opponent_policy=greedy_pursuer,
         )
-        # Fixed speed: evader only controls omega
-        v_max = base_env.evader_v_max
-        env = FixedSpeedWrapper(single_env, v_max=v_max)
+        env = single_env
+        if fixed_speed:
+            env = FixedSpeedWrapper(env, v_max=base_env.evader_v_max)
         return Monitor(env)
     return _init
 
 
-def evaluate(model, greedy_pursuer, env_kwargs, n_episodes=100):
+def evaluate(model, greedy_pursuer, env_kwargs, n_episodes=100,
+             fixed_speed=False):
     """Evaluate evader escape rate against greedy pursuer."""
     base_env = _make_base_env(env_kwargs)
     single_env = SingleAgentPEWrapper(
         base_env, role="evader", opponent_policy=greedy_pursuer,
     )
-    env = FixedSpeedWrapper(single_env, v_max=base_env.evader_v_max)
+    env = single_env
+    if fixed_speed:
+        env = FixedSpeedWrapper(env, v_max=base_env.evader_v_max)
 
     escapes = 0
     total_steps_list = []
@@ -127,6 +130,9 @@ def main():
     parser.add_argument("--evader_v_max", type=float, default=1.05)
     parser.add_argument("--n_obstacles", type=int, default=2)
     parser.add_argument("--max_steps", type=int, default=600)
+    parser.add_argument("--fixed_speed", action="store_true",
+                        help="Fix v=v_max, only learn omega (1D action). "
+                             "Default: variable speed (2D action [v, omega]).")
     args = parser.parse_args()
 
     output_dir = Path(args.output)
@@ -158,10 +164,12 @@ def main():
         arena_half_h=args.arena_height / 2,
     )
 
+    action_mode = "1D [omega] (fixed speed)" if args.fixed_speed else "2D [v, omega] (variable speed)"
     print("=" * 60)
     print("Diagnostic: Evader vs Greedy Pursuer")
     print(f"  Arena: {args.arena_width}x{args.arena_height}")
     print(f"  Evader speed: {args.evader_v_max}x")
+    print(f"  Action mode: {action_mode}")
     print(f"  Obstacles: {args.n_obstacles}")
     print(f"  Visibility weight: {args.visibility_weight}")
     print(f"  Survival bonus: {args.survival_bonus}")
@@ -201,7 +209,8 @@ def main():
 
     # Create vectorized training env
     vec_env = DummyVecEnv([
-        make_env(args.seed + i, greedy_pursuer, env_kwargs)
+        make_env(args.seed + i, greedy_pursuer, env_kwargs,
+                 fixed_speed=args.fixed_speed)
         for i in range(args.n_envs)
     ])
     vec_env = VecMonitor(vec_env)
@@ -236,7 +245,8 @@ def main():
         steps_trained += chunk
 
         escape_rate, avg_steps = evaluate(
-            model, greedy_pursuer, env_kwargs, n_episodes=100)
+            model, greedy_pursuer, env_kwargs, n_episodes=100,
+            fixed_speed=args.fixed_speed)
         elapsed = time.time() - start_time
 
         log_data.append({
