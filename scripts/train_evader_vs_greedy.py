@@ -50,6 +50,7 @@ def _make_base_env(env_kwargs):
         evader_v_max=env_kwargs.get("evader_v_max", 1.0),
         n_obstacle_obs=env_kwargs.get("n_obstacle_obs", 2),
         reward_computer=reward_computer,
+        partial_obs=env_kwargs.get("partial_obs", False),
     )
 
 
@@ -133,6 +134,9 @@ def main():
     parser.add_argument("--fixed_speed", action="store_true",
                         help="Fix v=v_max, only learn omega (1D action). "
                              "Default: variable speed (2D action [v, omega]).")
+    parser.add_argument("--partial_obs", action="store_true",
+                        help="Enable LOS-based partial observability (mask opponent "
+                             "when occluded by obstacle).")
     args = parser.parse_args()
 
     output_dir = Path(args.output)
@@ -153,6 +157,7 @@ def main():
         "timeout_penalty": args.timeout_penalty,
         "capture_bonus": args.capture_bonus,
         "n_obstacle_obs": args.n_obstacles,
+        "partial_obs": args.partial_obs,
     }
 
     # Create greedy pursuer opponent
@@ -176,6 +181,8 @@ def main():
     print(f"  Capture bonus: {args.capture_bonus}")
     print(f"  Timeout penalty: {args.timeout_penalty}")
     print(f"  Entropy coef: {args.ent_coef}")
+    if args.partial_obs:
+        print(f"  Partial obs: LOS masking ENABLED")
     print(f"  Max episode steps: {args.max_steps}")
     print(f"  Total training: {args.total_steps:,} steps")
     print(f"  Eval every: {args.eval_freq:,} steps")

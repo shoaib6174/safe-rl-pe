@@ -114,6 +114,12 @@ def parse_args():
                         help="Number of nearest obstacles in observation vector (default: 0). "
                              "Set to match n_obstacles for agents to see obstacles.")
 
+    # Phase 3: Lightweight partial observability (LOS masking)
+    parser.add_argument("--partial_obs_los", action="store_true", default=False,
+                        help="Enable LOS-based partial observability. When an obstacle blocks "
+                             "line of sight, opponent state is masked (zeroed) in the observation. "
+                             "Adds a los_visible flag to the obs vector (+1 dim).")
+
     # PBRS obstacle-seeking
     parser.add_argument("--w_obs_approach", type=float, default=0.0,
                         help="PBRS obstacle-seeking weight for evader (default: 0.0, off). "
@@ -348,6 +354,7 @@ def main():
         rnd_update_freq=args.rnd_update_freq,
         init_pursuer_path=args.init_pursuer_model,
         init_evader_path=args.init_evader_model,
+        partial_obs_los=args.partial_obs_los,
     )
 
     result = amsdrl.run()

@@ -493,3 +493,154 @@ class TestSurvivalBonusAllLevels:
         )
         # Visibility: +1.0 (hidden) + survival_bonus 1.0 = 2.0
         assert r_e == pytest.approx(2.0, abs=0.2)
+
+
+class TestPartialObsLOS:
+    """Tests for Phase 3 LOS-based partial observability."""
+
+    def make_env(self, partial_obs=True, **kwargs):
+        defaults = dict(
+            arena_width=10.0,
+            arena_height=10.0,
+            max_steps=600,
+            capture_radius=0.5,
+            n_obstacles=2,
+            n_obstacle_obs=2,
+            partial_obs=partial_obs,
+        )
+        defaults.update(kwargs)
+        return PursuitEvasionEnv(**defaults)
+
+    def test_obs_dim_with_partial_obs(self):
+        """partial_obs=True adds 1 dim (los_visible flag)."""
+        env_full = self.make_env(partial_obs=False)
+        env_partial = self.make_env(partial_obs=True)
+        assert env_partial.obs_builder.obs_dim == env_full.obs_builder.obs_dim + 1
+
+    def test_obs_dim_value(self):
+        """14 base + 1 los_visible + 2*2 obstacles = 19."""
+        env = self.make_env(partial_obs=True, n_obstacle_obs=2)
+        assert env.obs_builder.obs_dim == 19
+
+    def test_obs_shape_matches_space(self):
+        """Observation array shape matches observation_space."""
+        env = self.make_env(partial_obs=True)
+        obs, _ = env.reset(seed=42)
+        assert obs["pursuer"].shape == (env.obs_builder.obs_dim,)
+        assert obs["evader"].shape == (env.obs_builder.obs_dim,)
+
+    def test_full_obs_no_masking(self):
+        """With partial_obs=False, opponent features are never masked."""
+        env = self.make_env(partial_obs=False)
+        obs, _ = env.reset(seed=42)
+        # Opponent position (indices 5,6) should not be zero
+        p_obs = obs["pursuer"]
+        e_obs = obs["evader"]
+        # At least one agent should have non-zero opponent position
+        assert not (p_obs[5] == 0.0 and p_obs[6] == 0.0 and
+                    e_obs[5] == 0.0 and e_obs[6] == 0.0)
+
+    def test_los_visible_flag_present(self):
+        """partial_obs=True adds los_visible flag at index 14."""
+        env = self.make_env(partial_obs=True)
+        obs, _ = env.reset(seed=42)
+        p_obs = obs["pursuer"]
+        # los_visible is at index 14, should be 0.0 or 1.0
+        assert p_obs[14] in (0.0, 1.0)
+
+    def test_masking_when_los_blocked(self):
+        """When LOS is blocked, opponent features should be zeroed."""
+        from envs.observations import ObservationBuilder
+        builder = ObservationBuilder(
+            arena_width=10.0, arena_height=10.0,
+            v_max=1.0, omega_max=2.84,
+            n_obstacle_obs=0, partial_obs=True,
+        )
+        self_state = np.array([0.0, 0.0, 0.0])
+        self_action = np.array([0.5, 0.1])
+        opp_state = np.array([3.0, 3.0, 1.0])
+        opp_action = np.array([0.8, -0.5])
+
+        # LOS not blocked — opponent features visible
+        obs_visible = builder.build(
+            self_state, self_action, opp_state, opp_action,
+            los_blocked=False,
+        )
+        # Opponent pos (idx 5,6), heading (7), vel (8,9), dist (10), bearing (11)
+        assert obs_visible[5] != 0.0  # x_opp
+        assert obs_visible[10] != 0.0  # distance
+        assert obs_visible[14] == 1.0  # los_visible = True
+
+        # LOS blocked — opponent features masked
+        obs_masked = builder.build(
+            self_state, self_action, opp_state, opp_action,
+            los_blocked=True,
+        )
+        assert obs_masked[5] == 0.0   # x_opp masked
+        assert obs_masked[6] == 0.0   # y_opp masked
+        assert obs_masked[7] == 0.0   # theta_opp masked
+        assert obs_masked[8] == 0.0   # v_opp masked
+        assert obs_masked[9] == 0.0   # omega_opp masked
+        assert obs_masked[10] == 0.0  # distance masked
+        assert obs_masked[11] == 0.0  # bearing masked
+        assert obs_masked[14] == 0.0  # los_visible = False
+
+    def test_self_features_never_masked(self):
+        """Own state features are always available regardless of LOS."""
+        from envs.observations import ObservationBuilder
+        builder = ObservationBuilder(
+            arena_width=10.0, arena_height=10.0,
+            v_max=1.0, omega_max=2.84,
+            n_obstacle_obs=0, partial_obs=True,
+        )
+        self_state = np.array([2.0, -1.5, 0.5])
+        self_action = np.array([0.7, 0.3])
+        opp_state = np.array([3.0, 3.0, 1.0])
+        opp_action = np.array([0.8, -0.5])
+
+        obs = builder.build(
+            self_state, self_action, opp_state, opp_action,
+            los_blocked=True,
+        )
+        # Own state (idx 0-4) should be non-zero
+        assert obs[0] != 0.0  # x_self
+        assert obs[1] != 0.0  # y_self
+        assert obs[3] != 0.0  # v_self
+        # Wall distances (idx 12,13) should be non-zero
+        assert obs[12] != 0.0
+        assert obs[13] != 0.0
+
+    def test_obstacle_features_never_masked(self):
+        """Obstacle features are always available regardless of LOS."""
+        from envs.observations import ObservationBuilder
+        builder = ObservationBuilder(
+            arena_width=10.0, arena_height=10.0,
+            v_max=1.0, omega_max=2.84,
+            n_obstacle_obs=2, partial_obs=True,
+        )
+        self_state = np.array([0.0, 0.0, 0.0])
+        self_action = np.array([0.5, 0.1])
+        opp_state = np.array([3.0, 3.0, 1.0])
+        opp_action = np.array([0.8, -0.5])
+        obstacles = [
+            {"x": 2.0, "y": 0.0, "radius": 0.5},
+            {"x": -2.0, "y": 1.0, "radius": 0.7},
+        ]
+
+        obs = builder.build(
+            self_state, self_action, opp_state, opp_action,
+            obstacles=obstacles, los_blocked=True,
+        )
+        # Obstacle features start at index 15 (14 base + 1 los_visible)
+        # obs1_dist, obs1_bearing, obs2_dist, obs2_bearing
+        assert obs[15] != 0.0  # obstacle distance (not 0)
+
+    def test_env_step_with_partial_obs(self):
+        """Environment step works correctly with partial_obs enabled."""
+        env = self.make_env(partial_obs=True)
+        obs, _ = env.reset(seed=42)
+        p_action = np.array([0.5, 0.5], dtype=np.float32)
+        e_action = np.array([0.5, -0.5], dtype=np.float32)
+        obs2, rewards, terminated, truncated, info = env.step(p_action, e_action)
+        assert obs2["pursuer"].shape == (env.obs_builder.obs_dim,)
+        assert obs2["evader"].shape == (env.obs_builder.obs_dim,)
