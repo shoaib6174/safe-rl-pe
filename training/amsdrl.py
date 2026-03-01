@@ -1853,6 +1853,22 @@ class AMSDRLSelfPlay:
                     model=self.evader_model, phase=micro, role="evader",
                 )
 
+                # Best-model checkpointing: save when each agent's SR improves
+                if sr_p > best_sr_pursuer:
+                    best_sr_pursuer = sr_p
+                    best_dir = self.output_dir / "best"
+                    best_dir.mkdir(parents=True, exist_ok=True)
+                    self.pursuer_model.save(str(best_dir / "pursuer"))
+                    if self.verbose:
+                        print(f"    *BEST pursuer* SR={sr_p:.3f} at M{micro}")
+                if sr_e > best_sr_evader:
+                    best_sr_evader = sr_e
+                    best_dir = self.output_dir / "best"
+                    best_dir.mkdir(parents=True, exist_ok=True)
+                    self.evader_model.save(str(best_dir / "evader"))
+                    if self.verbose:
+                        print(f"    *BEST evader* SR={sr_e:.3f} at M{micro}")
+
                 # Save history incrementally
                 self._save_history_incremental(
                     converged=False, elapsed=time.time() - start_time)
@@ -1879,14 +1895,13 @@ class AMSDRLSelfPlay:
 
                 # Collapse rollback: restore best checkpoint when agent degenerates
                 if self.collapse_threshold > 0:
-                    # Track best performance for each agent
-                    if sr_p > best_sr_pursuer:
-                        best_sr_pursuer = sr_p
+                    # Track best checkpoint paths for rollback
+                    # (best_sr_* already updated by best-model checkpointing above)
+                    if sr_p >= best_sr_pursuer:
                         best_ckpt_pursuer = (micro, str(
                             self.pursuer_ckpt.checkpoint_dir
                             / f"milestone_phase{micro}_pursuer"))
-                    if sr_e > best_sr_evader:
-                        best_sr_evader = sr_e
+                    if sr_e >= best_sr_evader:
                         best_ckpt_evader = (micro, str(
                             self.evader_ckpt.checkpoint_dir
                             / f"milestone_phase{micro}_evader"))
