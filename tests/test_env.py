@@ -644,3 +644,104 @@ class TestPartialObsLOS:
         obs2, rewards, terminated, truncated, info = env.step(p_action, e_action)
         assert obs2["pursuer"].shape == (env.obs_builder.obs_dim,)
         assert obs2["evader"].shape == (env.obs_builder.obs_dim,)
+
+    def test_asymmetric_obs_pursuer_masked(self):
+        """With asymmetric_obs=True, pursuer obs has zeroed opponent when LOS blocked."""
+        from envs.observations import ObservationBuilder
+        from envs.rewards import line_of_sight_blocked
+
+        # Create env with asymmetric obs and an obstacle between agents
+        env = self.make_env(
+            partial_obs=True, asymmetric_obs=True,
+            n_obstacles=1, n_obstacle_obs=1,
+        )
+        obs, _ = env.reset(seed=42)
+
+        # Manually place agents with obstacle between them
+        env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+        env.evader_state = np.array([3.0, 0.0, np.pi])
+        env.obstacles = [{"x": 0.0, "y": 0.0, "radius": 1.0}]
+
+        # Verify LOS is actually blocked
+        assert line_of_sight_blocked(
+            env.pursuer_state, env.evader_state, env.obstacles
+        )
+
+        obs = env._get_obs()
+        # Pursuer should have masked opponent (idx 5-11 zeroed)
+        p_obs = obs["pursuer"]
+        assert p_obs[5] == 0.0  # x_opp masked
+        assert p_obs[6] == 0.0  # y_opp masked
+        assert p_obs[10] == 0.0  # distance masked
+
+    def test_asymmetric_obs_evader_always_sees(self):
+        """With asymmetric_obs=True, evader obs always has opponent info."""
+        from envs.rewards import line_of_sight_blocked
+
+        env = self.make_env(
+            partial_obs=True, asymmetric_obs=True,
+            n_obstacles=1, n_obstacle_obs=1,
+        )
+        obs, _ = env.reset(seed=42)
+
+        # Place obstacle between agents
+        env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+        env.evader_state = np.array([3.0, 0.0, np.pi])
+        env.obstacles = [{"x": 0.0, "y": 0.0, "radius": 1.0}]
+
+        # Verify LOS is blocked
+        assert line_of_sight_blocked(
+            env.pursuer_state, env.evader_state, env.obstacles
+        )
+
+        obs = env._get_obs()
+        # Evader should still see the pursuer (asymmetric: evader not masked)
+        e_obs = obs["evader"]
+        assert e_obs[5] != 0.0 or e_obs[6] != 0.0  # opponent position visible
+        assert e_obs[10] != 0.0  # distance visible
+        assert e_obs[14] == 1.0  # los_visible = True (evader always sees)
+
+    def test_randomized_obstacles_count(self):
+        """Reset with n_obstacles_min/max produces varying obstacle counts."""
+        env = self.make_env(
+            partial_obs=True,
+            n_obstacles=2,
+            n_obstacles_min=1,
+            n_obstacles_max=3,
+            n_obstacle_obs=3,
+        )
+        counts = set()
+        for seed in range(50):
+            env.reset(seed=seed)
+            counts.add(len(env.obstacles))
+        # Should see at least 2 different counts out of {1, 2, 3}
+        assert len(counts) >= 2, f"Expected variety in obstacle counts, got {counts}"
+        assert all(1 <= c <= 3 for c in counts), f"Counts out of range: {counts}"
+
+    def test_randomized_obstacles_obs_dim_constant(self):
+        """obs_dim stays fixed even when n_obstacles varies per episode."""
+        env = self.make_env(
+            partial_obs=True,
+            n_obstacles=2,
+            n_obstacles_min=1,
+            n_obstacles_max=3,
+            n_obstacle_obs=3,
+        )
+        expected_dim = env.obs_builder.obs_dim
+        for seed in range(20):
+            obs, _ = env.reset(seed=seed)
+            assert obs["pursuer"].shape == (expected_dim,)
+            assert obs["evader"].shape == (expected_dim,)
+
+    def test_randomized_obstacles_backward_compat(self):
+        """n_obstacles_min=None keeps fixed obstacle count."""
+        env = self.make_env(
+            partial_obs=True, n_obstacles=2,
+            n_obstacle_obs=2,
+        )
+        # Default: n_obstacles_min and n_obstacles_max are None
+        assert env.n_obstacles_min is None
+        assert env.n_obstacles_max is None
+        for seed in range(10):
+            env.reset(seed=seed)
+            assert len(env.obstacles) == 2

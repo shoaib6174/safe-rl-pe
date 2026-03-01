@@ -41,6 +41,9 @@ def run_episode(model, greedy_pursuer, env_kwargs, seed=None):
         n_obstacle_obs=env_kwargs.get("n_obstacle_obs", 2),
         reward_computer=reward_computer,
         partial_obs=env_kwargs.get("partial_obs", False),
+        n_obstacles_min=env_kwargs.get("n_obstacles_min"),
+        n_obstacles_max=env_kwargs.get("n_obstacles_max"),
+        asymmetric_obs=env_kwargs.get("asymmetric_obs", False),
     )
     if seed is not None:
         base_env.np_random = np.random.default_rng(seed)
@@ -222,7 +225,15 @@ def main():
                         help="Only render every Nth step (default: 4)")
     parser.add_argument("--partial_obs", action="store_true",
                         help="Enable LOS-based partial observability")
+    parser.add_argument("--n_obstacles_min", type=int, default=None,
+                        help="Minimum obstacle count (randomized)")
+    parser.add_argument("--n_obstacles_max", type=int, default=None,
+                        help="Maximum obstacle count (randomized)")
+    parser.add_argument("--asymmetric_obs", action="store_true",
+                        help="Asymmetric LOS: only pursuer is masked")
     args = parser.parse_args()
+
+    n_obstacle_obs = args.n_obstacles_max if args.n_obstacles_max is not None else args.n_obstacles
 
     env_kwargs = {
         "arena_width": args.arena_width,
@@ -238,8 +249,11 @@ def main():
         "survival_bonus": 0.1,
         "timeout_penalty": 0.0,
         "capture_bonus": 5.0,
-        "n_obstacle_obs": args.n_obstacles,
+        "n_obstacle_obs": n_obstacle_obs,
         "partial_obs": args.partial_obs,
+        "n_obstacles_min": args.n_obstacles_min,
+        "n_obstacles_max": args.n_obstacles_max,
+        "asymmetric_obs": args.asymmetric_obs,
     }
 
     greedy_pursuer = GreedyPursuerPolicy(

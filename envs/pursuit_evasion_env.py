@@ -65,6 +65,9 @@ class PursuitEvasionEnv(gym.Env):
         w_collision: float = 0.0,
         w_wall: float = 0.0,
         partial_obs: bool = False,
+        n_obstacles_min: int | None = None,
+        n_obstacles_max: int | None = None,
+        asymmetric_obs: bool = False,
     ):
         super().__init__()
 
@@ -104,6 +107,13 @@ class PursuitEvasionEnv(gym.Env):
 
         # Phase 3: Partial observability (LOS masking)
         self.partial_obs = partial_obs
+
+        # Phase 3: Randomized obstacle count per episode
+        self.n_obstacles_min = n_obstacles_min
+        self.n_obstacles_max = n_obstacles_max
+
+        # Phase 3: Asymmetric obs (only pursuer is LOS-masked, evader keeps full obs)
+        self.asymmetric_obs = asymmetric_obs
 
         # Reward computer (allow injection for SafetyRewardComputer)
         arena_diagonal = np.sqrt(arena_width**2 + arena_height**2)
@@ -186,8 +196,16 @@ class PursuitEvasionEnv(gym.Env):
         super().reset(seed=seed)
 
         # Generate obstacles first (agents must avoid them)
-        if self.n_obstacles > 0:
-            self.obstacles = self._generate_obstacles(self.n_obstacles)
+        # Randomize obstacle count if min/max are set
+        if self.n_obstacles_min is not None and self.n_obstacles_max is not None:
+            n_obs = self.np_random.integers(
+                self.n_obstacles_min, self.n_obstacles_max + 1,
+            )
+        else:
+            n_obs = self.n_obstacles
+
+        if n_obs > 0:
+            self.obstacles = self._generate_obstacles(n_obs)
         else:
             self.obstacles = []
 
@@ -503,6 +521,9 @@ class PursuitEvasionEnv(gym.Env):
                 self.pursuer_state, self.evader_state, self.obstacles,
             )
 
+        # Asymmetric obs: only pursuer is masked, evader always has full info
+        evader_los_blocked = False if self.asymmetric_obs else los_blocked
+
         obs_pursuer = self.obs_builder.build(
             self_state=self.pursuer_state,
             self_action=self.pursuer_action,
@@ -517,7 +538,7 @@ class PursuitEvasionEnv(gym.Env):
             opp_state=self.pursuer_state,
             opp_action=self.pursuer_action,
             obstacles=self.obstacles,
-            los_blocked=los_blocked,
+            los_blocked=evader_los_blocked,
         )
         return {"pursuer": obs_pursuer, "evader": obs_evader}
 

@@ -120,6 +120,17 @@ def parse_args():
                              "line of sight, opponent state is masked (zeroed) in the observation. "
                              "Adds a los_visible flag to the obs vector (+1 dim).")
 
+    # Phase 3: Randomized obstacles + asymmetric obs
+    parser.add_argument("--n_obstacles_min", type=int, default=None,
+                        help="Minimum obstacle count per episode (randomized). "
+                             "None = use fixed n_obstacles.")
+    parser.add_argument("--n_obstacles_max", type=int, default=None,
+                        help="Maximum obstacle count per episode (randomized). "
+                             "None = use fixed n_obstacles.")
+    parser.add_argument("--asymmetric_obs", action="store_true", default=False,
+                        help="Asymmetric LOS: only pursuer is masked, evader keeps "
+                             "full observability.")
+
     # PBRS obstacle-seeking
     parser.add_argument("--w_obs_approach", type=float, default=0.0,
                         help="PBRS obstacle-seeking weight for evader (default: 0.0, off). "
@@ -355,6 +366,9 @@ def main():
         init_pursuer_path=args.init_pursuer_model,
         init_evader_path=args.init_evader_model,
         partial_obs_los=args.partial_obs_los,
+        n_obstacles_min=args.n_obstacles_min,
+        n_obstacles_max=args.n_obstacles_max,
+        asymmetric_obs=args.asymmetric_obs,
     )
 
     result = amsdrl.run()

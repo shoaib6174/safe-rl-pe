@@ -51,6 +51,9 @@ def _make_base_env(env_kwargs):
         n_obstacle_obs=env_kwargs.get("n_obstacle_obs", 2),
         reward_computer=reward_computer,
         partial_obs=env_kwargs.get("partial_obs", False),
+        n_obstacles_min=env_kwargs.get("n_obstacles_min"),
+        n_obstacles_max=env_kwargs.get("n_obstacles_max"),
+        asymmetric_obs=env_kwargs.get("asymmetric_obs", False),
     )
 
 
@@ -137,10 +140,22 @@ def main():
     parser.add_argument("--partial_obs", action="store_true",
                         help="Enable LOS-based partial observability (mask opponent "
                              "when occluded by obstacle).")
+    parser.add_argument("--n_obstacles_min", type=int, default=None,
+                        help="Minimum obstacle count per episode (randomized). "
+                             "None = use fixed n_obstacles.")
+    parser.add_argument("--n_obstacles_max", type=int, default=None,
+                        help="Maximum obstacle count per episode (randomized). "
+                             "None = use fixed n_obstacles.")
+    parser.add_argument("--asymmetric_obs", action="store_true",
+                        help="Asymmetric LOS: only pursuer is masked, evader keeps "
+                             "full observability.")
     args = parser.parse_args()
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # n_obstacle_obs must be fixed at max for consistent obs dim
+    n_obstacle_obs = args.n_obstacles_max if args.n_obstacles_max is not None else args.n_obstacles
 
     env_kwargs = {
         "arena_width": args.arena_width,
@@ -156,8 +171,11 @@ def main():
         "survival_bonus": args.survival_bonus,
         "timeout_penalty": args.timeout_penalty,
         "capture_bonus": args.capture_bonus,
-        "n_obstacle_obs": args.n_obstacles,
+        "n_obstacle_obs": n_obstacle_obs,
         "partial_obs": args.partial_obs,
+        "n_obstacles_min": args.n_obstacles_min,
+        "n_obstacles_max": args.n_obstacles_max,
+        "asymmetric_obs": args.asymmetric_obs,
     }
 
     # Create greedy pursuer opponent
@@ -175,14 +193,18 @@ def main():
     print(f"  Arena: {args.arena_width}x{args.arena_height}")
     print(f"  Evader speed: {args.evader_v_max}x")
     print(f"  Action mode: {action_mode}")
-    print(f"  Obstacles: {args.n_obstacles}")
+    if args.n_obstacles_min is not None and args.n_obstacles_max is not None:
+        print(f"  Obstacles: {args.n_obstacles_min}-{args.n_obstacles_max} (randomized)")
+    else:
+        print(f"  Obstacles: {args.n_obstacles}")
     print(f"  Visibility weight: {args.visibility_weight}")
     print(f"  Survival bonus: {args.survival_bonus}")
     print(f"  Capture bonus: {args.capture_bonus}")
     print(f"  Timeout penalty: {args.timeout_penalty}")
     print(f"  Entropy coef: {args.ent_coef}")
     if args.partial_obs:
-        print(f"  Partial obs: LOS masking ENABLED")
+        obs_mode = "ASYMMETRIC (pursuer only)" if args.asymmetric_obs else "SYMMETRIC (both agents)"
+        print(f"  Partial obs: LOS masking {obs_mode}")
     print(f"  Max episode steps: {args.max_steps}")
     print(f"  Total training: {args.total_steps:,} steps")
     print(f"  Eval every: {args.eval_freq:,} steps")

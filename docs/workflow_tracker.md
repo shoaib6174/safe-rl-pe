@@ -69,7 +69,8 @@
 | 56 | 2026-02-27 | **Pool Reservoir + Convergence Fix + RA3-RA6**: Reservoir sampling, convergence_consecutive=5, 9 new tests (696 total). RA3/RA4 collapsed (44x PBRS reward asymmetry). Root cause analysis → launched RA5/RA6 with reward fix (10x10, 1.05x speed, ±50 terminal, PBRS 5.0 vs 0.0). | [S56](worklogs/2026-02-27_S56.md) |
 | 57 | 2026-02-27 | **Adaptive Training Ratio + LR Dampening**: Anti-cycling mechanisms — adaptive ratio gives loser extra training phases when gap > threshold, LR dampening scales LR down near equilibrium. RA7b/RA8 completed 10M steps — both show evader collapse at M400, adaptive ratio insufficient. Root cause: vanishing reward gradient, no recovery mechanism. | [S57](worklogs/2026-02-27_S57.md) |
 | 58 | 2026-02-28 | **Collapse Rollback + PFSP-lite + Survival Bonus**: 3-pronged fix for evader collapse — collapse rollback (restore best checkpoint when SR < threshold for N evals), PFSP-lite (bias pool toward weaker opponents when losing), configurable survival_bonus. 7 new tests (706 total). Launching RA9/RA10. | [S58](worklogs/2026-02-28_S58.md) |
-| 59 | 2026-03-01 | **Variable Speed Support**: Removed FixedSpeedWrapper default — agents now control 2D [v, omega] actions. Updated diagnostic scripts (train_evader_vs_greedy, train_pursuer_vs_evader) and visualization. Auto-detect action dim in PPOOpponentPolicy. 120 tests pass. | [S59](worklogs/2026-03-01_S59.md) |
+| 59 | 2026-03-01 | **Variable Speed Self-Play**: S1v2b evader 98% escape. SP2+B+C+D all failed (pursuer can't bootstrap in self-play). Run A pursuer training hit 94% capture. Launched SP3: warm-seeded self-play starting at 49/51 balance. | [S59](worklogs/2026-03-01_S59.md) |
+| 60 | 2026-03-01 | **Asymmetric Obs + Randomized Obstacles**: Asymmetric LOS (pursuer-only masking), randomized 1-2 obstacles per episode. 5 new tests (727 pass). For S1v4a/S1v4b launch. | [S60](worklogs/2026-03-01_S60.md) |
 
 ## Paper Reading Status
 

@@ -82,6 +82,9 @@ def _make_partial_obs_env(
     w_wall: float = 0.0,
     n_obstacle_obs: int = 0,
     partial_obs_los: bool = False,
+    n_obstacles_min: int | None = None,
+    n_obstacles_max: int | None = None,
+    asymmetric_obs: bool = False,
 ) -> tuple:
     """Create an environment stack for one agent.
 
@@ -137,6 +140,9 @@ def _make_partial_obs_env(
         w_wall=w_wall,
         n_obstacle_obs=n_obstacle_obs,
         partial_obs=partial_obs_los,
+        n_obstacles_min=n_obstacles_min,
+        n_obstacles_max=n_obstacles_max,
+        asymmetric_obs=asymmetric_obs,
     )
     single_env = SingleAgentPEWrapper(base_env, role=role)
 
@@ -595,6 +601,9 @@ class AMSDRLSelfPlay:
         init_pursuer_path: str | None = None,
         init_evader_path: str | None = None,
         partial_obs_los: bool = False,
+        n_obstacles_min: int | None = None,
+        n_obstacles_max: int | None = None,
+        asymmetric_obs: bool = False,
         verbose: int = 1,
     ):
         self.output_dir = Path(output_dir)
@@ -642,6 +651,9 @@ class AMSDRLSelfPlay:
             "w_wall": w_wall,
             "n_obstacle_obs": n_obstacle_obs,
             "partial_obs_los": partial_obs_los,
+            "n_obstacles_min": n_obstacles_min,
+            "n_obstacles_max": n_obstacles_max,
+            "asymmetric_obs": asymmetric_obs,
         }
         self.fixed_speed = fixed_speed
         self.evader_training_multiplier = evader_training_multiplier
