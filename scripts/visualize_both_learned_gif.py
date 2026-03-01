@@ -9,7 +9,7 @@ import numpy as np
 from stable_baselines3 import PPO
 
 from envs.pursuit_evasion_env import PursuitEvasionEnv
-from envs.rewards import RewardComputer
+from envs.rewards import RewardComputer, line_of_sight_blocked
 from envs.wrappers import FixedSpeedWrapper
 
 
@@ -39,7 +39,15 @@ def run_episode(pursuer_model, evader_model, env_kwargs, seed=None):
         evader_v_max=env_kwargs.get("evader_v_max", 1.0),
         n_obstacle_obs=env_kwargs.get("n_obstacle_obs", 2),
         reward_computer=reward_computer,
+        partial_obs=env_kwargs.get("partial_obs", False),
+        n_obstacles_min=env_kwargs.get("n_obstacles_min"),
+        n_obstacles_max=env_kwargs.get("n_obstacles_max"),
+        asymmetric_obs=env_kwargs.get("asymmetric_obs", False),
+        sensing_radius=env_kwargs.get("sensing_radius"),
+        combined_masking=env_kwargs.get("combined_masking", False),
     )
+    sensing_radius = env_kwargs.get("sensing_radius")
+
     if seed is not None:
         base_env.np_random = np.random.default_rng(seed)
 
@@ -48,12 +56,20 @@ def run_episode(pursuer_model, evader_model, env_kwargs, seed=None):
     pursuer_traj = []
     evader_traj = []
     obstacles = []
+    visibility = []  # per-step: (p_sees_e, e_sees_p, distance)
 
     pursuer_traj.append((base_env.pursuer_state[0], base_env.pursuer_state[1]))
     evader_traj.append((base_env.evader_state[0], base_env.evader_state[1]))
 
     for obs_obj in base_env.obstacles:
         obstacles.append((obs_obj["x"], obs_obj["y"], obs_obj["radius"]))
+
+    # Record initial visibility
+    dist = np.linalg.norm(base_env.pursuer_state[:2] - base_env.evader_state[:2])
+    in_range = (sensing_radius is None) or (dist <= sensing_radius)
+    los_clear = not line_of_sight_blocked(
+        base_env.pursuer_state[:2], base_env.evader_state[:2], base_env.obstacles)
+    visibility.append((in_range and los_clear, in_range and los_clear, dist))
 
     p_action_dim = pursuer_model.action_space.shape[0]
     e_action_dim = evader_model.action_space.shape[0]
@@ -86,17 +102,27 @@ def run_episode(pursuer_model, evader_model, env_kwargs, seed=None):
         evader_traj.append(
             (base_env.evader_state[0], base_env.evader_state[1]))
 
+        dist = np.linalg.norm(
+            base_env.pursuer_state[:2] - base_env.evader_state[:2])
+        in_range = (sensing_radius is None) or (dist <= sensing_radius)
+        los_clear = not line_of_sight_blocked(
+            base_env.pursuer_state[:2], base_env.evader_state[:2],
+            base_env.obstacles)
+        visibility.append((in_range and los_clear, in_range and los_clear, dist))
+
     base_env.close()
 
     return {
         "pursuer": np.array(pursuer_traj),
         "evader": np.array(evader_traj),
         "obstacles": obstacles,
+        "visibility": visibility,
         "steps": steps,
         "escaped": truncated,
         "captured": terminated,
         "arena_w": arena_w,
         "arena_h": arena_h,
+        "sensing_radius": sensing_radius,
     }
 
 
@@ -136,6 +162,7 @@ def make_grid_gif(episodes, output_path, title, fps=30, skip=3):
             p = ep["pursuer"]
             e = ep["evader"]
             n_pts = len(p)
+            sr = ep.get("sensing_radius")
 
             i = min(fi, n_pts - 1)
             ep_done = (i == n_pts - 1) and (fi >= n_pts - 1)
@@ -155,6 +182,19 @@ def make_grid_gif(episodes, output_path, title, fps=30, skip=3):
                     alpha=0.6, zorder=3,
                 ))
 
+            # Sensing radius circles
+            if sr is not None:
+                ax.add_patch(patches.Circle(
+                    (p[i, 0], p[i, 1]), sr,
+                    facecolor="none", edgecolor="red",
+                    linestyle=":", linewidth=0.7, alpha=0.4, zorder=2,
+                ))
+                ax.add_patch(patches.Circle(
+                    (e[i, 0], e[i, 1]), sr,
+                    facecolor="none", edgecolor="blue",
+                    linestyle=":", linewidth=0.7, alpha=0.4, zorder=2,
+                ))
+
             # Trail
             trail_start = max(0, i - 200)
             if i > 0:
@@ -163,15 +203,27 @@ def make_grid_gif(episodes, output_path, title, fps=30, skip=3):
                 ax.plot(e[trail_start:i+1, 0], e[trail_start:i+1, 1],
                         color="blue", linewidth=0.8, alpha=0.4)
 
+            # LOS / visibility line
+            vis = ep.get("visibility")
+            if vis is not None and i < len(vis):
+                p_sees_e, _, dist = vis[i]
+                if p_sees_e:
+                    ax.plot([p[i, 0], e[i, 0]], [p[i, 1], e[i, 1]],
+                            "-", color="lime", linewidth=1.0, alpha=0.5,
+                            zorder=4)
+                else:
+                    ax.plot([p[i, 0], e[i, 0]], [p[i, 1], e[i, 1]],
+                            "--", color="red", linewidth=0.7, alpha=0.3,
+                            zorder=4)
+            else:
+                ax.plot([p[i, 0], e[i, 0]], [p[i, 1], e[i, 1]],
+                        "--", color="gray", linewidth=0.5, alpha=0.4)
+
             # Current positions
             ax.plot(p[i, 0], p[i, 1], "o", color="red", markersize=8,
                     zorder=5)
             ax.plot(e[i, 0], e[i, 1], "s", color="blue", markersize=8,
                     zorder=5)
-
-            # Distance line
-            ax.plot([p[i, 0], e[i, 0]], [p[i, 1], e[i, 1]],
-                    "--", color="gray", linewidth=0.5, alpha=0.4)
 
             # Capture X
             if ep_done and ep["captured"]:
@@ -226,7 +278,22 @@ def main():
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--skip", type=int, default=4,
                         help="Only render every Nth step (default: 4)")
+    parser.add_argument("--partial_obs", action="store_true",
+                        help="Enable partial observability")
+    parser.add_argument("--n_obstacles_min", type=int, default=None,
+                        help="Minimum obstacle count (randomized)")
+    parser.add_argument("--n_obstacles_max", type=int, default=None,
+                        help="Maximum obstacle count (randomized)")
+    parser.add_argument("--asymmetric_obs", action="store_true",
+                        help="Asymmetric LOS: only pursuer is masked")
+    parser.add_argument("--sensing_radius", type=float, default=None,
+                        help="Radius-based sensing distance")
+    parser.add_argument("--combined_masking", action="store_true",
+                        help="Combined masking: radius + LOS")
     args = parser.parse_args()
+
+    n_obstacle_obs = (args.n_obstacles_max if args.n_obstacles_max is not None
+                      else args.n_obstacles)
 
     env_kwargs = {
         "arena_width": args.arena_width,
@@ -242,7 +309,13 @@ def main():
         "survival_bonus": 0.1,
         "timeout_penalty": 0.0,
         "capture_bonus": 5.0,
-        "n_obstacle_obs": args.n_obstacles,
+        "n_obstacle_obs": n_obstacle_obs,
+        "partial_obs": args.partial_obs,
+        "n_obstacles_min": args.n_obstacles_min,
+        "n_obstacles_max": args.n_obstacles_max,
+        "asymmetric_obs": args.asymmetric_obs,
+        "sensing_radius": args.sensing_radius,
+        "combined_masking": args.combined_masking,
     }
 
     print(f"Loading pursuer model: {args.pursuer_model}")
@@ -265,11 +338,22 @@ def main():
     print(f"\nCapture rate: {captures}/{args.n_episodes} "
           f"({captures/args.n_episodes:.0%})")
 
+    obs_label = ""
+    if args.partial_obs:
+        if args.sensing_radius and args.combined_masking:
+            obs_label = f"  |  Combined {args.sensing_radius:.0f}m+LOS"
+        elif args.sensing_radius:
+            obs_label = f"  |  Radius {args.sensing_radius:.0f}m"
+        else:
+            obs_label = "  |  LOS masking"
+
+    obs_range = (f"{args.n_obstacles_min}-{args.n_obstacles_max}"
+                 if args.n_obstacles_min is not None else str(args.n_obstacles))
     title = (
         f"Learned Pursuer vs Learned Evader (both 1.0x)  |  "
         f"{args.arena_width:.0f}x{args.arena_height:.0f} arena, "
-        f"{args.n_obstacles} obstacles  |  "
-        f"Captured: {captures}/{args.n_episodes}"
+        f"{obs_range} obstacles  |  "
+        f"Captured: {captures}/{args.n_episodes}{obs_label}"
     )
 
     make_grid_gif(episodes, args.output, title=title,

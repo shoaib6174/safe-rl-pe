@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-03-01 (S62)
+## Last Updated: 2026-03-02 (S65)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -73,6 +73,9 @@
 | 60 | 2026-03-01 | **Asymmetric Obs + Randomized Obstacles**: S1v4a (asymmetric LOS) peak 80%→20% final, S1v4b (symmetric) peak 73%→50% final. Late regression dominant problem. 5 new tests (727 pass). | [S60](worklogs/2026-03-01_S60.md) |
 | 61 | 2026-03-01 | **S1v5: Radius Sensing + Combined Masking**: Radius-based sensing (3.0m), combined masking mode (radius+LOS), sensing visualization script, best-model checkpointing. 9 new tests (736 pass). S1v5 (radius-only) + S1v5b (combined) launched on niro-2. | [S61](worklogs/2026-03-01_S61.md) | [S60](worklogs/2026-03-01_S60.md) |
 | 62 | 2026-03-01 | **S1v5c: Greedy Full Obs Fix**: `greedy_full_obs` flag gives greedy pursuer unmasked obs while evader stays under partial obs. Fixes inflated S1v5b escape rate (pursuer was also blinded). 2 new tests (738 pass). | [S62](worklogs/2026-03-01_S62.md) |
+| 63 | 2026-03-01 | **SP4: First Successful Cold-Start Self-Play**: Combined partial obs (3.0m+LOS) + variable obstacles (0-3). Best-model checkpointing + eval fix in amsdrl.py. Pursuer bootstrapped to 53% (M2550), min gap=0.02. 10M steps, 1.7h. | [S63](worklogs/2026-03-01_S63.md) |
+| 64 | 2026-03-02 | **SP4 Degenerate + Speed Diagnostics**: SP4 trajectory analysis — evader hides (0.20 m/s), no PE dynamics. S1v6 (1.05x) failed. **S1v6b (1.2x) holding 35-50%** — first viable speed+partial_obs config. | [S64](worklogs/2026-03-02_S64.md) |
+| 65 | 2026-03-02 | **SP5: Partial Warm-Seed + Launch Prep**: Implemented partial warm-seeding in `_warm_seed()` — load only evader (S1v6b), create pursuer from scratch. SP5 config: 1.2x speed, combined masking, 0-3 obstacles. | [S65](worklogs/2026-03-02_S65.md) |
 
 ## Paper Reading Status
 

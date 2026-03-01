@@ -856,16 +856,16 @@ class AMSDRLSelfPlay:
             if self.ne_gap_advancement:
                 print(f"  NE-gap advancement: threshold={self.ne_gap_threshold}, "
                       f"consecutive={self.ne_gap_consecutive}")
-            if self.init_pursuer_path and self.init_evader_path:
+            if self.init_pursuer_path or self.init_evader_path:
                 print(f"  Init mode: WARM-SEED (pre-trained models)")
-                print(f"    Pursuer: {self.init_pursuer_path}")
-                print(f"    Evader: {self.init_evader_path}")
+                print(f"    Pursuer: {self.init_pursuer_path or '(from scratch)'}")
+                print(f"    Evader: {self.init_evader_path or '(from scratch)'}")
             print(f"  Seed: {self.seed}")
             print(f"  Device: {self.device}")
             print("=" * 60)
 
         # ─── Phase S0: Cold-Start or Warm-Seed ───
-        if self.init_pursuer_path and self.init_evader_path:
+        if self.init_pursuer_path or self.init_evader_path:
             if self.verbose:
                 print("\n=== Phase S0: Warm-Seed (Loading Pre-trained Models) ===")
             self._warm_seed()
@@ -1032,20 +1032,96 @@ class AMSDRLSelfPlay:
     def _warm_seed(self):
         """Phase S0 alternative: load pre-trained models and seed opponent pools.
 
-        Used when init_pursuer_path and init_evader_path are provided.
-        Models are loaded directly via PPO.load() to preserve their
-        original architecture. Training hyperparameters (lr, ent_coef, etc.)
-        are overridden to match the self-play config.
+        Supports partial warm-seeding: if only one of init_pursuer_path or
+        init_evader_path is provided, the other model is created from scratch
+        (same as cold-start initialization). This enables scenarios like
+        seeding a trained evader while the pursuer bootstraps from random.
+
+        Models loaded via PPO.load() preserve their original architecture.
+        Training hyperparameters (lr, ent_coef, etc.) are overridden to match
+        the self-play config.
 
         The _run_micro_phases() method handles env attachment and n_envs
         mismatch via its save/reload cycle, so no environment setup is
         needed here.
         """
-        # Load pre-trained models directly (preserves architecture)
-        self.pursuer_model = PPO.load(
-            self.init_pursuer_path, device=self.device)
-        self.evader_model = PPO.load(
-            self.init_evader_path, device=self.device)
+        # Select build function based on obs mode (must match cold-start logic)
+        if self.full_obs:
+            build_fn = _build_full_obs_ppo
+            build_extra_kwargs = {}
+        else:
+            build_fn = _build_partial_obs_ppo
+            build_extra_kwargs = {
+                "encoder_type": self.encoder_type,
+                "encoder_kwargs": self.encoder_kwargs,
+            }
+
+        # --- Pursuer ---
+        if self.init_pursuer_path:
+            self.pursuer_model = PPO.load(
+                self.init_pursuer_path, device=self.device)
+            if self.verbose:
+                print(f"  Loaded pursuer from: {self.init_pursuer_path}")
+        else:
+            # Create pursuer from scratch (same as cold-start)
+            p_env, _ = _make_partial_obs_env(
+                role="pursuer",
+                use_dcbf=self.use_dcbf,
+                gamma=self.gamma,
+                history_length=self.history_length,
+                n_obstacles=self.n_obstacles,
+                full_obs=self.full_obs,
+                fixed_speed=self.fixed_speed,
+                **self.env_kwargs,
+            )
+            p_env = Monitor(p_env)
+            self.pursuer_model = build_fn(
+                p_env,
+                seed=self.seed,
+                device=self.device,
+                tensorboard_log=str(self.output_dir / "tb" / "pursuer"),
+                learning_rate=self.learning_rate,
+                ent_coef=self.ent_coef,
+                n_steps=self.n_steps,
+                batch_size=self.batch_size,
+                **build_extra_kwargs,
+            )
+            p_env.close()
+            if self.verbose:
+                print("  Created pursuer from scratch (no init path)")
+
+        # --- Evader ---
+        if self.init_evader_path:
+            self.evader_model = PPO.load(
+                self.init_evader_path, device=self.device)
+            if self.verbose:
+                print(f"  Loaded evader from: {self.init_evader_path}")
+        else:
+            # Create evader from scratch (same as cold-start)
+            e_env, _ = _make_partial_obs_env(
+                role="evader",
+                use_dcbf=False,
+                history_length=self.history_length,
+                n_obstacles=self.n_obstacles,
+                full_obs=self.full_obs,
+                fixed_speed=self.fixed_speed,
+                **self.env_kwargs,
+            )
+            e_env = Monitor(e_env)
+            self.evader_model = build_fn(
+                e_env,
+                seed=self.seed + 1,
+                device=self.device,
+                tensorboard_log=str(self.output_dir / "tb" / "evader"),
+                learning_rate=self.learning_rate,
+                ent_coef=self.ent_coef,
+                n_steps=self.n_steps,
+                batch_size=self.batch_size,
+                **build_extra_kwargs,
+            )
+            e_env.close()
+            if self.verbose:
+                print("  Created evader from scratch (no init path)")
 
         # Override training hyperparameters to match self-play config
         for model, role in [(self.pursuer_model, "pursuer"),
@@ -1058,8 +1134,6 @@ class AMSDRLSelfPlay:
             model.seed = self.seed if role == "pursuer" else self.seed + 1
 
         if self.verbose:
-            print(f"  Loaded pursuer from: {self.init_pursuer_path}")
-            print(f"  Loaded evader from: {self.init_evader_path}")
             print(f"  Overridden: lr={self.learning_rate}, "
                   f"ent_coef={self.ent_coef}, "
                   f"n_steps={self.n_steps}, batch_size={self.batch_size}")
@@ -1072,7 +1146,7 @@ class AMSDRLSelfPlay:
             model=self.evader_model, phase=0, role="evader",
         )
 
-        # Seed opponent pools with the pre-trained models
+        # Seed opponent pools with the initial models
         if self.opponent_pool_size > 0:
             self._save_micro_snapshot("pursuer", 0)
             self._save_micro_snapshot("evader", 0)
@@ -1081,7 +1155,7 @@ class AMSDRLSelfPlay:
                       f"E:{len(self.evader_pool)})")
 
         if self.verbose:
-            print("  Warm-seed complete: both models loaded from checkpoints")
+            print("  Warm-seed complete")
 
     def _cold_start(self):
         """Phase S0: Pre-train evader with NavigationEnv (or init both for full-obs)."""
