@@ -49,6 +49,7 @@ Partial observability fundamentally changes the game: the evader can now exploit
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Sensor model | 120 deg FOV + lidar | Realistic for ground robots; matches [02] |
+| **Sensing modes** | **LOS, radius-based, combined** | **LOS: obstacle occlusion. Radius: distance-based (obstacle-independent). Combined: both constraints (most realistic). See §1.5.** |
 | Belief encoder | BiMDN (Bidirectional MDN) | Handles multimodal uncertainty; proven in [02] |
 | Safety layer | PPO + post-hoc DCBF filter (gamma=0.2) | Phase 2.5 decision: standard PPO + DCBF dominates BarrierNet/CBF-Beta |
 | Self-play protocol | AMS-DRL (alternating) [18]; simultaneous comparison optional [N06] | NE convergence guarantee; simpler alternative if time permits |
@@ -65,6 +66,34 @@ Partial observability fundamentally changes the game: the evader can now exploit
 | Self-play infrastructure (Phase 1) | Upgraded to AMS-DRL protocol |
 | VCP-CBF formulation (Phase 2) | DCBF variant used; operates on true state, not agent observations |
 | Baseline results (Phase 1-2.5) | Comparison with partial-obs performance; DCBF baseline: 100% capture, 3.57% violations, 6.6% intervention |
+
+### 1.5 Implemented Sensing Modes (S60-S61)
+
+Three partial observability sensing modes have been implemented in `PursuitEvasionEnv`:
+
+| Mode | Params | Masking Rule | Properties |
+|------|--------|-------------|------------|
+| **LOS-only** | `partial_obs=True` | Masked when obstacle occludes line-of-sight | Obstacle-dependent; no effect in open space |
+| **Radius-only** | `partial_obs=True, sensing_radius=R` | Masked when distance > R | Obstacle-independent; sees through walls |
+| **Combined** | `partial_obs=True, sensing_radius=R, combined_masking=True` | Masked when distance > R **or** LOS blocked | Most realistic; requires proximity AND clear sightline |
+
+**Asymmetric observability** (`asymmetric_obs=True`): Only the pursuer is masked; evader always has full opponent visibility. Creates information asymmetry for strategic evasion.
+
+**Observation vector** (when `partial_obs=True`): 15 + 2K dims (K = `n_obstacle_obs`)
+- Index 14: `los_visible` flag (1.0 = opponent visible, 0.0 = masked)
+- When masked: opponent position/distance/bearing features zeroed
+
+**Diagnostic results** (evader vs greedy pursuer, 5M steps, 10x10 arena):
+| Run | Mode | Peak Escape | Final Escape | Notes |
+|-----|------|------------|-------------|-------|
+| S1v2b | Full obs | 98% | 98% | Baseline |
+| S1v3 | LOS-only | 56% | 56% | Plateau |
+| S1v4a | Asymmetric LOS | 80% | 20% | Late regression (-60pp) |
+| S1v4b | Symmetric LOS | 73% | 50% | Late regression (-23pp) |
+| S1v5 | Radius 3.0m | 88%+ | Running | Best-model checkpointing enabled |
+| S1v5b | Combined 3.0m | — | Running | Best-model checkpointing enabled |
+
+**Best-model checkpointing** (added S61): Saves `evader_best.zip` whenever escape rate exceeds previous best. Prevents the late-regression problem that plagued S1v4a/b.
 
 ---
 

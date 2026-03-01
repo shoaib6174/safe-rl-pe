@@ -6,6 +6,20 @@ Research project on **safe deep reinforcement learning** for **1v1 ground robot 
 
 ```
 safe-rl-pe/
+├── envs/                        # Gymnasium environments
+│   ├── pursuit_evasion_env.py   # Core PE env with sensing modes
+│   ├── observations.py          # ObservationBuilder (full/partial obs)
+│   ├── dynamics.py              # Unicycle dynamics
+│   └── rewards.py               # Reward functions
+├── training/                    # Training infrastructure
+│   ├── amsdrl.py                # AMS-DRL self-play orchestrator
+│   └── opponent_pool.py         # Opponent pool with PFSP sampling
+├── scripts/                     # Runnable scripts
+│   ├── train_evader_vs_greedy.py # Diagnostic training
+│   ├── train_amsdrl.py          # Self-play training
+│   ├── visualize_grid_gif.py    # Episode visualization
+│   └── visualize_sensing.py     # Sensing mode visualization
+├── tests/                       # Test suite (736+ tests)
 ├── docs/
 │   ├── literature-review/       # Paper summaries and comprehensive review
 │   ├── pathway/                 # Pathway A: research plan and validation
@@ -58,6 +72,39 @@ safe-rl-pe/
 | Document | Description |
 |----------|-------------|
 | [Workflow Tracker](docs/workflow_tracker.md) | Session log, paper reading status, research pathways |
+
+## Implementation Status
+
+### Environment (`envs/`)
+- **PursuitEvasionEnv**: Gymnasium-based 1v1 PE with unicycle dynamics, circular obstacles, arena boundaries
+- **Observation modes**: Full observability, LOS-based partial obs, radius-based sensing, combined (radius + LOS)
+- **ObservationBuilder**: Configurable obs vectors — 14+2K dims (full) or 15+2K dims (partial, +1 for `los_visible` flag)
+- **Sensing parameters**: `partial_obs`, `sensing_radius`, `combined_masking`, `asymmetric_obs`
+
+### Training (`training/`, `scripts/`)
+| Script | Purpose |
+|--------|---------|
+| `scripts/train_evader_vs_greedy.py` | Diagnostic: evader vs greedy pursuer. Best-model checkpointing. |
+| `scripts/train_amsdrl.py` | AMS-DRL self-play with opponent pool, PFSP, collapse rollback |
+| `scripts/visualize_grid_gif.py` | Animated GIF of episode rollouts |
+| `scripts/visualize_sensing.py` | Sensing visualization: radius circles, LOS lines, visibility status |
+
+### Sensing Modes
+| Mode | Flag | Behavior |
+|------|------|----------|
+| **Full obs** | (default) | Both agents see everything |
+| **LOS-only** | `--partial_obs` | Opponent masked when occluded by obstacles |
+| **Radius-only** | `--partial_obs --sensing_radius 3.0` | Opponent masked when distance > radius (sees through obstacles) |
+| **Combined** | `--partial_obs --sensing_radius 3.0 --combined_masking` | Opponent must be within radius AND have clear LOS |
+
+### Key Results (Phase 3 diagnostics)
+| Run | Mode | Escape Rate |
+|-----|------|-------------|
+| S1v2b | Full obs | 98% |
+| S1v3 | LOS-only | 56% |
+| S1v4a | Asymmetric LOS | 80% peak → 20% final |
+| S1v5 | Radius 3.0m | 88% peak (running) |
+| S1v5b | Combined 3.0m | Running |
 
 ## Research Summary
 

@@ -32,6 +32,7 @@ class SingleAgentPEWrapper(gym.Env):
         env,
         role: str = "pursuer",
         opponent_policy=None,
+        greedy_full_obs: bool = False,
     ):
         super().__init__()
 
@@ -41,6 +42,7 @@ class SingleAgentPEWrapper(gym.Env):
         self.env = env
         self.role = role
         self.opponent_policy = opponent_policy
+        self.greedy_full_obs = greedy_full_obs
         self._last_obs = None
 
         # Set action and observation spaces
@@ -70,6 +72,17 @@ class SingleAgentPEWrapper(gym.Env):
         # Get opponent observation
         opp_role = "evader" if self.role == "pursuer" else "pursuer"
         opp_obs = self._last_obs[opp_role]
+
+        # Override: give greedy pursuer an unmasked observation
+        if self.greedy_full_obs and self.role == "evader" and self.opponent_policy is not None:
+            opp_obs = self.env.obs_builder.build(
+                self_state=self.env.pursuer_state,
+                self_action=self.env.pursuer_action,
+                opp_state=self.env.evader_state,
+                opp_action=self.env.evader_action,
+                obstacles=self.env.obstacles,
+                los_blocked=False,
+            )
 
         # Get opponent action
         if self.opponent_policy is None:

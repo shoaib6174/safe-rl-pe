@@ -526,3 +526,29 @@ Stuck at curriculum level?
 | **New additions** | **22-55h** | | **Asymmetric (20-50h) + interpretability (2-5h)** |
 
 Spending 15-24h on validation to derisk 200-350h of compute is a 10-15× return on investment.
+
+---
+
+## Appendix: Diagnostic Runs (S1 Series)
+
+These single-agent diagnostic runs (`train_evader_vs_greedy.py`) validate partial observability components before self-play integration.
+
+### Completed Runs
+| Run | Mode | Config | Peak | Final | Session |
+|-----|------|--------|------|-------|---------|
+| S1v2b | Full obs | Variable speed, 2 obs, ent_coef=0.03 | 98% | 98% | S59 |
+| S1v3 | LOS-only | Same + `--partial_obs` | 56% | 56% | S59 |
+| S1v4a | Asymmetric LOS | + `--asymmetric_obs --n_obstacles_min 1` | 80% | 20% | S60 |
+| S1v4b | Symmetric LOS | + `--n_obstacles_min 1` | 73% | 50% | S60 |
+
+### Active Runs (S61)
+| Run | Mode | Config | Status |
+|-----|------|--------|--------|
+| S1v5 | Radius 3.0m | `--sensing_radius 3.0` | Peaked 88% at 1.55M |
+| S1v5b | Combined 3.0m | `--sensing_radius 3.0 --combined_masking` | Running |
+
+### Key Learnings
+1. **Best-model checkpointing** (added S61): Saves `evader_best.zip` when escape rate exceeds previous best. Prevents S1v4a/b-style late regression.
+2. **Partial obs hurts evader vs greedy**: Greedy pursuer doesn't exploit information asymmetry, so masking mainly hurts the evader.
+3. **Radius sensing outperforms LOS-only**: S1v5 peaked at 88% vs S1v3's 56% plateau. Creates search dynamics independent of obstacles.
+4. **Three sensing modes available**: LOS-only, radius-only, combined (radius + LOS). See Phase 3 spec §1.5.

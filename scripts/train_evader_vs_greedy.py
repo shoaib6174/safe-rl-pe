@@ -59,12 +59,14 @@ def _make_base_env(env_kwargs):
     )
 
 
-def make_env(seed, greedy_pursuer, env_kwargs, fixed_speed=False):
+def make_env(seed, greedy_pursuer, env_kwargs, fixed_speed=False,
+             greedy_full_obs=False):
     """Create a single evader env with greedy pursuer opponent."""
     def _init():
         base_env = _make_base_env(env_kwargs)
         single_env = SingleAgentPEWrapper(
             base_env, role="evader", opponent_policy=greedy_pursuer,
+            greedy_full_obs=greedy_full_obs,
         )
         env = single_env
         if fixed_speed:
@@ -74,11 +76,12 @@ def make_env(seed, greedy_pursuer, env_kwargs, fixed_speed=False):
 
 
 def evaluate(model, greedy_pursuer, env_kwargs, n_episodes=100,
-             fixed_speed=False):
+             fixed_speed=False, greedy_full_obs=False):
     """Evaluate evader escape rate against greedy pursuer."""
     base_env = _make_base_env(env_kwargs)
     single_env = SingleAgentPEWrapper(
         base_env, role="evader", opponent_policy=greedy_pursuer,
+        greedy_full_obs=greedy_full_obs,
     )
     env = single_env
     if fixed_speed:
@@ -157,6 +160,9 @@ def main():
     parser.add_argument("--combined_masking", action="store_true",
                         help="Combined masking: require both in-range AND clear LOS. "
                              "Use with --sensing_radius and --partial_obs.")
+    parser.add_argument("--greedy_full_obs", action="store_true",
+                        help="Give greedy pursuer unmasked observations (full obs) "
+                             "even when partial_obs is enabled for the evader.")
     args = parser.parse_args()
 
     output_dir = Path(args.output)
@@ -221,6 +227,8 @@ def main():
             masking_type = "LOS"
         obs_mode = "ASYMMETRIC (pursuer only)" if args.asymmetric_obs else "SYMMETRIC (both agents)"
         print(f"  Partial obs: {masking_type} masking {obs_mode}")
+        greedy_obs_mode = "FULL (unmasked)" if args.greedy_full_obs else "MASKED (same as evader)"
+        print(f"  Greedy obs: {greedy_obs_mode}")
     print(f"  Max episode steps: {args.max_steps}")
     print(f"  Total training: {args.total_steps:,} steps")
     print(f"  Eval every: {args.eval_freq:,} steps")
@@ -237,7 +245,19 @@ def main():
         done = False
         ep_steps = 0
         while not done:
-            p_action = greedy_pursuer.predict(obs["pursuer"])[0]
+            # Give greedy pursuer unmasked obs if greedy_full_obs is set
+            if args.greedy_full_obs:
+                p_obs = base_env_test.obs_builder.build(
+                    self_state=base_env_test.pursuer_state,
+                    self_action=base_env_test.pursuer_action,
+                    opp_state=base_env_test.evader_state,
+                    opp_action=base_env_test.evader_action,
+                    obstacles=base_env_test.obstacles,
+                    los_blocked=False,
+                )
+            else:
+                p_obs = obs["pursuer"]
+            p_action = greedy_pursuer.predict(p_obs)[0]
             e_action = np.array([args.evader_v_max,
                                  np.random.uniform(-2.84, 2.84)],
                                 dtype=np.float32)
@@ -255,7 +275,8 @@ def main():
     # Create vectorized training env
     vec_env = DummyVecEnv([
         make_env(args.seed + i, greedy_pursuer, env_kwargs,
-                 fixed_speed=args.fixed_speed)
+                 fixed_speed=args.fixed_speed,
+                 greedy_full_obs=args.greedy_full_obs)
         for i in range(args.n_envs)
     ])
     vec_env = VecMonitor(vec_env)
@@ -293,7 +314,8 @@ def main():
 
         escape_rate, avg_steps = evaluate(
             model, greedy_pursuer, env_kwargs, n_episodes=100,
-            fixed_speed=args.fixed_speed)
+            fixed_speed=args.fixed_speed,
+            greedy_full_obs=args.greedy_full_obs)
         elapsed = time.time() - start_time
 
         # Best-model checkpointing

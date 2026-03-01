@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-03-01 (S61)
+## Last Updated: 2026-03-01 (S62)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -72,6 +72,7 @@
 | 59 | 2026-03-01 | **Variable Speed Self-Play**: S1v2b evader 98% escape. SP2+B+C+D all failed (pursuer can't bootstrap in self-play). Run A pursuer training hit 94% capture. Launched SP3: warm-seeded self-play starting at 49/51 balance. | [S59](worklogs/2026-03-01_S59.md) |
 | 60 | 2026-03-01 | **Asymmetric Obs + Randomized Obstacles**: S1v4a (asymmetric LOS) peak 80%→20% final, S1v4b (symmetric) peak 73%→50% final. Late regression dominant problem. 5 new tests (727 pass). | [S60](worklogs/2026-03-01_S60.md) |
 | 61 | 2026-03-01 | **S1v5: Radius Sensing + Combined Masking**: Radius-based sensing (3.0m), combined masking mode (radius+LOS), sensing visualization script, best-model checkpointing. 9 new tests (736 pass). S1v5 (radius-only) + S1v5b (combined) launched on niro-2. | [S61](worklogs/2026-03-01_S61.md) | [S60](worklogs/2026-03-01_S60.md) |
+| 62 | 2026-03-01 | **S1v5c: Greedy Full Obs Fix**: `greedy_full_obs` flag gives greedy pursuer unmasked obs while evader stays under partial obs. Fixes inflated S1v5b escape rate (pursuer was also blinded). 2 new tests (738 pass). | [S62](worklogs/2026-03-01_S62.md) |
 
 ## Paper Reading Status
 

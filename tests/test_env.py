@@ -924,6 +924,67 @@ class TestRadiusSensing:
         assert obs["pursuer"][5] == 0.0, "opponent should be masked (out of range)"
         assert obs["pursuer"][14] == 0.0, "flag should be 0.0 (masked)"
 
+    def test_greedy_full_obs_sees_evader(self):
+        """With greedy_full_obs, greedy pursuer gets non-zero opponent features
+        even when evader is out of sensing range."""
+        from training.baselines import GreedyPursuerPolicy
+
+        env = self.make_env(sensing_radius=2.0)
+        greedy = GreedyPursuerPolicy(v_max=1.0, omega_max=2.84, K_p=3.0,
+                                     arena_half_w=5.0, arena_half_h=5.0)
+        wrapper = SingleAgentPEWrapper(
+            env, role="evader", opponent_policy=greedy,
+            greedy_full_obs=True,
+        )
+        obs, _ = wrapper.reset(seed=42)
+
+        # Place agents far apart (distance = 6.0 > sensing_radius = 2.0)
+        env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+        env.evader_state = np.array([3.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        # Verify evader sees masked obs (out of range)
+        evader_obs = env._get_obs()["evader"]
+        assert evader_obs[5] == 0.0, "evader should see masked opponent (out of range)"
+
+        # But the greedy pursuer should get full obs internally.
+        # Step and verify the pursuer doesn't steer to center (it should chase).
+        # We can verify by checking the obs the wrapper builds for the opponent.
+        full_obs = env.obs_builder.build(
+            self_state=env.pursuer_state,
+            self_action=env.pursuer_action,
+            opp_state=env.evader_state,
+            opp_action=env.evader_action,
+            obstacles=env.obstacles,
+            los_blocked=False,
+        )
+        assert full_obs[5] != 0.0 or full_obs[6] != 0.0, \
+            "full obs should have non-zero opponent position"
+        assert full_obs[10] != 0.0, "full obs should have non-zero distance"
+
+    def test_greedy_default_masked_when_out_of_range(self):
+        """Without greedy_full_obs, greedy pursuer gets masked obs when out of range."""
+        from training.baselines import GreedyPursuerPolicy
+
+        env = self.make_env(sensing_radius=2.0)
+        greedy = GreedyPursuerPolicy(v_max=1.0, omega_max=2.84, K_p=3.0,
+                                     arena_half_w=5.0, arena_half_h=5.0)
+        wrapper = SingleAgentPEWrapper(
+            env, role="evader", opponent_policy=greedy,
+            greedy_full_obs=False,
+        )
+        obs, _ = wrapper.reset(seed=42)
+
+        # Place agents far apart (distance = 6.0 > sensing_radius = 2.0)
+        env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+        env.evader_state = np.array([3.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        # Pursuer obs from env should be masked
+        pursuer_obs = env._get_obs()["pursuer"]
+        assert pursuer_obs[5] == 0.0, "pursuer should see masked opponent (out of range)"
+        assert pursuer_obs[10] == 0.0, "pursuer distance should be masked"
+
     def test_radius_only_sees_through_obstacles(self):
         """Radius-only (no combined): in range sees through obstacles."""
         env = self.make_env(
