@@ -40,6 +40,7 @@ def run_episode(model, greedy_pursuer, env_kwargs, seed=None):
         evader_v_max=env_kwargs.get("evader_v_max", 1.0),
         n_obstacle_obs=env_kwargs.get("n_obstacle_obs", 2),
         reward_computer=reward_computer,
+        partial_obs=env_kwargs.get("partial_obs", False),
     )
     if seed is not None:
         base_env.np_random = np.random.default_rng(seed)
@@ -219,6 +220,8 @@ def main():
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--skip", type=int, default=4,
                         help="Only render every Nth step (default: 4)")
+    parser.add_argument("--partial_obs", action="store_true",
+                        help="Enable LOS-based partial observability")
     args = parser.parse_args()
 
     env_kwargs = {
@@ -236,6 +239,7 @@ def main():
         "timeout_penalty": 0.0,
         "capture_bonus": 5.0,
         "n_obstacle_obs": args.n_obstacles,
+        "partial_obs": args.partial_obs,
     }
 
     greedy_pursuer = GreedyPursuerPolicy(
