@@ -68,6 +68,7 @@ class PursuitEvasionEnv(gym.Env):
         n_obstacles_min: int | None = None,
         n_obstacles_max: int | None = None,
         asymmetric_obs: bool = False,
+        sensing_radius: float | None = None,
     ):
         super().__init__()
 
@@ -114,6 +115,9 @@ class PursuitEvasionEnv(gym.Env):
 
         # Phase 3: Asymmetric obs (only pursuer is LOS-masked, evader keeps full obs)
         self.asymmetric_obs = asymmetric_obs
+
+        # Phase 3: Radius-based sensing (mask opponent if beyond sensing_radius)
+        self.sensing_radius = sensing_radius
 
         # Reward computer (allow injection for SafetyRewardComputer)
         arena_diagonal = np.sqrt(arena_width**2 + arena_height**2)
@@ -514,15 +518,21 @@ class PursuitEvasionEnv(gym.Env):
 
     def _get_obs(self) -> dict:
         """Build observations for both agents."""
-        # Phase 3: compute LOS for partial observability
-        los_blocked = False
+        # Phase 3: compute masking for partial observability
+        masked = False
         if self.partial_obs:
-            los_blocked = line_of_sight_blocked(
-                self.pursuer_state, self.evader_state, self.obstacles,
-            )
+            if self.sensing_radius is not None:
+                # Radius-based sensing: mask if distance > sensing_radius
+                distance = self._compute_distance()
+                masked = distance > self.sensing_radius
+            else:
+                # LOS-based: mask if obstacle blocks line of sight
+                masked = line_of_sight_blocked(
+                    self.pursuer_state, self.evader_state, self.obstacles,
+                )
 
         # Asymmetric obs: only pursuer is masked, evader always has full info
-        evader_los_blocked = False if self.asymmetric_obs else los_blocked
+        evader_masked = False if self.asymmetric_obs else masked
 
         obs_pursuer = self.obs_builder.build(
             self_state=self.pursuer_state,
@@ -530,7 +540,7 @@ class PursuitEvasionEnv(gym.Env):
             opp_state=self.evader_state,
             opp_action=self.evader_action,
             obstacles=self.obstacles,
-            los_blocked=los_blocked,
+            los_blocked=masked,
         )
         obs_evader = self.obs_builder.build(
             self_state=self.evader_state,
@@ -538,7 +548,7 @@ class PursuitEvasionEnv(gym.Env):
             opp_state=self.pursuer_state,
             opp_action=self.pursuer_action,
             obstacles=self.obstacles,
-            los_blocked=evader_los_blocked,
+            los_blocked=evader_masked,
         )
         return {"pursuer": obs_pursuer, "evader": obs_evader}
 

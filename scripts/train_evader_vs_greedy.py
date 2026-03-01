@@ -54,6 +54,7 @@ def _make_base_env(env_kwargs):
         n_obstacles_min=env_kwargs.get("n_obstacles_min"),
         n_obstacles_max=env_kwargs.get("n_obstacles_max"),
         asymmetric_obs=env_kwargs.get("asymmetric_obs", False),
+        sensing_radius=env_kwargs.get("sensing_radius"),
     )
 
 
@@ -149,6 +150,9 @@ def main():
     parser.add_argument("--asymmetric_obs", action="store_true",
                         help="Asymmetric LOS: only pursuer is masked, evader keeps "
                              "full observability.")
+    parser.add_argument("--sensing_radius", type=float, default=None,
+                        help="Radius-based sensing: mask opponent if distance > radius. "
+                             "None = no radius masking (use LOS if --partial_obs).")
     args = parser.parse_args()
 
     output_dir = Path(args.output)
@@ -176,6 +180,7 @@ def main():
         "n_obstacles_min": args.n_obstacles_min,
         "n_obstacles_max": args.n_obstacles_max,
         "asymmetric_obs": args.asymmetric_obs,
+        "sensing_radius": args.sensing_radius,
     }
 
     # Create greedy pursuer opponent
@@ -203,8 +208,12 @@ def main():
     print(f"  Timeout penalty: {args.timeout_penalty}")
     print(f"  Entropy coef: {args.ent_coef}")
     if args.partial_obs:
+        if args.sensing_radius is not None:
+            masking_type = f"RADIUS {args.sensing_radius:.1f}m"
+        else:
+            masking_type = "LOS"
         obs_mode = "ASYMMETRIC (pursuer only)" if args.asymmetric_obs else "SYMMETRIC (both agents)"
-        print(f"  Partial obs: LOS masking {obs_mode}")
+        print(f"  Partial obs: {masking_type} masking {obs_mode}")
     print(f"  Max episode steps: {args.max_steps}")
     print(f"  Total training: {args.total_steps:,} steps")
     print(f"  Eval every: {args.eval_freq:,} steps")
@@ -266,6 +275,8 @@ def main():
     start_time = time.time()
     steps_trained = 0
     log_data = []
+    best_escape_rate = 0.0
+    best_escape_step = 0
 
     while steps_trained < args.total_steps:
         chunk = min(args.eval_freq, args.total_steps - steps_trained)
@@ -278,15 +289,25 @@ def main():
             fixed_speed=args.fixed_speed)
         elapsed = time.time() - start_time
 
+        # Best-model checkpointing
+        is_best = escape_rate > best_escape_rate
+        if is_best:
+            best_escape_rate = escape_rate
+            best_escape_step = steps_trained
+            model.save(str(output_dir / "evader_best"))
+
         log_data.append({
             "steps": steps_trained,
             "escape_rate": escape_rate,
             "avg_ep_len": avg_steps,
             "elapsed": elapsed,
+            "best_escape_rate": best_escape_rate,
+            "best_escape_step": best_escape_step,
         })
 
+        best_marker = " *BEST*" if is_best else ""
         print(f"{steps_trained:>10,} | {escape_rate:>11.3f} | "
-              f"{avg_steps:>10.1f} | {elapsed/60:>5.1f}m")
+              f"{avg_steps:>10.1f} | {elapsed/60:>5.1f}m{best_marker}")
 
     vec_env.close()
 
@@ -299,6 +320,7 @@ def main():
     print(f"\n{'=' * 60}")
     print(f"Training complete in {elapsed/60:.1f}m")
     print(f"Final escape rate: {log_data[-1]['escape_rate']:.3f}")
+    print(f"Best escape rate:  {best_escape_rate:.3f} (at step {best_escape_step:,})")
     print(f"Results saved to: {output_dir}")
     print(f"{'=' * 60}")
 

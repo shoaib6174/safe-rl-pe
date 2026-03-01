@@ -745,3 +745,111 @@ class TestPartialObsLOS:
         for seed in range(10):
             env.reset(seed=seed)
             assert len(env.obstacles) == 2
+
+
+class TestRadiusSensing:
+    """Tests for radius-based sensing (sensing_radius param)."""
+
+    def make_env(self, **kwargs):
+        defaults = dict(
+            arena_width=10.0,
+            arena_height=10.0,
+            max_steps=600,
+            capture_radius=0.5,
+            n_obstacles=0,
+            n_obstacle_obs=0,
+            partial_obs=True,
+        )
+        defaults.update(kwargs)
+        return PursuitEvasionEnv(**defaults)
+
+    def test_radius_masks_when_far(self):
+        """Opponent features should be zeroed when distance > sensing_radius."""
+        env = self.make_env(sensing_radius=2.0)
+        env.reset(seed=42)
+
+        # Place agents far apart (distance = 6.0 > sensing_radius = 2.0)
+        env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+        env.evader_state = np.array([3.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        obs = env._get_obs()
+        p_obs = obs["pursuer"]
+        # Opponent features (idx 5-11) should be zeroed
+        assert p_obs[5] == 0.0, "x_opp should be masked"
+        assert p_obs[6] == 0.0, "y_opp should be masked"
+        assert p_obs[7] == 0.0, "theta_opp should be masked"
+        assert p_obs[8] == 0.0, "v_opp should be masked"
+        assert p_obs[9] == 0.0, "omega_opp should be masked"
+        assert p_obs[10] == 0.0, "distance should be masked"
+        assert p_obs[11] == 0.0, "bearing should be masked"
+
+    def test_radius_visible_when_close(self):
+        """Opponent features should be present when distance <= sensing_radius."""
+        env = self.make_env(sensing_radius=5.0)
+        env.reset(seed=42)
+
+        # Place agents close (distance = 2.0 < sensing_radius = 5.0)
+        env.pursuer_state = np.array([-1.0, 0.0, 0.0])
+        env.evader_state = np.array([1.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        obs = env._get_obs()
+        p_obs = obs["pursuer"]
+        # Opponent position should be visible (non-zero)
+        assert p_obs[5] != 0.0 or p_obs[6] != 0.0, "opponent position should be visible"
+        assert p_obs[10] != 0.0, "distance should be visible"
+
+    def test_radius_flag_value(self):
+        """los_visible flag (idx 14) = 0.0 when out of range, 1.0 when in range."""
+        env = self.make_env(sensing_radius=3.0)
+        env.reset(seed=42)
+
+        # Far apart: out of range
+        env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+        env.evader_state = np.array([3.0, 0.0, np.pi])
+        obs = env._get_obs()
+        assert obs["pursuer"][14] == 0.0, "flag should be 0.0 when out of range"
+
+        # Close: in range
+        env.pursuer_state = np.array([-1.0, 0.0, 0.0])
+        env.evader_state = np.array([1.0, 0.0, np.pi])
+        obs = env._get_obs()
+        assert obs["pursuer"][14] == 1.0, "flag should be 1.0 when in range"
+
+    def test_radius_none_no_masking(self):
+        """sensing_radius=None with partial_obs=False should not mask."""
+        env = self.make_env(partial_obs=False, sensing_radius=None)
+        env.reset(seed=42)
+
+        # Place agents far apart
+        env.pursuer_state = np.array([-4.0, 0.0, 0.0])
+        env.evader_state = np.array([4.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        obs = env._get_obs()
+        p_obs = obs["pursuer"]
+        # With partial_obs=False, nothing should be masked
+        assert p_obs[5] != 0.0 or p_obs[6] != 0.0, "opponent should be visible"
+        assert p_obs[10] != 0.0, "distance should be visible"
+
+    def test_radius_with_asymmetric(self):
+        """With asymmetric_obs, evader always sees even when out of radius."""
+        env = self.make_env(sensing_radius=2.0, asymmetric_obs=True)
+        env.reset(seed=42)
+
+        # Place agents far apart (distance = 6.0 > sensing_radius = 2.0)
+        env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+        env.evader_state = np.array([3.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        obs = env._get_obs()
+        # Pursuer should be masked (out of range)
+        assert obs["pursuer"][5] == 0.0, "pursuer's view of opponent should be masked"
+        assert obs["pursuer"][14] == 0.0, "pursuer flag should be 0.0"
+
+        # Evader should NOT be masked (asymmetric: evader always sees)
+        e_obs = obs["evader"]
+        assert e_obs[5] != 0.0 or e_obs[6] != 0.0, "evader should see opponent"
+        assert e_obs[10] != 0.0, "evader should see distance"
+        assert e_obs[14] == 1.0, "evader flag should be 1.0"
