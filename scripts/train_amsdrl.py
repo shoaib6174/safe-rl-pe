@@ -133,6 +133,9 @@ def parse_args():
     parser.add_argument("--sensing_radius", type=float, default=None,
                         help="Radius-based sensing: mask opponent if distance > radius. "
                              "None = no radius masking.")
+    parser.add_argument("--combined_masking", action="store_true", default=False,
+                        help="Combined masking: require both in-range AND clear LOS. "
+                             "Use with --sensing_radius and --partial_obs_los.")
 
     # PBRS obstacle-seeking
     parser.add_argument("--w_obs_approach", type=float, default=0.0,
@@ -373,6 +376,7 @@ def main():
         n_obstacles_max=args.n_obstacles_max,
         asymmetric_obs=args.asymmetric_obs,
         sensing_radius=args.sensing_radius,
+        combined_masking=args.combined_masking,
     )
 
     result = amsdrl.run()

@@ -853,3 +853,95 @@ class TestRadiusSensing:
         assert e_obs[5] != 0.0 or e_obs[6] != 0.0, "evader should see opponent"
         assert e_obs[10] != 0.0, "evader should see distance"
         assert e_obs[14] == 1.0, "evader flag should be 1.0"
+
+    def test_combined_masks_when_los_blocked_even_in_range(self):
+        """Combined: in range but LOS blocked -> masked."""
+        env = self.make_env(
+            sensing_radius=10.0,  # large radius, agents will be in range
+            combined_masking=True,
+            n_obstacles=1,
+            n_obstacle_obs=1,
+        )
+        env.reset(seed=42)
+
+        # Place agents with obstacle between them (in range but LOS blocked)
+        env.pursuer_state = np.array([-2.0, 0.0, 0.0])
+        env.evader_state = np.array([2.0, 0.0, np.pi])
+        env.obstacles = [{"x": 0.0, "y": 0.0, "radius": 1.0}]
+        env.prev_distance = env._compute_distance()
+
+        # Distance = 4.0 < sensing_radius = 10.0 (in range)
+        # But LOS is blocked by obstacle at origin
+        from envs.rewards import line_of_sight_blocked
+        assert line_of_sight_blocked(
+            env.pursuer_state, env.evader_state, env.obstacles
+        ), "LOS should be blocked by obstacle"
+
+        obs = env._get_obs()
+        # Combined: in_range=True but los_blocked=True -> masked
+        assert obs["pursuer"][5] == 0.0, "opponent should be masked (LOS blocked)"
+        assert obs["pursuer"][14] == 0.0, "flag should be 0.0 (masked)"
+
+    def test_combined_visible_when_in_range_and_los_clear(self):
+        """Combined: in range and LOS clear -> visible."""
+        env = self.make_env(
+            sensing_radius=10.0,
+            combined_masking=True,
+            n_obstacles=1,
+            n_obstacle_obs=1,
+        )
+        env.reset(seed=42)
+
+        # Place agents close together, no obstacle between them
+        env.pursuer_state = np.array([-1.0, 0.0, 0.0])
+        env.evader_state = np.array([1.0, 0.0, np.pi])
+        env.obstacles = [{"x": 3.0, "y": 3.0, "radius": 0.5}]  # far from LOS
+        env.prev_distance = env._compute_distance()
+
+        obs = env._get_obs()
+        # In range (dist=2.0 < 10.0) and LOS clear -> visible
+        assert obs["pursuer"][5] != 0.0 or obs["pursuer"][6] != 0.0, \
+            "opponent should be visible"
+        assert obs["pursuer"][14] == 1.0, "flag should be 1.0 (visible)"
+
+    def test_combined_masks_when_out_of_range_even_los_clear(self):
+        """Combined: out of range but LOS clear -> masked."""
+        env = self.make_env(
+            sensing_radius=2.0,  # small radius
+            combined_masking=True,
+            n_obstacles=0,
+            n_obstacle_obs=0,
+        )
+        env.reset(seed=42)
+
+        # Place agents far apart, no obstacles (LOS clear but out of range)
+        env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+        env.evader_state = np.array([3.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        obs = env._get_obs()
+        # Distance = 6.0 > sensing_radius = 2.0 -> masked
+        assert obs["pursuer"][5] == 0.0, "opponent should be masked (out of range)"
+        assert obs["pursuer"][14] == 0.0, "flag should be 0.0 (masked)"
+
+    def test_radius_only_sees_through_obstacles(self):
+        """Radius-only (no combined): in range sees through obstacles."""
+        env = self.make_env(
+            sensing_radius=10.0,
+            combined_masking=False,  # radius only
+            n_obstacles=1,
+            n_obstacle_obs=1,
+        )
+        env.reset(seed=42)
+
+        # Place agents with obstacle between them
+        env.pursuer_state = np.array([-2.0, 0.0, 0.0])
+        env.evader_state = np.array([2.0, 0.0, np.pi])
+        env.obstacles = [{"x": 0.0, "y": 0.0, "radius": 1.0}]
+        env.prev_distance = env._compute_distance()
+
+        obs = env._get_obs()
+        # Radius-only: in range (dist=4.0 < 10.0) -> visible even with LOS blocked
+        assert obs["pursuer"][5] != 0.0 or obs["pursuer"][6] != 0.0, \
+            "radius-only should see through obstacles when in range"
+        assert obs["pursuer"][14] == 1.0, "flag should be 1.0 (in range)"

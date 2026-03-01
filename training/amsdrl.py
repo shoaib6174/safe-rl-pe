@@ -86,6 +86,7 @@ def _make_partial_obs_env(
     n_obstacles_max: int | None = None,
     asymmetric_obs: bool = False,
     sensing_radius: float | None = None,
+    combined_masking: bool = False,
 ) -> tuple:
     """Create an environment stack for one agent.
 
@@ -145,6 +146,7 @@ def _make_partial_obs_env(
         n_obstacles_max=n_obstacles_max,
         asymmetric_obs=asymmetric_obs,
         sensing_radius=sensing_radius,
+        combined_masking=combined_masking,
     )
     single_env = SingleAgentPEWrapper(base_env, role=role)
 
@@ -607,6 +609,7 @@ class AMSDRLSelfPlay:
         n_obstacles_max: int | None = None,
         asymmetric_obs: bool = False,
         sensing_radius: float | None = None,
+        combined_masking: bool = False,
         verbose: int = 1,
     ):
         self.output_dir = Path(output_dir)
@@ -658,6 +661,7 @@ class AMSDRLSelfPlay:
             "n_obstacles_max": n_obstacles_max,
             "asymmetric_obs": asymmetric_obs,
             "sensing_radius": sensing_radius,
+            "combined_masking": combined_masking,
         }
         self.fixed_speed = fixed_speed
         self.evader_training_multiplier = evader_training_multiplier

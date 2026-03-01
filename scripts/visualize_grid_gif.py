@@ -45,6 +45,7 @@ def run_episode(model, greedy_pursuer, env_kwargs, seed=None):
         n_obstacles_max=env_kwargs.get("n_obstacles_max"),
         asymmetric_obs=env_kwargs.get("asymmetric_obs", False),
         sensing_radius=env_kwargs.get("sensing_radius"),
+        combined_masking=env_kwargs.get("combined_masking", False),
     )
     if seed is not None:
         base_env.np_random = np.random.default_rng(seed)
@@ -234,6 +235,8 @@ def main():
                         help="Asymmetric LOS: only pursuer is masked")
     parser.add_argument("--sensing_radius", type=float, default=None,
                         help="Radius-based sensing: mask opponent if distance > radius")
+    parser.add_argument("--combined_masking", action="store_true",
+                        help="Combined masking: radius + LOS")
     args = parser.parse_args()
 
     n_obstacle_obs = args.n_obstacles_max if args.n_obstacles_max is not None else args.n_obstacles
@@ -258,6 +261,7 @@ def main():
         "n_obstacles_max": args.n_obstacles_max,
         "asymmetric_obs": args.asymmetric_obs,
         "sensing_radius": args.sensing_radius,
+        "combined_masking": args.combined_masking,
     }
 
     greedy_pursuer = GreedyPursuerPolicy(

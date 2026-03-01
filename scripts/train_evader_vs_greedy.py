@@ -55,6 +55,7 @@ def _make_base_env(env_kwargs):
         n_obstacles_max=env_kwargs.get("n_obstacles_max"),
         asymmetric_obs=env_kwargs.get("asymmetric_obs", False),
         sensing_radius=env_kwargs.get("sensing_radius"),
+        combined_masking=env_kwargs.get("combined_masking", False),
     )
 
 
@@ -153,6 +154,9 @@ def main():
     parser.add_argument("--sensing_radius", type=float, default=None,
                         help="Radius-based sensing: mask opponent if distance > radius. "
                              "None = no radius masking (use LOS if --partial_obs).")
+    parser.add_argument("--combined_masking", action="store_true",
+                        help="Combined masking: require both in-range AND clear LOS. "
+                             "Use with --sensing_radius and --partial_obs.")
     args = parser.parse_args()
 
     output_dir = Path(args.output)
@@ -181,6 +185,7 @@ def main():
         "n_obstacles_max": args.n_obstacles_max,
         "asymmetric_obs": args.asymmetric_obs,
         "sensing_radius": args.sensing_radius,
+        "combined_masking": args.combined_masking,
     }
 
     # Create greedy pursuer opponent
@@ -208,7 +213,9 @@ def main():
     print(f"  Timeout penalty: {args.timeout_penalty}")
     print(f"  Entropy coef: {args.ent_coef}")
     if args.partial_obs:
-        if args.sensing_radius is not None:
+        if args.sensing_radius is not None and args.combined_masking:
+            masking_type = f"COMBINED (radius {args.sensing_radius:.1f}m + LOS)"
+        elif args.sensing_radius is not None:
             masking_type = f"RADIUS {args.sensing_radius:.1f}m"
         else:
             masking_type = "LOS"

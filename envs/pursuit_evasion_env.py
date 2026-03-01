@@ -69,6 +69,7 @@ class PursuitEvasionEnv(gym.Env):
         n_obstacles_max: int | None = None,
         asymmetric_obs: bool = False,
         sensing_radius: float | None = None,
+        combined_masking: bool = False,
     ):
         super().__init__()
 
@@ -118,6 +119,9 @@ class PursuitEvasionEnv(gym.Env):
 
         # Phase 3: Radius-based sensing (mask opponent if beyond sensing_radius)
         self.sensing_radius = sensing_radius
+
+        # Phase 3: Combined masking (radius + LOS: both must pass for visibility)
+        self.combined_masking = combined_masking
 
         # Reward computer (allow injection for SafetyRewardComputer)
         arena_diagonal = np.sqrt(arena_width**2 + arena_height**2)
@@ -524,7 +528,15 @@ class PursuitEvasionEnv(gym.Env):
             if self.sensing_radius is not None:
                 # Radius-based sensing: mask if distance > sensing_radius
                 distance = self._compute_distance()
-                masked = distance > self.sensing_radius
+                out_of_range = distance > self.sensing_radius
+                if self.combined_masking:
+                    # Combined: must be in range AND have clear LOS
+                    los_blocked = line_of_sight_blocked(
+                        self.pursuer_state, self.evader_state, self.obstacles,
+                    )
+                    masked = out_of_range or los_blocked
+                else:
+                    masked = out_of_range
             else:
                 # LOS-based: mask if obstacle blocks line of sight
                 masked = line_of_sight_blocked(
