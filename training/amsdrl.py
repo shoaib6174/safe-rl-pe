@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
@@ -289,6 +289,96 @@ def _build_full_obs_ppo(
         ent_coef=ent_coef,
         vf_coef=0.5,
         max_grad_norm=0.5,
+        seed=seed,
+        device=device,
+        tensorboard_log=tensorboard_log,
+        verbose=0,
+        policy_kwargs=policy_kwargs,
+    )
+    return model
+
+
+def _build_full_obs_sac(
+    env,
+    seed: int = 42,
+    device: str = "cpu",
+    tensorboard_log: str | None = None,
+    learning_rate: float = 3e-4,
+    ent_coef: float | str = "auto",
+    buffer_size: int = 1_000_000,
+    learning_starts: int = 1000,
+    sac_batch_size: int = 256,
+    tau: float = 0.005,
+    train_freq: int = 1,
+    gradient_steps: int = 1,
+) -> SAC:
+    """Create a SAC model with full-obs MLP policy."""
+    policy_kwargs = {
+        "net_arch": [256, 256],
+        "activation_fn": torch.nn.Tanh,
+    }
+
+    model = SAC(
+        "MlpPolicy",
+        env,
+        learning_rate=learning_rate,
+        buffer_size=buffer_size,
+        learning_starts=learning_starts,
+        batch_size=sac_batch_size,
+        tau=tau,
+        gamma=0.99,
+        ent_coef=ent_coef,
+        train_freq=train_freq,
+        gradient_steps=gradient_steps,
+        seed=seed,
+        device=device,
+        tensorboard_log=tensorboard_log,
+        verbose=0,
+        policy_kwargs=policy_kwargs,
+    )
+    return model
+
+
+def _build_partial_obs_sac(
+    env,
+    encoder_type: str = "bimdn",
+    encoder_kwargs: dict | None = None,
+    seed: int = 42,
+    device: str = "cpu",
+    tensorboard_log: str | None = None,
+    learning_rate: float = 3e-4,
+    ent_coef: float | str = "auto",
+    buffer_size: int = 1_000_000,
+    learning_starts: int = 1000,
+    sac_batch_size: int = 256,
+    tau: float = 0.005,
+    train_freq: int = 1,
+    gradient_steps: int = 1,
+) -> SAC:
+    """Create a SAC model with partial-obs policy network."""
+    policy_kwargs = {
+        "features_extractor_class": PartialObsFeaturesExtractor,
+        "features_extractor_kwargs": {
+            "features_dim": 256,
+            "encoder_type": encoder_type,
+            **(encoder_kwargs or {}),
+        },
+        "net_arch": [256, 256],
+        "activation_fn": torch.nn.Tanh,
+    }
+
+    model = SAC(
+        "MultiInputPolicy",
+        env,
+        learning_rate=learning_rate,
+        buffer_size=buffer_size,
+        learning_starts=learning_starts,
+        batch_size=sac_batch_size,
+        tau=tau,
+        gamma=0.99,
+        ent_coef=ent_coef,
+        train_freq=train_freq,
+        gradient_steps=gradient_steps,
         seed=seed,
         device=device,
         tensorboard_log=tensorboard_log,
@@ -622,6 +712,15 @@ class AMSDRLSelfPlay:
         asymmetric_obs: bool = False,
         sensing_radius: float | None = None,
         combined_masking: bool = False,
+        algorithm: str = "ppo",
+        buffer_size: int = 1_000_000,
+        learning_starts: int = 1000,
+        sac_batch_size: int = 256,
+        tau: float = 0.005,
+        train_freq: int = 1,
+        gradient_steps: int = 1,
+        init_pursuer_algo: str | None = None,
+        init_evader_algo: str | None = None,
         verbose: int = 1,
     ):
         self.output_dir = Path(output_dir)
@@ -647,6 +746,16 @@ class AMSDRLSelfPlay:
         self.batch_size = batch_size
         self.full_obs = full_obs
         self.verbose = verbose
+
+        # Algorithm selection (PPO or SAC)
+        self.algorithm = algorithm
+        self._model_class = SAC if algorithm == "sac" else PPO
+        self.buffer_size = buffer_size
+        self.learning_starts = learning_starts
+        self.sac_batch_size = sac_batch_size
+        self.tau = tau
+        self.train_freq = train_freq
+        self.gradient_steps = gradient_steps
 
         # Common env kwargs
         self.env_kwargs = {
@@ -798,7 +907,39 @@ class AMSDRLSelfPlay:
 
         # Pre-trained model paths for warm-seeded self-play
         self.init_pursuer_path = init_pursuer_path
-        self.init_evader_path = init_evader_path  # Created lazily when env obs_dim is known
+        self.init_evader_path = init_evader_path
+        # Algorithm of init models (None = same as self.algorithm)
+        self.init_pursuer_algo = init_pursuer_algo
+        self.init_evader_algo = init_evader_algo
+
+    def _get_build_fn(self):
+        """Return the appropriate model builder function for the current algorithm."""
+        if self.algorithm == "sac":
+            return _build_full_obs_sac if self.full_obs else _build_partial_obs_sac
+        else:
+            return _build_full_obs_ppo if self.full_obs else _build_partial_obs_ppo
+
+    def _get_build_kwargs(self):
+        """Return algorithm-specific kwargs for the build function."""
+        if self.algorithm == "sac":
+            return {
+                "buffer_size": self.buffer_size,
+                "learning_starts": self.learning_starts,
+                "sac_batch_size": self.sac_batch_size,
+                "tau": self.tau,
+                "train_freq": self.train_freq,
+                "gradient_steps": self.gradient_steps,
+            }
+        else:
+            return {
+                "n_steps": self.n_steps,
+                "batch_size": self.batch_size,
+            }
+
+    @staticmethod
+    def _algo_class(algo_name: str):
+        """Return the SB3 model class for a given algorithm name."""
+        return SAC if algo_name == "sac" else PPO
 
     def run(self) -> dict:
         """Execute the full AMS-DRL protocol.
@@ -811,6 +952,7 @@ class AMSDRLSelfPlay:
         if self.verbose:
             print("=" * 60)
             print("AMS-DRL Self-Play Protocol")
+            print(f"  Algorithm: {self.algorithm.upper()}")
             print(f"  Max phases: {self.max_phases}")
             print(f"  Steps/phase: {self.timesteps_per_phase}")
             print(f"  NE threshold (eta): {self.eta}")
@@ -1037,31 +1179,30 @@ class AMSDRLSelfPlay:
         (same as cold-start initialization). This enables scenarios like
         seeding a trained evader while the pursuer bootstraps from random.
 
-        Models loaded via PPO.load() preserve their original architecture.
-        Training hyperparameters (lr, ent_coef, etc.) are overridden to match
-        the self-play config.
+        Supports mixed algorithm loading: init_pursuer_algo / init_evader_algo
+        allow loading a model trained with a different algorithm (e.g., a PPO
+        evader into a SAC self-play session).
 
         The _run_micro_phases() method handles env attachment and n_envs
         mismatch via its save/reload cycle, so no environment setup is
         needed here.
         """
-        # Select build function based on obs mode (must match cold-start logic)
-        if self.full_obs:
-            build_fn = _build_full_obs_ppo
-            build_extra_kwargs = {}
-        else:
-            build_fn = _build_partial_obs_ppo
-            build_extra_kwargs = {
-                "encoder_type": self.encoder_type,
-                "encoder_kwargs": self.encoder_kwargs,
-            }
+        # Select build function and kwargs for creating new models
+        build_fn = self._get_build_fn()
+        build_algo_kwargs = self._get_build_kwargs()
+        if not self.full_obs:
+            build_algo_kwargs["encoder_type"] = self.encoder_type
+            build_algo_kwargs["encoder_kwargs"] = self.encoder_kwargs
 
         # --- Pursuer ---
         if self.init_pursuer_path:
-            self.pursuer_model = PPO.load(
+            load_algo = self.init_pursuer_algo or self.algorithm
+            load_class = self._algo_class(load_algo)
+            self.pursuer_model = load_class.load(
                 self.init_pursuer_path, device=self.device)
             if self.verbose:
-                print(f"  Loaded pursuer from: {self.init_pursuer_path}")
+                print(f"  Loaded pursuer from: {self.init_pursuer_path} "
+                      f"(algo={load_algo})")
         else:
             # Create pursuer from scratch (same as cold-start)
             p_env, _ = _make_partial_obs_env(
@@ -1082,9 +1223,7 @@ class AMSDRLSelfPlay:
                 tensorboard_log=str(self.output_dir / "tb" / "pursuer"),
                 learning_rate=self.learning_rate,
                 ent_coef=self.ent_coef,
-                n_steps=self.n_steps,
-                batch_size=self.batch_size,
-                **build_extra_kwargs,
+                **build_algo_kwargs,
             )
             p_env.close()
             if self.verbose:
@@ -1092,10 +1231,13 @@ class AMSDRLSelfPlay:
 
         # --- Evader ---
         if self.init_evader_path:
-            self.evader_model = PPO.load(
+            load_algo = self.init_evader_algo or self.algorithm
+            load_class = self._algo_class(load_algo)
+            self.evader_model = load_class.load(
                 self.init_evader_path, device=self.device)
             if self.verbose:
-                print(f"  Loaded evader from: {self.init_evader_path}")
+                print(f"  Loaded evader from: {self.init_evader_path} "
+                      f"(algo={load_algo})")
         else:
             # Create evader from scratch (same as cold-start)
             e_env, _ = _make_partial_obs_env(
@@ -1115,9 +1257,7 @@ class AMSDRLSelfPlay:
                 tensorboard_log=str(self.output_dir / "tb" / "evader"),
                 learning_rate=self.learning_rate,
                 ent_coef=self.ent_coef,
-                n_steps=self.n_steps,
-                batch_size=self.batch_size,
-                **build_extra_kwargs,
+                **build_algo_kwargs,
             )
             e_env.close()
             if self.verbose:
@@ -1128,15 +1268,16 @@ class AMSDRLSelfPlay:
                             (self.evader_model, "evader")]:
             model.learning_rate = self.learning_rate
             model.ent_coef = self.ent_coef
-            model.n_steps = self.n_steps
-            model.batch_size = self.batch_size
             model.tensorboard_log = str(self.output_dir / "tb" / role)
             model.seed = self.seed if role == "pursuer" else self.seed + 1
+            # PPO-specific overrides
+            if hasattr(model, "n_steps"):
+                model.n_steps = self.n_steps
+                model.batch_size = self.batch_size
 
         if self.verbose:
             print(f"  Overridden: lr={self.learning_rate}, "
-                  f"ent_coef={self.ent_coef}, "
-                  f"n_steps={self.n_steps}, batch_size={self.batch_size}")
+                  f"ent_coef={self.ent_coef}")
 
         # Save initial checkpoints
         self.pursuer_ckpt.save_milestone(
@@ -1159,10 +1300,11 @@ class AMSDRLSelfPlay:
 
     def _cold_start(self):
         """Phase S0: Pre-train evader with NavigationEnv (or init both for full-obs)."""
+        build_fn = self._get_build_fn()
+        build_algo_kwargs = self._get_build_kwargs()
+
         if self.full_obs:
             # Full-obs mode: no NavigationEnv, just create both models from scratch
-            build_fn = _build_full_obs_ppo
-
             e_env, _ = _make_partial_obs_env(
                 role="evader",
                 use_dcbf=False,
@@ -1180,8 +1322,7 @@ class AMSDRLSelfPlay:
                 tensorboard_log=str(self.output_dir / "tb" / "evader"),
                 learning_rate=self.learning_rate,
                 ent_coef=self.ent_coef,
-                n_steps=self.n_steps,
-                batch_size=self.batch_size,
+                **build_algo_kwargs,
             )
             e_env.close()
 
@@ -1203,8 +1344,7 @@ class AMSDRLSelfPlay:
                 tensorboard_log=str(self.output_dir / "tb" / "pursuer"),
                 learning_rate=self.learning_rate,
                 ent_coef=self.ent_coef,
-                n_steps=self.n_steps,
-                batch_size=self.batch_size,
+                **build_algo_kwargs,
             )
             p_env.close()
 
@@ -1238,18 +1378,20 @@ class AMSDRLSelfPlay:
             nav_env = FixedSpeedWrapper(nav_env, v_max=base_env.evader_v_max)
         nav_env = Monitor(nav_env)
 
-        # Create evader model
-        self.evader_model = _build_partial_obs_ppo(
+        # Create evader model (partial obs always uses build_fn with encoder kwargs)
+        partial_extra = {
+            "encoder_type": self.encoder_type,
+            "encoder_kwargs": self.encoder_kwargs,
+        }
+        self.evader_model = build_fn(
             nav_env,
-            encoder_type=self.encoder_type,
-            encoder_kwargs=self.encoder_kwargs,
             seed=self.seed + 1,
             device=self.device,
             tensorboard_log=str(self.output_dir / "tb" / "evader_coldstart"),
             learning_rate=self.learning_rate,
             ent_coef=self.ent_coef,
-            n_steps=self.n_steps,
-            batch_size=self.batch_size,
+            **build_algo_kwargs,
+            **partial_extra,
         )
 
         # Train
@@ -1273,17 +1415,15 @@ class AMSDRLSelfPlay:
         )
         p_env = Monitor(p_env)
 
-        self.pursuer_model = _build_partial_obs_ppo(
+        self.pursuer_model = build_fn(
             p_env,
-            encoder_type=self.encoder_type,
-            encoder_kwargs=self.encoder_kwargs,
             seed=self.seed,
             device=self.device,
             tensorboard_log=str(self.output_dir / "tb" / "pursuer"),
             learning_rate=self.learning_rate,
             ent_coef=self.ent_coef,
-            n_steps=self.n_steps,
-            batch_size=self.batch_size,
+            **build_algo_kwargs,
+            **partial_extra,
         )
         p_env.close()
 
@@ -1373,7 +1513,7 @@ class AMSDRLSelfPlay:
                 with tempfile.TemporaryDirectory() as tmp:
                     tmp_path = Path(tmp) / "model.zip"
                     self.evader_model.save(tmp_path)
-                    self.evader_model = PPO.load(
+                    self.evader_model = self._model_class.load(
                         tmp_path,
                         env=train_vec_env,
                         device=self.device,
@@ -1585,7 +1725,7 @@ class AMSDRLSelfPlay:
                 if ckpt_path is None:
                     opp_model = None  # Random policy
                 else:
-                    opp_model = opponent_pool.get_model(ckpt_path, device=self.device)
+                    opp_model = opponent_pool.get_model(ckpt_path, device=self.device, model_class=self._model_class)
             else:
                 opp_model = opponent_model
 
@@ -1610,7 +1750,7 @@ class AMSDRLSelfPlay:
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp) / "model.zip"
                 active_model.save(tmp_path)
-                active_model = PPO.load(
+                active_model = self._model_class.load(
                     tmp_path,
                     env=train_vec_env,
                     device=self.device,
@@ -1694,12 +1834,18 @@ class AMSDRLSelfPlay:
         start_time = time.time()
 
         if self.verbose:
-            rollout_steps = self.n_envs * self.n_steps
             print(f"\n{'=' * 60}")
             print("Micro-Phase Rapid Alternation Mode")
+            print(f"  Algorithm: {self.algorithm.upper()}")
             print(f"  Steps per micro-phase: {self.micro_phase_steps}")
-            print(f"  PPO rollout size: {rollout_steps} "
-                  f"(n_envs={self.n_envs} x n_steps={self.n_steps})")
+            if self.algorithm == "ppo":
+                rollout_steps = self.n_envs * self.n_steps
+                print(f"  PPO rollout size: {rollout_steps} "
+                      f"(n_envs={self.n_envs} x n_steps={self.n_steps})")
+            else:
+                print(f"  SAC buffer_size={self.buffer_size:,}, "
+                      f"learning_starts={self.learning_starts}, "
+                      f"batch_size={self.sac_batch_size}")
             print(f"  Eval interval: every {self.eval_interval_micro} micro-phases")
             print(f"  Snapshot interval: every {self.snapshot_freq_micro} micro-phases")
             print(f"  Convergence: {self.convergence_consecutive} consecutive "
@@ -1757,7 +1903,7 @@ class AMSDRLSelfPlay:
                 with tempfile.TemporaryDirectory() as tmp:
                     tmp_path = Path(tmp) / "model.zip"
                     model.save(tmp_path)
-                    reloaded = PPO.load(tmp_path, env=vec_env, device=self.device)
+                    reloaded = self._model_class.load(tmp_path, env=vec_env, device=self.device)
                 if role_name == "pursuer":
                     self.pursuer_model = reloaded
                 else:
@@ -2016,7 +2162,7 @@ class AMSDRLSelfPlay:
                                       f"for {collapse_streak_pursuer} evals). "
                                       f"Restoring M{ckpt_micro} "
                                       f"(best SR={best_sr_pursuer:.3f})")
-                            self.pursuer_model = PPO.load(
+                            self.pursuer_model = self._model_class.load(
                                 ckpt_file, env=pursuer_vec_env,
                                 device=self.device)
                             self._sync_opponent_weights_vec(
@@ -2035,7 +2181,7 @@ class AMSDRLSelfPlay:
                                       f"for {collapse_streak_evader} evals). "
                                       f"Restoring M{ckpt_micro} "
                                       f"(best SR={best_sr_evader:.3f})")
-                            self.evader_model = PPO.load(
+                            self.evader_model = self._model_class.load(
                                 ckpt_file, env=evader_vec_env,
                                 device=self.device)
                             self._sync_opponent_weights_vec(
@@ -2145,7 +2291,7 @@ class AMSDRLSelfPlay:
                 if ckpt_path is None:
                     opp_model = opponent_model  # Use current model instead of random
                 else:
-                    opp_model = opponent_pool.get_model(ckpt_path, device=self.device)
+                    opp_model = opponent_pool.get_model(ckpt_path, device=self.device, model_class=self._model_class)
             else:
                 opp_model = opponent_model
 
@@ -2189,7 +2335,7 @@ class AMSDRLSelfPlay:
             if opp is None:
                 continue
 
-            # Extract the underlying PPO model from any adapter
+            # Extract the underlying model (PPO or SAC) from any adapter
             target_model = None
             if isinstance(opp, FixedSpeedModelAdapter):
                 target_model = opp.model
@@ -2199,7 +2345,7 @@ class AMSDRLSelfPlay:
                     target_model = inner.model
                 else:
                     target_model = inner
-            elif isinstance(opp, PPO):
+            elif hasattr(opp, "policy"):
                 target_model = opp
 
             if target_model is not None and hasattr(target_model, "policy"):
@@ -2258,7 +2404,7 @@ class AMSDRLSelfPlay:
                 if sampled is None:
                     opp_model = current_model
                 else:
-                    opp_model = opponent_pool.get_model(sampled, device=self.device)
+                    opp_model = opponent_pool.get_model(sampled, device=self.device, model_class=self._model_class)
 
             opponent = self._wrap_opponent_model(opp_model, opponent_role, base_env)
 

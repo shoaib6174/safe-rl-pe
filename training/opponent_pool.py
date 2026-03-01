@@ -153,20 +153,23 @@ class OpponentPool:
         # Weighted sampling
         return random.choices(candidates, weights=probs, k=n)
 
-    def get_model(self, ckpt_path: str, device: str = "cpu") -> PPO:
-        """Load and cache a PPO model from a checkpoint path.
+    def get_model(self, ckpt_path: str, device: str = "cpu", model_class=None):
+        """Load and cache a model from a checkpoint path.
 
         Args:
             ckpt_path: Path to checkpoint directory containing ppo.zip.
             device: Device to load model onto.
+            model_class: SB3 algorithm class (PPO, SAC, etc.). Defaults to PPO.
 
         Returns:
-            Loaded PPO model.
+            Loaded model.
         """
+        if model_class is None:
+            model_class = PPO
         ckpt_path = str(ckpt_path)
         if ckpt_path not in self._cache:
             ppo_path = Path(ckpt_path) / "ppo.zip"
-            self._cache[ckpt_path] = PPO.load(str(ppo_path), device=device)
+            self._cache[ckpt_path] = model_class.load(str(ppo_path), device=device)
         return self._cache[ckpt_path]
 
     def clear_cache(self) -> None:

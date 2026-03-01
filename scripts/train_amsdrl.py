@@ -245,6 +245,31 @@ def parse_args():
                         help="Path to pre-trained evader model (.zip) for warm-seeded "
                              "self-play. If both --init_pursuer_model and "
                              "--init_evader_model are set, skips cold-start.")
+    parser.add_argument("--init_pursuer_algo", type=str, default=None,
+                        choices=["ppo", "sac"],
+                        help="Algorithm of init pursuer model (default: same as --algorithm)")
+    parser.add_argument("--init_evader_algo", type=str, default=None,
+                        choices=["ppo", "sac"],
+                        help="Algorithm of init evader model (default: same as --algorithm)")
+
+    # Algorithm selection
+    parser.add_argument("--algorithm", type=str, default="ppo",
+                        choices=["ppo", "sac"],
+                        help="RL algorithm (default: ppo)")
+
+    # SAC-specific hyperparameters
+    parser.add_argument("--buffer_size", type=int, default=1_000_000,
+                        help="SAC replay buffer size (default: 1000000)")
+    parser.add_argument("--learning_starts", type=int, default=1000,
+                        help="SAC steps before training starts (default: 1000)")
+    parser.add_argument("--sac_batch_size", type=int, default=256,
+                        help="SAC training batch size (default: 256)")
+    parser.add_argument("--tau", type=float, default=0.005,
+                        help="SAC soft update coefficient (default: 0.005)")
+    parser.add_argument("--train_freq", type=int, default=1,
+                        help="SAC train frequency in steps (default: 1)")
+    parser.add_argument("--gradient_steps", type=int, default=1,
+                        help="SAC gradient steps per env step (default: 1)")
 
     # Safety
     parser.add_argument("--use_dcbf", action="store_true", default=True,
@@ -266,8 +291,8 @@ def parse_args():
                         help="Observation history length K (default: 10)")
     parser.add_argument("--learning_rate", type=float, default=3e-4,
                         help="PPO learning rate (default: 3e-4)")
-    parser.add_argument("--ent_coef", type=float, default=0.01,
-                        help="Entropy coefficient (default: 0.01)")
+    parser.add_argument("--ent_coef", type=str, default="0.01",
+                        help="Entropy coefficient (default: 0.01, use 'auto' for SAC)")
     parser.add_argument("--n_steps", type=int, default=512,
                         help="PPO rollout steps per env (default: 512)")
     parser.add_argument("--batch_size", type=int, default=256,
@@ -284,6 +309,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Parse ent_coef: "auto" (string) for SAC, or float for PPO
+    if args.ent_coef == "auto":
+        ent_coef = "auto"
+    else:
+        ent_coef = float(args.ent_coef)
 
     # Device selection
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -316,7 +347,7 @@ def main():
         seed=args.seed,
         device=device,
         learning_rate=args.learning_rate,
-        ent_coef=args.ent_coef,
+        ent_coef=ent_coef,
         full_obs=args.full_obs,
         distance_scale=args.distance_scale,
         pursuer_v_max=args.pursuer_v_max,
@@ -377,6 +408,15 @@ def main():
         asymmetric_obs=args.asymmetric_obs,
         sensing_radius=args.sensing_radius,
         combined_masking=args.combined_masking,
+        algorithm=args.algorithm,
+        buffer_size=args.buffer_size,
+        learning_starts=args.learning_starts,
+        sac_batch_size=args.sac_batch_size,
+        tau=args.tau,
+        train_freq=args.train_freq,
+        gradient_steps=args.gradient_steps,
+        init_pursuer_algo=args.init_pursuer_algo,
+        init_evader_algo=args.init_evader_algo,
     )
 
     result = amsdrl.run()
