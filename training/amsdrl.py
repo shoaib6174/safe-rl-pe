@@ -431,6 +431,12 @@ def _evaluate_head_to_head_full_obs(
     w_collision: float = 0.0,
     w_wall: float = 0.0,
     n_obstacle_obs: int = 0,
+    partial_obs_los: bool = False,
+    n_obstacles_min: int | None = None,
+    n_obstacles_max: int | None = None,
+    asymmetric_obs: bool = False,
+    sensing_radius: float | None = None,
+    combined_masking: bool = False,
     **kwargs,
 ) -> dict:
     """Evaluate pursuer vs evader with full-state observations (diagnostic mode)."""
@@ -449,6 +455,12 @@ def _evaluate_head_to_head_full_obs(
         w_collision=w_collision,
         w_wall=w_wall,
         n_obstacle_obs=n_obstacle_obs,
+        partial_obs=partial_obs_los,
+        n_obstacles_min=n_obstacles_min,
+        n_obstacles_max=n_obstacles_max,
+        asymmetric_obs=asymmetric_obs,
+        sensing_radius=sensing_radius,
+        combined_masking=combined_masking,
     )
 
     captures = 0
