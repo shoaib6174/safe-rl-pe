@@ -71,7 +71,7 @@
 | 58 | 2026-02-28 | **Collapse Rollback + PFSP-lite + Survival Bonus**: 3-pronged fix for evader collapse — collapse rollback (restore best checkpoint when SR < threshold for N evals), PFSP-lite (bias pool toward weaker opponents when losing), configurable survival_bonus. 7 new tests (706 total). Launching RA9/RA10. | [S58](worklogs/2026-02-28_S58.md) |
 | 59 | 2026-03-01 | **Variable Speed Self-Play**: S1v2b evader 98% escape. SP2+B+C+D all failed (pursuer can't bootstrap in self-play). Run A pursuer training hit 94% capture. Launched SP3: warm-seeded self-play starting at 49/51 balance. | [S59](worklogs/2026-03-01_S59.md) |
 | 60 | 2026-03-01 | **Asymmetric Obs + Randomized Obstacles**: S1v4a (asymmetric LOS) peak 80%→20% final, S1v4b (symmetric) peak 73%→50% final. Late regression dominant problem. 5 new tests (727 pass). | [S60](worklogs/2026-03-01_S60.md) |
-| 61 | 2026-03-01 | **S1v5: Radius Sensing + Best-Model Checkpointing**: Replaced LOS masking with radius-based sensing (sensing_radius=3.0m). Added best-model checkpointing to prevent regression. 5 new tests (732 pass). S1v5 launched on niro-2. | [S61](worklogs/2026-03-01_S61.md) | [S60](worklogs/2026-03-01_S60.md) |
+| 61 | 2026-03-01 | **S1v5: Radius Sensing + Combined Masking**: Radius-based sensing (3.0m), combined masking mode (radius+LOS), sensing visualization script, best-model checkpointing. 9 new tests (736 pass). S1v5 (radius-only) + S1v5b (combined) launched on niro-2. | [S61](worklogs/2026-03-01_S61.md) | [S60](worklogs/2026-03-01_S60.md) |
 
 ## Paper Reading Status
 
