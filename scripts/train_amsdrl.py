@@ -226,6 +226,15 @@ def parse_args():
                         help="Freeze this role (don't train it). The other agent "
                              "trains against the frozen warm-seeded model.")
 
+    # Alternating freeze: automatically switch which agent is frozen
+    parser.add_argument("--alternate_freeze", action="store_true",
+                        help="Enable alternating freeze: freeze evader first, train "
+                             "pursuer until threshold, then switch. Overrides "
+                             "--freeze_role and --train_ratio.")
+    parser.add_argument("--freeze_switch_threshold", type=float, default=0.6,
+                        help="Switch frozen role when active agent's SR exceeds "
+                             "this threshold (default: 0.6 = 60%%).")
+
     # Asymmetric training ratio
     parser.add_argument("--train_ratio", type=int, default=1,
                         help="Train pursuer this many phases per 1 evader phase "
@@ -429,6 +438,8 @@ def main():
         init_pursuer_algo=args.init_pursuer_algo,
         init_evader_algo=args.init_evader_algo,
         freeze_role=args.freeze_role,
+        alternate_freeze=args.alternate_freeze,
+        freeze_switch_threshold=args.freeze_switch_threshold,
         train_ratio=args.train_ratio,
     )
 

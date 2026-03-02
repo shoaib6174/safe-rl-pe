@@ -722,6 +722,8 @@ class AMSDRLSelfPlay:
         init_pursuer_algo: str | None = None,
         init_evader_algo: str | None = None,
         freeze_role: str | None = None,
+        alternate_freeze: bool = False,
+        freeze_switch_threshold: float = 0.6,
         train_ratio: int = 1,
         verbose: int = 1,
     ):
@@ -751,6 +753,13 @@ class AMSDRLSelfPlay:
 
         # Freeze one role (only train the other agent)
         self.freeze_role = freeze_role
+
+        # Alternating freeze: switch which agent is frozen based on SR threshold
+        self.alternate_freeze = alternate_freeze
+        self.freeze_switch_threshold = freeze_switch_threshold
+        if self.alternate_freeze:
+            # Override freeze_role to start with evader frozen (train pursuer first)
+            self.freeze_role = "evader"
 
         # Asymmetric training ratio (N pursuer phases per 1 evader phase)
         self.train_ratio = train_ratio
@@ -1874,7 +1883,12 @@ class AMSDRLSelfPlay:
                       f"streak_limit={self.collapse_streak_limit}")
             if self.pfsp_enabled:
                 print(f"  PFSP-lite: enabled (bias toward weaker opponents when losing)")
-            if self.freeze_role:
+            if self.alternate_freeze:
+                print(f"  ALTERNATE FREEZE: switching frozen role when SR > "
+                      f"{self.freeze_switch_threshold:.0%}")
+                print(f"  Starting with {self.freeze_role} frozen "
+                      f"(training {'pursuer' if self.freeze_role == 'evader' else 'evader'})")
+            elif self.freeze_role:
                 train_role = "evader" if self.freeze_role == "pursuer" else "pursuer"
                 print(f"  FREEZE: {self.freeze_role} frozen, only training {train_role}")
             if self.train_ratio > 1:
@@ -2042,6 +2056,8 @@ class AMSDRLSelfPlay:
                     "total_steps": total_steps,
                     **metrics,
                 }
+                if self.alternate_freeze and self.freeze_role:
+                    entry["frozen"] = self.freeze_role
 
                 # Curriculum handling
                 if self.curriculum:
@@ -2091,6 +2107,8 @@ class AMSDRLSelfPlay:
                         status += f" | boost={boost_role}({boost_remaining})"
                     if lr_scale < 1.0:
                         status += f" | lr_scale={lr_scale:.2f}"
+                    if self.alternate_freeze and self.freeze_role:
+                        status += f" | frozen={self.freeze_role}"
                     print(status)
 
                 # Save checkpoint at eval intervals
@@ -2116,6 +2134,24 @@ class AMSDRLSelfPlay:
                     self.evader_model.save(str(best_dir / "evader"))
                     if self.verbose:
                         print(f"    *BEST evader* SR={sr_e:.3f} at M{micro}")
+
+                # Alternating freeze: switch frozen role when active agent
+                # exceeds the SR threshold
+                if self.alternate_freeze and self.freeze_role is not None:
+                    active_role = ("pursuer" if self.freeze_role == "evader"
+                                   else "evader")
+                    active_sr = sr_p if active_role == "pursuer" else sr_e
+                    if active_sr > self.freeze_switch_threshold:
+                        old_frozen = self.freeze_role
+                        self.freeze_role = active_role  # freeze the strong one
+                        new_train = ("pursuer" if self.freeze_role == "evader"
+                                     else "evader")
+                        if self.verbose:
+                            print(f"    [ALT-FREEZE] {active_role} SR="
+                                  f"{active_sr:.3f} > "
+                                  f"{self.freeze_switch_threshold:.3f} → "
+                                  f"freezing {active_role}, "
+                                  f"now training {new_train}")
 
                 # Save history incrementally
                 self._save_history_incremental(
