@@ -22,15 +22,16 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.animation as animation
 import numpy as np
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
 
 from envs.pursuit_evasion_env import PursuitEvasionEnv
 from envs.rewards import RewardComputer, line_of_sight_blocked
 from envs.wrappers import SingleAgentPEWrapper, FixedSpeedWrapper
-from training.baselines import GreedyPursuerPolicy
+from training.baselines import GreedyPursuerPolicy, GreedyEvaderPolicy
 
 
-def run_episode(model, greedy_pursuer, env_kwargs, seed=None):
+def run_episode(model, opponent, env_kwargs, role="evader", seed=None,
+                greedy_full_obs=False):
     """Run one episode recording full sensing state at each step."""
     arena_w = env_kwargs["arena_width"]
     arena_h = env_kwargs["arena_height"]
@@ -67,11 +68,13 @@ def run_episode(model, greedy_pursuer, env_kwargs, seed=None):
         base_env.np_random = np.random.default_rng(seed)
 
     single_env = SingleAgentPEWrapper(
-        base_env, role="evader", opponent_policy=greedy_pursuer,
+        base_env, role=role, opponent_policy=opponent,
+        greedy_full_obs=greedy_full_obs,
     )
     action_dim = model.action_space.shape[0]
+    v_max = base_env.pursuer_v_max if role == "pursuer" else base_env.evader_v_max
     if action_dim == 1:
-        env = FixedSpeedWrapper(single_env, v_max=base_env.evader_v_max)
+        env = FixedSpeedWrapper(single_env, v_max=v_max)
     else:
         env = single_env
 
@@ -415,6 +418,15 @@ def main():
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--skip", type=int, default=2,
                         help="Render every Nth step (default: 2)")
+    parser.add_argument("--algorithm", type=str, default="ppo",
+                        choices=["ppo", "sac"],
+                        help="Algorithm used for the model (default: ppo)")
+    parser.add_argument("--greedy_full_obs", action="store_true",
+                        help="Give greedy opponent unmasked observations")
+    parser.add_argument("--role", type=str, default="evader",
+                        choices=["pursuer", "evader"],
+                        help="Role of the learned agent (default: evader)")
+    parser.add_argument("--pursuer_v_max", type=float, default=1.0)
     args = parser.parse_args()
 
     n_obstacle_obs = args.n_obstacles_max if args.n_obstacles_max is not None else args.n_obstacles
@@ -425,7 +437,7 @@ def main():
         "max_steps": args.max_steps,
         "capture_radius": 0.5,
         "n_obstacles": args.n_obstacles,
-        "pursuer_v_max": 1.0,
+        "pursuer_v_max": args.pursuer_v_max,
         "evader_v_max": args.evader_v_max,
         "distance_scale": 1.0,
         "use_visibility_reward": True,
@@ -442,17 +454,26 @@ def main():
         "combined_masking": args.combined_masking,
     }
 
-    greedy_pursuer = GreedyPursuerPolicy(
-        v_max=1.0, omega_max=2.84, K_p=3.0,
-        arena_half_w=args.arena_width / 2,
-        arena_half_h=args.arena_height / 2,
-    )
+    if args.role == "evader":
+        opponent = GreedyPursuerPolicy(
+            v_max=args.pursuer_v_max, omega_max=2.84, K_p=3.0,
+            arena_half_w=args.arena_width / 2,
+            arena_half_h=args.arena_height / 2,
+        )
+    else:
+        opponent = GreedyEvaderPolicy(
+            v_max=args.evader_v_max, omega_max=2.84, K_p=3.0,
+            arena_half_w=args.arena_width / 2,
+            arena_half_h=args.arena_height / 2,
+        )
 
-    print(f"Loading model: {args.model}")
-    model = PPO.load(args.model)
+    model_class = SAC if args.algorithm == "sac" else PPO
+    print(f"Loading model: {args.model} ({args.algorithm}, role={args.role})")
+    model = model_class.load(args.model, device="cpu")
 
     print(f"Running episode (seed={args.seed})...")
-    episode = run_episode(model, greedy_pursuer, env_kwargs, seed=args.seed)
+    episode = run_episode(model, opponent, env_kwargs, role=args.role,
+                          seed=args.seed, greedy_full_obs=args.greedy_full_obs)
 
     status = "ESCAPED" if episode["escaped"] else f"CAPTURED at step {episode['steps']}"
     print(f"  Result: {status}")

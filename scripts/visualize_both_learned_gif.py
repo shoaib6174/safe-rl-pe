@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.animation as animation
 import numpy as np
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
 
 from envs.pursuit_evasion_env import PursuitEvasionEnv
 from envs.rewards import RewardComputer, line_of_sight_blocked
@@ -290,6 +290,9 @@ def main():
                         help="Radius-based sensing distance")
     parser.add_argument("--combined_masking", action="store_true",
                         help="Combined masking: radius + LOS")
+    parser.add_argument("--algorithm", type=str, default="ppo",
+                        choices=["ppo", "sac"],
+                        help="Algorithm used for the models (default: ppo)")
     args = parser.parse_args()
 
     n_obstacle_obs = (args.n_obstacles_max if args.n_obstacles_max is not None
@@ -318,11 +321,13 @@ def main():
         "combined_masking": args.combined_masking,
     }
 
-    print(f"Loading pursuer model: {args.pursuer_model}")
-    pursuer_model = PPO.load(args.pursuer_model, device="cpu")
+    model_class = SAC if args.algorithm == "sac" else PPO
 
-    print(f"Loading evader model: {args.evader_model}")
-    evader_model = PPO.load(args.evader_model, device="cpu")
+    print(f"Loading pursuer model: {args.pursuer_model} ({args.algorithm})")
+    pursuer_model = model_class.load(args.pursuer_model, device="cpu")
+
+    print(f"Loading evader model: {args.evader_model} ({args.algorithm})")
+    evader_model = model_class.load(args.evader_model, device="cpu")
 
     episodes = []
     captures = 0
