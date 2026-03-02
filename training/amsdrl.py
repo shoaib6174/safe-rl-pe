@@ -721,6 +721,7 @@ class AMSDRLSelfPlay:
         gradient_steps: int = 1,
         init_pursuer_algo: str | None = None,
         init_evader_algo: str | None = None,
+        freeze_role: str | None = None,
         verbose: int = 1,
     ):
         self.output_dir = Path(output_dir)
@@ -746,6 +747,9 @@ class AMSDRLSelfPlay:
         self.batch_size = batch_size
         self.full_obs = full_obs
         self.verbose = verbose
+
+        # Freeze one role (only train the other agent)
+        self.freeze_role = freeze_role
 
         # Algorithm selection (PPO or SAC)
         self.algorithm = algorithm
@@ -1866,6 +1870,9 @@ class AMSDRLSelfPlay:
                       f"streak_limit={self.collapse_streak_limit}")
             if self.pfsp_enabled:
                 print(f"  PFSP-lite: enabled (bias toward weaker opponents when losing)")
+            if self.freeze_role:
+                train_role = "evader" if self.freeze_role == "pursuer" else "pursuer"
+                print(f"  FREEZE: {self.freeze_role} frozen, only training {train_role}")
             print(f"{'=' * 60}")
 
         # 1. Create persistent environment sets
@@ -1921,7 +1928,10 @@ class AMSDRLSelfPlay:
 
         # 4. Main micro-phase loop
         total_steps = 0
-        role = "pursuer"
+        if self.freeze_role is not None:
+            role = "evader" if self.freeze_role == "pursuer" else "pursuer"
+        else:
+            role = "pursuer"
         converged = False
         convergence_streak = 0  # consecutive evals with gap < eta
 
@@ -2212,8 +2222,11 @@ class AMSDRLSelfPlay:
                     print(f"  [M{micro:>5d}] steps={total_steps:>9,} "
                           f"role={role:>7s} | {steps_per_sec:.0f} steps/s")
 
-            # Alternate role (with adaptive boost override)
-            if boost_remaining > 0:
+            # Alternate role (with adaptive boost and freeze override)
+            if self.freeze_role is not None:
+                # Only train the non-frozen role
+                role = "evader" if self.freeze_role == "pursuer" else "pursuer"
+            elif boost_remaining > 0:
                 role = boost_role
                 boost_remaining -= 1
             else:

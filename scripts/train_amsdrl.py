@@ -220,6 +220,12 @@ def parse_args():
                         help="Enable PFSP-lite: bias opponent pool sampling toward "
                              "weaker/older opponents when an agent is collapsing.")
 
+    # Freeze one role (train only the other agent)
+    parser.add_argument("--freeze_role", type=str, default=None,
+                        choices=["pursuer", "evader"],
+                        help="Freeze this role (don't train it). The other agent "
+                             "trains against the frozen warm-seeded model.")
+
     # Tier 3: EWC (catastrophic forgetting prevention)
     parser.add_argument("--ewc_lambda", type=float, default=0.0,
                         help="EWC regularization strength (0=disabled, e.g. 1000.0)")
@@ -417,6 +423,7 @@ def main():
         gradient_steps=args.gradient_steps,
         init_pursuer_algo=args.init_pursuer_algo,
         init_evader_algo=args.init_evader_algo,
+        freeze_role=args.freeze_role,
     )
 
     result = amsdrl.run()
