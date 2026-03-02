@@ -226,6 +226,11 @@ def parse_args():
                         help="Freeze this role (don't train it). The other agent "
                              "trains against the frozen warm-seeded model.")
 
+    # Asymmetric training ratio
+    parser.add_argument("--train_ratio", type=int, default=1,
+                        help="Train pursuer this many phases per 1 evader phase "
+                             "(e.g. 5 = 5:1 pursuer:evader). Default: 1 (equal)")
+
     # Tier 3: EWC (catastrophic forgetting prevention)
     parser.add_argument("--ewc_lambda", type=float, default=0.0,
                         help="EWC regularization strength (0=disabled, e.g. 1000.0)")
@@ -424,6 +429,7 @@ def main():
         init_pursuer_algo=args.init_pursuer_algo,
         init_evader_algo=args.init_evader_algo,
         freeze_role=args.freeze_role,
+        train_ratio=args.train_ratio,
     )
 
     result = amsdrl.run()

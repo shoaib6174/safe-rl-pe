@@ -722,6 +722,7 @@ class AMSDRLSelfPlay:
         init_pursuer_algo: str | None = None,
         init_evader_algo: str | None = None,
         freeze_role: str | None = None,
+        train_ratio: int = 1,
         verbose: int = 1,
     ):
         self.output_dir = Path(output_dir)
@@ -750,6 +751,9 @@ class AMSDRLSelfPlay:
 
         # Freeze one role (only train the other agent)
         self.freeze_role = freeze_role
+
+        # Asymmetric training ratio (N pursuer phases per 1 evader phase)
+        self.train_ratio = train_ratio
 
         # Algorithm selection (PPO or SAC)
         self.algorithm = algorithm
@@ -1873,6 +1877,8 @@ class AMSDRLSelfPlay:
             if self.freeze_role:
                 train_role = "evader" if self.freeze_role == "pursuer" else "pursuer"
                 print(f"  FREEZE: {self.freeze_role} frozen, only training {train_role}")
+            if self.train_ratio > 1:
+                print(f"  ASYMMETRIC RATIO: {self.train_ratio}:1 pursuer:evader phases")
             print(f"{'=' * 60}")
 
         # 1. Create persistent environment sets
@@ -2222,13 +2228,21 @@ class AMSDRLSelfPlay:
                     print(f"  [M{micro:>5d}] steps={total_steps:>9,} "
                           f"role={role:>7s} | {steps_per_sec:.0f} steps/s")
 
-            # Alternate role (with adaptive boost and freeze override)
+            # Alternate role (with adaptive boost, freeze, and ratio override)
             if self.freeze_role is not None:
                 # Only train the non-frozen role
                 role = "evader" if self.freeze_role == "pursuer" else "pursuer"
             elif boost_remaining > 0:
                 role = boost_role
                 boost_remaining -= 1
+            elif self.train_ratio > 1:
+                # Asymmetric ratio: N pursuer phases per 1 evader phase
+                # micro is 1-indexed, so use (micro % (train_ratio + 1))
+                # Phase pattern: P,P,P,P,P,E,P,P,P,P,P,E,...
+                if micro % (self.train_ratio + 1) == 0:
+                    role = "evader"
+                else:
+                    role = "pursuer"
             else:
                 role = "evader" if role == "pursuer" else "pursuer"
 
