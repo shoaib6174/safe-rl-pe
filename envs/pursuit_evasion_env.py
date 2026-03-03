@@ -177,10 +177,6 @@ class PursuitEvasionEnv(gym.Env):
                 arena_h=arena_height,
             )
 
-        # Pursuer exploration tracking (grid-based cell visitation)
-        self.exploration_grid_size = 1.0
-        self.pursuer_visited_cells: set[tuple[int, int]] = set()
-
         # State variables (initialized in reset)
         self.pursuer_state = None  # [x, y, theta]
         self.evader_state = None   # [x, y, theta]
@@ -239,14 +235,6 @@ class PursuitEvasionEnv(gym.Env):
         )
         self.last_reward_pursuer = 0.0
         self.last_reward_evader = 0.0
-
-        # Reset exploration tracking and add initial cell
-        self.pursuer_visited_cells = set()
-        gs = self.exploration_grid_size
-        self.pursuer_visited_cells.add((
-            int(np.floor(self.pursuer_state[0] / gs)),
-            int(np.floor(self.pursuer_state[1] / gs)),
-        ))
 
         # Reset renderer trails
         if self.renderer is not None:
@@ -373,17 +361,6 @@ class PursuitEvasionEnv(gym.Env):
         if self.w_wall > 0.0:
             r_p -= self.w_wall * float(p_wall)
             r_e -= self.w_wall * float(e_wall)
-
-        # Pursuer exploration bonus: reward visiting new grid cells
-        if self.reward_computer.w_exploration > 0.0:
-            gs = self.exploration_grid_size
-            cell = (
-                int(np.floor(self.pursuer_state[0] / gs)),
-                int(np.floor(self.pursuer_state[1] / gs)),
-            )
-            if cell not in self.pursuer_visited_cells:
-                self.pursuer_visited_cells.add(cell)
-                r_p += self.reward_computer.w_exploration
 
         self.last_reward_pursuer = r_p
         self.last_reward_evader = r_e
