@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.animation as animation
 import numpy as np
+from sb3_contrib import RecurrentPPO
 from stable_baselines3 import PPO, SAC
 
 from envs.pursuit_evasion_env import PursuitEvasionEnv
@@ -13,7 +14,8 @@ from envs.rewards import RewardComputer, line_of_sight_blocked
 from envs.wrappers import FixedSpeedWrapper
 
 
-def run_episode(pursuer_model, evader_model, env_kwargs, seed=None):
+def run_episode(pursuer_model, evader_model, env_kwargs, seed=None,
+                recurrent=False):
     """Run one episode with both learned agents and record trajectories."""
     arena_w = env_kwargs["arena_width"]
     arena_h = env_kwargs["arena_height"]
@@ -74,11 +76,27 @@ def run_episode(pursuer_model, evader_model, env_kwargs, seed=None):
     p_action_dim = pursuer_model.action_space.shape[0]
     e_action_dim = evader_model.action_space.shape[0]
 
+    # LSTM state tracking for RecurrentPPO
+    p_lstm_states = None
+    e_lstm_states = None
+    p_episode_starts = np.array([True])
+    e_episode_starts = np.array([True])
+
     steps = 0
     done = False
     while not done:
-        p_raw, _ = pursuer_model.predict(obs["pursuer"], deterministic=True)
-        e_raw, _ = evader_model.predict(obs["evader"], deterministic=True)
+        if recurrent:
+            p_raw, p_lstm_states = pursuer_model.predict(
+                obs["pursuer"], state=p_lstm_states,
+                episode_start=p_episode_starts, deterministic=True)
+            e_raw, e_lstm_states = evader_model.predict(
+                obs["evader"], state=e_lstm_states,
+                episode_start=e_episode_starts, deterministic=True)
+            p_episode_starts = np.array([False])
+            e_episode_starts = np.array([False])
+        else:
+            p_raw, _ = pursuer_model.predict(obs["pursuer"], deterministic=True)
+            e_raw, _ = evader_model.predict(obs["evader"], deterministic=True)
 
         # Auto-detect: 1D [omega] -> expand to [v_max, omega]; 2D -> use directly
         if p_action_dim == 1:
@@ -291,7 +309,7 @@ def main():
     parser.add_argument("--combined_masking", action="store_true",
                         help="Combined masking: radius + LOS")
     parser.add_argument("--algorithm", type=str, default="ppo",
-                        choices=["ppo", "sac"],
+                        choices=["ppo", "sac", "recurrent_ppo"],
                         help="Algorithm used for the models (default: ppo)")
     args = parser.parse_args()
 
@@ -321,7 +339,12 @@ def main():
         "combined_masking": args.combined_masking,
     }
 
-    model_class = SAC if args.algorithm == "sac" else PPO
+    if args.algorithm == "sac":
+        model_class = SAC
+    elif args.algorithm == "recurrent_ppo":
+        model_class = RecurrentPPO
+    else:
+        model_class = PPO
 
     print(f"Loading pursuer model: {args.pursuer_model} ({args.algorithm})")
     pursuer_model = model_class.load(args.pursuer_model, device="cpu")
@@ -333,7 +356,8 @@ def main():
     captures = 0
     for i in range(args.n_episodes):
         ep = run_episode(pursuer_model, evader_model, env_kwargs,
-                         seed=args.seed + i)
+                         seed=args.seed + i,
+                         recurrent=(args.algorithm == "recurrent_ppo"))
         status = "ESCAPED" if ep["escaped"] else f"CAPTURED at {ep['steps']}"
         print(f"  Ep {i+1}: {status}")
         if ep["captured"]:
