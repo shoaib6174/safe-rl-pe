@@ -389,6 +389,8 @@ def main():
                         help="Radius-based sensing distance")
     parser.add_argument("--combined_masking", action="store_true",
                         help="Combined masking: radius + LOS")
+    parser.add_argument("--trajectory_only", action="store_true",
+                        help="Only generate trajectory PNG, skip GIF")
     parser.add_argument("--algorithm", type=str, default="ppo",
                         choices=["ppo", "sac", "recurrent_ppo"],
                         help="Algorithm used for the models (default: ppo)")
@@ -466,12 +468,14 @@ def main():
         f"Captured: {captures}/{args.n_episodes}{obs_label}"
     )
 
-    make_grid_gif(episodes, args.output, title=title,
-                  fps=args.fps, skip=args.skip)
-
-    # Generate trajectory PNG alongside the GIF
+    # Generate trajectory PNG (always)
     png_path = str(Path(args.output).with_suffix(".png"))
     make_trajectory_png(episodes, png_path, title=title)
+
+    # Generate GIF (unless --trajectory_only)
+    if not args.trajectory_only:
+        make_grid_gif(episodes, args.output, title=title,
+                      fps=args.fps, skip=args.skip)
 
 
 if __name__ == "__main__":
