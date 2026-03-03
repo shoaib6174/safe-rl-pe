@@ -310,6 +310,7 @@ def _build_full_obs_recurrent_ppo(
     ent_coef: float = 0.01,
     lstm_hidden_size: int = 256,
     n_lstm_layers: int = 1,
+    n_epochs: int = 10,
 ) -> RecurrentPPO:
     """Create a RecurrentPPO model with MlpLstmPolicy (LSTM memory)."""
     policy_kwargs = {
@@ -325,7 +326,7 @@ def _build_full_obs_recurrent_ppo(
         learning_rate=learning_rate,
         n_steps=n_steps,
         batch_size=batch_size,
-        n_epochs=10,
+        n_epochs=n_epochs,
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
@@ -825,6 +826,7 @@ class AMSDRLSelfPlay:
         train_ratio: int = 1,
         lstm_hidden_size: int = 256,
         n_lstm_layers: int = 1,
+        n_epochs: int = 10,
         verbose: int = 1,
     ):
         self.output_dir = Path(output_dir)
@@ -874,6 +876,7 @@ class AMSDRLSelfPlay:
             self._model_class = PPO
         self.lstm_hidden_size = lstm_hidden_size
         self.n_lstm_layers = n_lstm_layers
+        self.n_epochs = n_epochs
         self.buffer_size = buffer_size
         self.learning_starts = learning_starts
         self.sac_batch_size = sac_batch_size
@@ -1067,6 +1070,7 @@ class AMSDRLSelfPlay:
                 "batch_size": self.batch_size,
                 "lstm_hidden_size": self.lstm_hidden_size,
                 "n_lstm_layers": self.n_lstm_layers,
+                "n_epochs": self.n_epochs,
             }
         else:
             return {

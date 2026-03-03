@@ -282,6 +282,8 @@ def parse_args():
                         help="LSTM hidden size for RecurrentPPO (default: 256)")
     parser.add_argument("--n_lstm_layers", type=int, default=1,
                         help="Number of LSTM layers for RecurrentPPO (default: 1)")
+    parser.add_argument("--n_epochs", type=int, default=10,
+                        help="PPO/RecurrentPPO training epochs per rollout (default: 10)")
 
     # SAC-specific hyperparameters
     parser.add_argument("--buffer_size", type=int, default=1_000_000,
@@ -449,6 +451,7 @@ def main():
         train_ratio=args.train_ratio,
         lstm_hidden_size=args.lstm_hidden_size,
         n_lstm_layers=args.n_lstm_layers,
+        n_epochs=args.n_epochs,
     )
 
     result = amsdrl.run()
