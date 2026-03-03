@@ -276,6 +276,87 @@ def make_grid_gif(episodes, output_path, title, fps=30, skip=3):
     print(f"Saved: {output_path}")
 
 
+def make_trajectory_png(episodes, output_path, title):
+    """Create static 3x3 grid PNG with trajectory lines, start dots, end arrows."""
+    n = len(episodes)
+    cols = min(3, n)
+    rows = (n + cols - 1) // cols
+
+    fig, axes = plt.subplots(rows, cols, figsize=(4.5 * cols, 4.5 * rows))
+    if n == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+
+    for j in range(n, len(axes)):
+        axes[j].set_visible(False)
+
+    fig.suptitle(title, fontsize=12, fontweight="bold", y=0.98)
+
+    for ep_i, ep in enumerate(episodes):
+        if ep_i >= len(axes):
+            break
+        ax = axes[ep_i]
+        arena_w = ep["arena_w"]
+        arena_h = ep["arena_h"]
+        half_w = arena_w / 2
+        half_h = arena_h / 2
+        p = ep["pursuer"]
+        e = ep["evader"]
+
+        # Arena
+        ax.set_xlim(-half_w - 0.5, half_w + 0.5)
+        ax.set_ylim(-half_h - 0.5, half_h + 0.5)
+        ax.add_patch(patches.Rectangle(
+            (-half_w, -half_h), arena_w, arena_h,
+            linewidth=1.5, edgecolor="black", facecolor="lightyellow",
+        ))
+
+        # Obstacles
+        for ox, oy, r in ep["obstacles"]:
+            ax.add_patch(patches.Circle(
+                (ox, oy), r, facecolor="gray", edgecolor="black",
+                alpha=0.6, zorder=3,
+            ))
+
+        # Trajectory lines
+        ax.plot(p[:, 0], p[:, 1], color="red", linewidth=1.0, alpha=0.5)
+        ax.plot(e[:, 0], e[:, 1], color="blue", linewidth=1.0, alpha=0.5)
+
+        # Start dots
+        ax.plot(p[0, 0], p[0, 1], "o", color="red", markersize=8, zorder=5,
+                label="Pursuer")
+        ax.plot(e[0, 0], e[0, 1], "o", color="blue", markersize=8, zorder=5,
+                label="Evader")
+
+        # End arrows (direction from second-to-last to last point)
+        for traj, color in [(p, "red"), (e, "blue")]:
+            if len(traj) >= 2:
+                dx = traj[-1, 0] - traj[-2, 0]
+                dy = traj[-1, 1] - traj[-2, 1]
+                ax.annotate("", xy=(traj[-1, 0], traj[-1, 1]),
+                            xytext=(traj[-1, 0] - dx * 3, traj[-1, 1] - dy * 3),
+                            arrowprops=dict(arrowstyle="->", color=color, lw=2),
+                            zorder=6)
+
+        # Capture X marker
+        if ep["captured"]:
+            ax.plot(e[-1, 0], e[-1, 1], "x", color="black",
+                    markersize=12, markeredgewidth=3, zorder=7)
+
+        outcome = "ESCAPED" if ep["escaped"] else "CAPTURED"
+        color = "green" if ep["escaped"] else "red"
+        ax.set_title(f"Ep {ep_i+1}: {outcome} ({ep['steps']} steps)",
+                     fontsize=9, color=color, fontweight="bold")
+        ax.set_aspect("equal")
+        ax.grid(True, alpha=0.15)
+        ax.tick_params(labelsize=6)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved trajectory PNG: {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate 3x3 grid GIF: learned pursuer vs learned evader")
@@ -387,6 +468,10 @@ def main():
 
     make_grid_gif(episodes, args.output, title=title,
                   fps=args.fps, skip=args.skip)
+
+    # Generate trajectory PNG alongside the GIF
+    png_path = str(Path(args.output).with_suffix(".png"))
+    make_trajectory_png(episodes, png_path, title=title)
 
 
 if __name__ == "__main__":
