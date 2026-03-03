@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-03-02 (S66)
+## Last Updated: 2026-03-03 (S67)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -76,7 +76,8 @@
 | 63 | 2026-03-01 | **SP4: First Successful Cold-Start Self-Play**: Combined partial obs (3.0m+LOS) + variable obstacles (0-3). Best-model checkpointing + eval fix in amsdrl.py. Pursuer bootstrapped to 53% (M2550), min gap=0.02. 10M steps, 1.7h. | [S63](worklogs/2026-03-01_S63.md) |
 | 64 | 2026-03-02 | **SP4 Degenerate + Speed Diagnostics**: SP4 trajectory analysis — evader hides (0.20 m/s), no PE dynamics. S1v6 (1.05x) failed. **S1v6b (1.2x) holding 35-50%** — first viable speed+partial_obs config. | [S64](worklogs/2026-03-02_S64.md) |
 | 65 | 2026-03-02 | **SP5: Partial Warm-Seed + Launch Prep**: Implemented partial warm-seeding in `_warm_seed()` — load only evader (S1v6b), create pursuer from scratch. SP5 config: 1.2x speed, combined masking, 0-3 obstacles. | [S65](worklogs/2026-03-02_S65.md) |
-| 66 | 2026-03-02 | **SAC Algorithm Support**: Added SAC as algorithm option in self-play (amsdrl.py, opponent_pool.py, train_amsdrl.py). 10 new CLI args. Mixed warm-seeding for cross-algorithm loading. 733 tests pass. | [S66](worklogs/2026-03-02_S66.md) |
+| 66 | 2026-03-02 | **SAC Self-Play + Freeze→Unfreeze**: SAC in self-play, `--freeze_role`, eval_interval tuning. SP7b2 freeze evader climbed to **42%** pursuer SR. Unfrozen as **SP8** (co-evolution). RunD (1.1x evader) hit 81%. GIF viz confirms no obstacle use — pure speed strategy. SP7a2 adaptive boost consistently failing. | [S66](worklogs/2026-03-02_S66.md) |
+| 67 | 2026-03-03 | **Exploration reward attempted then reverted**: Implemented `--w_exploration` but removed — agent lacks observational capacity to exploit it. Relaunched SP11a/SP11b to train longer. | [S67](worklogs/2026-03-03_S67.md) |
 
 ## Paper Reading Status
 
