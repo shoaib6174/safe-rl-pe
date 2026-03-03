@@ -109,6 +109,11 @@ def parse_args():
     parser.add_argument("--w_wall", type=float, default=0.0,
                         help="Wall collision penalty weight (default: 0.0, off)")
 
+    # Pursuer exploration bonus
+    parser.add_argument("--w_exploration", type=float, default=0.0,
+                        help="Pursuer exploration bonus per new 1m grid cell visited "
+                             "(default: 0.0, off)")
+
     # Obstacle observation
     parser.add_argument("--n_obstacle_obs", type=int, default=0,
                         help="Number of nearest obstacles in observation vector (default: 0). "
@@ -387,6 +392,7 @@ def main():
         capture_bonus=args.capture_bonus,
         w_collision=args.w_collision,
         w_wall=args.w_wall,
+        w_exploration=args.w_exploration,
         n_obstacle_obs=args.n_obstacle_obs,
         evader_training_multiplier=args.evader_multiplier,
         min_escape_rate=args.min_escape_rate,

@@ -157,6 +157,7 @@ class RewardComputer:
         visibility_weight: Scale for +1/-1 visibility signal (Mode B).
         survival_bonus: Per-step bonus for evader being alive (Mode B).
         w_obs_approach: Weight on PBRS obstacle-seeking term (default 0).
+        w_exploration: Weight on pursuer exploration bonus per new grid cell (default 0).
     """
 
     def __init__(
@@ -170,6 +171,7 @@ class RewardComputer:
         visibility_weight: float = 1.0,
         survival_bonus: float = 0.0,
         w_obs_approach: float = 0.0,
+        w_exploration: float = 0.0,
     ):
         self.distance_scale = distance_scale
         self.capture_bonus = capture_bonus
@@ -180,6 +182,7 @@ class RewardComputer:
         self.visibility_weight = visibility_weight
         self.survival_bonus = survival_bonus
         self.w_obs_approach = w_obs_approach
+        self.w_exploration = w_exploration
 
     def compute(
         self,
