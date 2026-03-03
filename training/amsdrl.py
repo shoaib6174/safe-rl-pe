@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from sb3_contrib import RecurrentPPO
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.monitor import Monitor
@@ -298,6 +299,77 @@ def _build_full_obs_ppo(
     return model
 
 
+def _build_full_obs_recurrent_ppo(
+    env,
+    seed: int = 42,
+    device: str = "cpu",
+    tensorboard_log: str | None = None,
+    learning_rate: float = 3e-4,
+    n_steps: int = 512,
+    batch_size: int = 256,
+    ent_coef: float = 0.01,
+    lstm_hidden_size: int = 256,
+    n_lstm_layers: int = 1,
+) -> RecurrentPPO:
+    """Create a RecurrentPPO model with MlpLstmPolicy (LSTM memory)."""
+    policy_kwargs = {
+        "lstm_hidden_size": lstm_hidden_size,
+        "n_lstm_layers": n_lstm_layers,
+        "net_arch": dict(pi=[256, 256], vf=[256, 256]),
+        "activation_fn": torch.nn.Tanh,
+    }
+
+    model = RecurrentPPO(
+        "MlpLstmPolicy",
+        env,
+        learning_rate=learning_rate,
+        n_steps=n_steps,
+        batch_size=batch_size,
+        n_epochs=10,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=ent_coef,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+        seed=seed,
+        device=device,
+        tensorboard_log=tensorboard_log,
+        verbose=0,
+        policy_kwargs=policy_kwargs,
+    )
+    return model
+
+
+class RecurrentModelAdapter:
+    """Wraps a RecurrentPPO model to manage LSTM state when used as opponent.
+
+    RecurrentPPO.predict() requires passing LSTM hidden states and episode
+    start flags across steps. This adapter manages that state internally,
+    providing the same predict(obs, deterministic) interface as standard models.
+    """
+
+    def __init__(self, model):
+        self.model = model
+        self.lstm_states = None
+        self.episode_starts = np.array([True])
+
+    def predict(self, obs, deterministic: bool = False):
+        action, self.lstm_states = self.model.predict(
+            obs,
+            state=self.lstm_states,
+            episode_start=self.episode_starts,
+            deterministic=deterministic,
+        )
+        self.episode_starts = np.array([False])
+        return action, None
+
+    def reset(self):
+        """Reset LSTM states at episode boundaries."""
+        self.lstm_states = None
+        self.episode_starts = np.array([True])
+
+
 def _build_full_obs_sac(
     env,
     seed: int = 42,
@@ -527,6 +599,7 @@ def _evaluate_head_to_head_full_obs(
     asymmetric_obs: bool = False,
     sensing_radius: float | None = None,
     combined_masking: bool = False,
+    recurrent: bool = False,
     **kwargs,
 ) -> dict:
     """Evaluate pursuer vs evader with full-state observations (diagnostic mode)."""
@@ -558,14 +631,39 @@ def _evaluate_head_to_head_full_obs(
     episode_lengths = []
     capture_times = []
 
+    # LSTM state tracking for RecurrentPPO
+    p_lstm_states = None
+    e_lstm_states = None
+    p_episode_starts = np.array([True])
+    e_episode_starts = np.array([True])
+
     for ep in range(n_episodes):
         obs, info = base_env.reset(seed=seed + ep)
         done = False
 
+        # Reset LSTM states at episode start
+        if recurrent:
+            p_lstm_states = None
+            e_lstm_states = None
+            p_episode_starts = np.array([True])
+            e_episode_starts = np.array([True])
+
         while not done:
             # Both agents use full-state obs directly
-            p_action, _ = pursuer_model.predict(obs["pursuer"], deterministic=True)
-            e_action, _ = evader_model.predict(obs["evader"], deterministic=True)
+            if recurrent:
+                p_action, p_lstm_states = pursuer_model.predict(
+                    obs["pursuer"], state=p_lstm_states,
+                    episode_start=p_episode_starts, deterministic=True,
+                )
+                e_action, e_lstm_states = evader_model.predict(
+                    obs["evader"], state=e_lstm_states,
+                    episode_start=e_episode_starts, deterministic=True,
+                )
+                p_episode_starts = np.array([False])
+                e_episode_starts = np.array([False])
+            else:
+                p_action, _ = pursuer_model.predict(obs["pursuer"], deterministic=True)
+                e_action, _ = evader_model.predict(obs["evader"], deterministic=True)
             # If fixed_speed, model outputs 1D [omega] — expand to [v_max, omega]
             if fixed_speed:
                 if p_action.shape[-1] == 1:
@@ -725,6 +823,8 @@ class AMSDRLSelfPlay:
         alternate_freeze: bool = False,
         freeze_switch_threshold: float = 0.6,
         train_ratio: int = 1,
+        lstm_hidden_size: int = 256,
+        n_lstm_layers: int = 1,
         verbose: int = 1,
     ):
         self.output_dir = Path(output_dir)
@@ -764,9 +864,16 @@ class AMSDRLSelfPlay:
         # Asymmetric training ratio (N pursuer phases per 1 evader phase)
         self.train_ratio = train_ratio
 
-        # Algorithm selection (PPO or SAC)
+        # Algorithm selection (PPO, SAC, or RecurrentPPO)
         self.algorithm = algorithm
-        self._model_class = SAC if algorithm == "sac" else PPO
+        if algorithm == "sac":
+            self._model_class = SAC
+        elif algorithm == "recurrent_ppo":
+            self._model_class = RecurrentPPO
+        else:
+            self._model_class = PPO
+        self.lstm_hidden_size = lstm_hidden_size
+        self.n_lstm_layers = n_lstm_layers
         self.buffer_size = buffer_size
         self.learning_starts = learning_starts
         self.sac_batch_size = sac_batch_size
@@ -931,6 +1038,13 @@ class AMSDRLSelfPlay:
 
     def _get_build_fn(self):
         """Return the appropriate model builder function for the current algorithm."""
+        if self.algorithm == "recurrent_ppo":
+            if not self.full_obs:
+                raise ValueError(
+                    "RecurrentPPO only supports --full_obs mode "
+                    "(LSTM replaces partial obs wrapper)."
+                )
+            return _build_full_obs_recurrent_ppo
         if self.algorithm == "sac":
             return _build_full_obs_sac if self.full_obs else _build_partial_obs_sac
         else:
@@ -947,6 +1061,13 @@ class AMSDRLSelfPlay:
                 "train_freq": self.train_freq,
                 "gradient_steps": self.gradient_steps,
             }
+        elif self.algorithm == "recurrent_ppo":
+            return {
+                "n_steps": self.n_steps,
+                "batch_size": self.batch_size,
+                "lstm_hidden_size": self.lstm_hidden_size,
+                "n_lstm_layers": self.n_lstm_layers,
+            }
         else:
             return {
                 "n_steps": self.n_steps,
@@ -956,7 +1077,11 @@ class AMSDRLSelfPlay:
     @staticmethod
     def _algo_class(algo_name: str):
         """Return the SB3 model class for a given algorithm name."""
-        return SAC if algo_name == "sac" else PPO
+        if algo_name == "sac":
+            return SAC
+        elif algo_name == "recurrent_ppo":
+            return RecurrentPPO
+        return PPO
 
     def run(self) -> dict:
         """Execute the full AMS-DRL protocol.
@@ -1595,10 +1720,10 @@ class AMSDRLSelfPlay:
                   f"lambda={self.ewc.lambda_}")
 
     def _wrap_opponent_model(self, opp_model, opponent_role, base_env):
-        """Wrap an opponent model with adapters (fixed-speed, partial-obs).
+        """Wrap an opponent model with adapters (fixed-speed, partial-obs, recurrent).
 
         Args:
-            opp_model: PPO model to wrap (or None for random policy).
+            opp_model: PPO/SAC/RecurrentPPO model to wrap (or None for random policy).
             opponent_role: 'pursuer' or 'evader'.
             base_env: The base PursuitEvasionEnv (for velocity info).
 
@@ -1610,11 +1735,15 @@ class AMSDRLSelfPlay:
             return None  # Random policy — SingleAgentPEWrapper handles None
 
         if self.full_obs:
+            model = opp_model
+            # RecurrentPPO needs LSTM state management
+            if self.algorithm == "recurrent_ppo":
+                model = RecurrentModelAdapter(model)
             if self.fixed_speed:
                 opp_v_max = (base_env.evader_v_max if opponent_role == "evader"
                              else base_env.pursuer_v_max)
-                return FixedSpeedModelAdapter(opp_model, v_max=opp_v_max)
-            return opp_model
+                return FixedSpeedModelAdapter(model, v_max=opp_v_max)
+            return model
         else:
             model = opp_model
             if self.fixed_speed:
@@ -2565,6 +2694,7 @@ class AMSDRLSelfPlay:
                 seed=self.seed + len(self.history) * 1000,
                 n_obstacles=self.n_obstacles,
                 fixed_speed=self.fixed_speed,
+                recurrent=(self.algorithm == "recurrent_ppo"),
                 **self.env_kwargs,
             )
         return _evaluate_head_to_head(

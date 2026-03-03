@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-03-03 (S67)
+## Last Updated: 2026-03-03 (S68)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -78,6 +78,7 @@
 | 65 | 2026-03-02 | **SP5: Partial Warm-Seed + Launch Prep**: Implemented partial warm-seeding in `_warm_seed()` — load only evader (S1v6b), create pursuer from scratch. SP5 config: 1.2x speed, combined masking, 0-3 obstacles. | [S65](worklogs/2026-03-02_S65.md) |
 | 66 | 2026-03-02 | **SAC Self-Play + Freeze→Unfreeze**: SAC in self-play, `--freeze_role`, eval_interval tuning. SP7b2 freeze evader climbed to **42%** pursuer SR. Unfrozen as **SP8** (co-evolution). RunD (1.1x evader) hit 81%. GIF viz confirms no obstacle use — pure speed strategy. SP7a2 adaptive boost consistently failing. | [S66](worklogs/2026-03-02_S66.md) |
 | 67 | 2026-03-03 | **Exploration reward attempted then reverted**: Implemented `--w_exploration` but removed — agent lacks observational capacity to exploit it. Relaunched SP11a/SP11b to train longer. | [S67](worklogs/2026-03-03_S67.md) |
+| 68 | 2026-03-03 | **RecurrentPPO (LSTM) support**: Added `sb3-contrib` + `RecurrentPPO` with `MlpLstmPolicy` to self-play framework. Builder, adapter, dispatch, recurrent eval. Ready for SP13a/SP13b launch. | [S68](worklogs/2026-03-03_S68.md) |
 
 ## Paper Reading Status
 
