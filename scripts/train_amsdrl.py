@@ -94,6 +94,11 @@ def parse_args():
     parser.add_argument("--w_vis_pursuer", type=float, default=0.0,
                         help="Per-step reward for pursuer when evader is visible "
                              "(within sensing radius + LOS clear). Default 0 (off).")
+    parser.add_argument("--w_search", type=float, default=0.0,
+                        help="Per-step reward weight for pursuer exploring stale grid cells. "
+                             "Incentivizes active search. Default 0 (off).")
+    parser.add_argument("--t_stale", type=int, default=50,
+                        help="Steps until a grid cell becomes fully stale (default: 50 = 2.5 seconds)")
     parser.add_argument("--timeout_penalty", type=float, default=-100.0,
                         help="Pursuer penalty on timeout / evader reward on escape (default: -100.0)")
     parser.add_argument("--capture_bonus", type=float, default=100.0,
@@ -395,6 +400,8 @@ def main():
         prep_steps=args.prep_steps,
         w_obs_approach=args.w_obs_approach,
         w_vis_pursuer=args.w_vis_pursuer,
+        w_search=args.w_search,
+        t_stale=args.t_stale,
         timeout_penalty=args.timeout_penalty,
         capture_bonus=args.capture_bonus,
         w_collision=args.w_collision,

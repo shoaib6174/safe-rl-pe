@@ -70,6 +70,8 @@ class PursuitEvasionEnv(gym.Env):
         asymmetric_obs: bool = False,
         sensing_radius: float | None = None,
         combined_masking: bool = False,
+        w_search: float = 0.0,
+        t_stale: int = 50,
     ):
         super().__init__()
 
@@ -122,6 +124,20 @@ class PursuitEvasionEnv(gym.Env):
 
         # Phase 3: Combined masking (radius + LOS: both must pass for visibility)
         self.combined_masking = combined_masking
+
+        # Search staleness reward for pursuer
+        self.w_search = w_search
+        self.t_stale = t_stale
+        if self.w_search > 0:
+            from envs.search_staleness import SearchStalenessTracker
+            self.search_tracker = SearchStalenessTracker(
+                arena_width=arena_width,
+                arena_height=arena_height,
+                sensing_radius=self.sensing_radius or 100.0,
+                t_stale=self.t_stale,
+            )
+        else:
+            self.search_tracker = None
 
         # Reward computer (allow injection for SafetyRewardComputer)
         arena_diagonal = np.sqrt(arena_width**2 + arena_height**2)
@@ -235,6 +251,10 @@ class PursuitEvasionEnv(gym.Env):
         )
         self.last_reward_pursuer = 0.0
         self.last_reward_evader = 0.0
+
+        # Reset search staleness tracker
+        if self.search_tracker is not None:
+            self.search_tracker.reset()
 
         # Reset renderer trails
         if self.renderer is not None:
@@ -361,6 +381,13 @@ class PursuitEvasionEnv(gym.Env):
         if self.w_wall > 0.0:
             r_p -= self.w_wall * float(p_wall)
             r_e -= self.w_wall * float(e_wall)
+
+        # Search staleness reward (pursuer only)
+        if self.search_tracker is not None:
+            mean_staleness = self.search_tracker.observe_and_reward(
+                self.pursuer_state, self.obstacles, self.current_step
+            )
+            r_p += self.w_search * mean_staleness
 
         self.last_reward_pursuer = r_p
         self.last_reward_evader = r_e

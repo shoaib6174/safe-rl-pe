@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-03-03 (S68)
+## Last Updated: 2026-03-04 (S70)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -79,6 +79,9 @@
 | 66 | 2026-03-02 | **SAC Self-Play + Freeze→Unfreeze**: SAC in self-play, `--freeze_role`, eval_interval tuning. SP7b2 freeze evader climbed to **42%** pursuer SR. Unfrozen as **SP8** (co-evolution). RunD (1.1x evader) hit 81%. GIF viz confirms no obstacle use — pure speed strategy. SP7a2 adaptive boost consistently failing. | [S66](worklogs/2026-03-02_S66.md) |
 | 67 | 2026-03-03 | **Exploration reward attempted then reverted**: Implemented `--w_exploration` but removed — agent lacks observational capacity to exploit it. Relaunched SP11a/SP11b to train longer. | [S67](worklogs/2026-03-03_S67.md) |
 | 68 | 2026-03-03 | **RecurrentPPO (LSTM) support**: Added `sb3-contrib` + `RecurrentPPO` with `MlpLstmPolicy` to self-play framework. Builder, adapter, dispatch, recurrent eval. Ready for SP13a/SP13b launch. | [S68](worklogs/2026-03-03_S68.md) |
+| 69 | 2026-03-03 | **Masking Curriculum Research**: 15+ papers surveyed — PO-GRL (full→partial annealing with SAC), GPO, asymmetric actor-critic, observation dropout, PE-specific curricula. Concrete implementation strategies identified. | [S69](worklogs/2026-03-03_S69.md) |
+| 70 | 2026-03-04 | **Search/Exploration Reward Literature Review**: 20+ papers surveyed across PE/POMDP, multi-agent search, hide-and-seek, coverage/patrol, intrinsic motivation. Exact reward formulations documented. Top candidates: entropy reduction, 1/sqrt(visit_count), scan staleness. | [S70](worklogs/2026-03-04_S70.md) |
+| 71 | 2026-03-04 | **Staleness-Based Search Reward**: Implemented `SearchStalenessTracker` — 10x10 grid, tracks cell observation times, rewards pursuer for visiting stale cells. New `--w_search`/`--t_stale` CLI flags. 733 tests pass. | [S71](worklogs/2026-03-04_S71.md) |
 
 ## Paper Reading Status
 

@@ -78,6 +78,8 @@ def _make_partial_obs_env(
     prep_steps: int = 0,
     w_obs_approach: float = 0.0,
     w_vis_pursuer: float = 0.0,
+    w_search: float = 0.0,
+    t_stale: int = 50,
     timeout_penalty: float = -100.0,
     capture_bonus: float = 100.0,
     w_collision: float = 0.0,
@@ -151,6 +153,8 @@ def _make_partial_obs_env(
         asymmetric_obs=asymmetric_obs,
         sensing_radius=sensing_radius,
         combined_masking=combined_masking,
+        w_search=w_search,
+        t_stale=t_stale,
     )
     single_env = SingleAgentPEWrapper(base_env, role=role)
 
@@ -769,6 +773,8 @@ class AMSDRLSelfPlay:
         prep_steps: int = 0,
         w_obs_approach: float = 0.0,
         w_vis_pursuer: float = 0.0,
+        w_search: float = 0.0,
+        t_stale: int = 50,
         timeout_penalty: float = -100.0,
         capture_bonus: float = 100.0,
         w_collision: float = 0.0,
@@ -904,6 +910,8 @@ class AMSDRLSelfPlay:
             "prep_steps": prep_steps,
             "w_obs_approach": w_obs_approach,
             "w_vis_pursuer": w_vis_pursuer,
+            "w_search": w_search,
+            "t_stale": t_stale,
             "timeout_penalty": timeout_penalty,
             "capture_bonus": capture_bonus,
             "w_collision": w_collision,
@@ -1134,6 +1142,9 @@ class AMSDRLSelfPlay:
             w_vis_p = self.env_kwargs.get("w_vis_pursuer", 0.0)
             if w_vis_p > 0:
                 print(f"  Pursuer visibility reward: {w_vis_p}/step when evader visible")
+            w_s = self.env_kwargs.get("w_search", 0.0)
+            if w_s > 0:
+                print(f"  Search staleness reward: {w_s}/step, t_stale={self.env_kwargs.get('t_stale', 50)}")
             n_obs_obs = self.env_kwargs.get("n_obstacle_obs", 0)
             if n_obs_obs > 0:
                 print(f"  Obstacle obs: {n_obs_obs} nearest obstacles in obs vector")
