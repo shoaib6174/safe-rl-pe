@@ -91,6 +91,9 @@ def parse_args():
                         help="Scale for visibility reward signal (default: 1.0)")
     parser.add_argument("--survival_bonus", type=float, default=0.0,
                         help="Per-step survival bonus for evader (e.g. 1.0)")
+    parser.add_argument("--w_vis_pursuer", type=float, default=0.0,
+                        help="Per-step reward for pursuer when evader is visible "
+                             "(within sensing radius + LOS clear). Default 0 (off).")
     parser.add_argument("--timeout_penalty", type=float, default=-100.0,
                         help="Pursuer penalty on timeout / evader reward on escape (default: -100.0)")
     parser.add_argument("--capture_bonus", type=float, default=100.0,
@@ -391,6 +394,7 @@ def main():
         survival_bonus=args.survival_bonus,
         prep_steps=args.prep_steps,
         w_obs_approach=args.w_obs_approach,
+        w_vis_pursuer=args.w_vis_pursuer,
         timeout_penalty=args.timeout_penalty,
         capture_bonus=args.capture_bonus,
         w_collision=args.w_collision,

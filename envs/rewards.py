@@ -157,6 +157,9 @@ class RewardComputer:
         visibility_weight: Scale for +1/-1 visibility signal (Mode B).
         survival_bonus: Per-step bonus for evader being alive (Mode B).
         w_obs_approach: Weight on PBRS obstacle-seeking term (default 0).
+        w_vis_pursuer: Per-step reward for pursuer when evader is visible
+            (within sensing_radius + LOS clear). Default 0 (off).
+        sensing_radius: Sensing radius for visibility check (None = unlimited).
     """
 
     def __init__(
@@ -170,6 +173,8 @@ class RewardComputer:
         visibility_weight: float = 1.0,
         survival_bonus: float = 0.0,
         w_obs_approach: float = 0.0,
+        w_vis_pursuer: float = 0.0,
+        sensing_radius: float | None = None,
     ):
         self.distance_scale = distance_scale
         self.capture_bonus = capture_bonus
@@ -180,6 +185,8 @@ class RewardComputer:
         self.visibility_weight = visibility_weight
         self.survival_bonus = survival_bonus
         self.w_obs_approach = w_obs_approach
+        self.w_vis_pursuer = w_vis_pursuer
+        self.sensing_radius = sensing_radius
 
     def compute(
         self,
@@ -215,6 +222,24 @@ class RewardComputer:
         r_capture = self.capture_bonus if captured else 0.0
         r_timeout = self.timeout_penalty if timed_out else 0.0
         r_pursuer = r_dist + r_capture + r_timeout
+
+        # ── Pursuer visibility reward: +w per step when evader is visible ──
+        if (
+            self.w_vis_pursuer > 0
+            and not captured
+            and not timed_out
+            and pursuer_pos is not None
+            and evader_pos is not None
+        ):
+            in_range = (
+                self.sensing_radius is None
+                or d_curr <= self.sensing_radius
+            )
+            los_clear = not line_of_sight_blocked(
+                pursuer_pos, evader_pos, obstacles or []
+            )
+            if in_range and los_clear:
+                r_pursuer += self.w_vis_pursuer
 
         # ── Evader reward ──
         # Check if visibility mode should be active this step

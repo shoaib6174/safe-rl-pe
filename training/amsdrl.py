@@ -77,6 +77,7 @@ def _make_partial_obs_env(
     survival_bonus: float = 0.0,
     prep_steps: int = 0,
     w_obs_approach: float = 0.0,
+    w_vis_pursuer: float = 0.0,
     timeout_penalty: float = -100.0,
     capture_bonus: float = 100.0,
     w_collision: float = 0.0,
@@ -125,6 +126,8 @@ def _make_partial_obs_env(
         w_obs_approach=w_obs_approach,
         timeout_penalty=timeout_penalty,
         capture_bonus=capture_bonus,
+        w_vis_pursuer=w_vis_pursuer,
+        sensing_radius=sensing_radius,
     )
 
     base_env = PursuitEvasionEnv(
@@ -765,6 +768,7 @@ class AMSDRLSelfPlay:
         survival_bonus: float = 0.0,
         prep_steps: int = 0,
         w_obs_approach: float = 0.0,
+        w_vis_pursuer: float = 0.0,
         timeout_penalty: float = -100.0,
         capture_bonus: float = 100.0,
         w_collision: float = 0.0,
@@ -899,6 +903,7 @@ class AMSDRLSelfPlay:
             "survival_bonus": survival_bonus,
             "prep_steps": prep_steps,
             "w_obs_approach": w_obs_approach,
+            "w_vis_pursuer": w_vis_pursuer,
             "timeout_penalty": timeout_penalty,
             "capture_bonus": capture_bonus,
             "w_collision": w_collision,
@@ -1126,6 +1131,9 @@ class AMSDRLSelfPlay:
                 w_occ = self.env_kwargs.get("w_occlusion", 0.0)
                 if w_occ > 0:
                     print(f"  Occlusion bonus: {w_occ}")
+            w_vis_p = self.env_kwargs.get("w_vis_pursuer", 0.0)
+            if w_vis_p > 0:
+                print(f"  Pursuer visibility reward: {w_vis_p}/step when evader visible")
             n_obs_obs = self.env_kwargs.get("n_obstacle_obs", 0)
             if n_obs_obs > 0:
                 print(f"  Obstacle obs: {n_obs_obs} nearest obstacles in obs vector")
@@ -1500,7 +1508,7 @@ class AMSDRLSelfPlay:
 
         # Partial-obs mode: pre-train evader with NavigationEnv
         # Filter env_kwargs: reward params are handled by RewardComputer, not PursuitEvasionEnv
-        _reward_keys = {"w_occlusion", "use_visibility_reward", "visibility_weight", "survival_bonus", "w_obs_approach", "timeout_penalty"}
+        _reward_keys = {"w_occlusion", "use_visibility_reward", "visibility_weight", "survival_bonus", "w_obs_approach", "w_vis_pursuer", "timeout_penalty"}
         _env_only_keys = {"partial_obs_los"}  # handled by _make_partial_obs_env, not PursuitEvasionEnv directly
         pe_kwargs = {k: v for k, v in self.env_kwargs.items() if k not in _reward_keys and k not in _env_only_keys}
         reward_params = {k: v for k, v in self.env_kwargs.items() if k in _reward_keys}
@@ -1509,6 +1517,7 @@ class AMSDRLSelfPlay:
             rc = RewardComputer(
                 distance_scale=pe_kwargs.get("distance_scale", 1.0),
                 d_max=arena_diag,
+                sensing_radius=pe_kwargs.get("sensing_radius"),
                 **reward_params,
             )
             pe_kwargs["reward_computer"] = rc
@@ -2650,7 +2659,7 @@ class AMSDRLSelfPlay:
 
         # Baseline evaluation (only for pursuer — evaluates against scripted evaders)
         if role == "pursuer":
-            _rk = {"w_occlusion", "use_visibility_reward", "visibility_weight", "survival_bonus", "w_obs_approach", "partial_obs_los"}
+            _rk = {"w_occlusion", "use_visibility_reward", "visibility_weight", "survival_bonus", "w_obs_approach", "w_vis_pursuer", "partial_obs_los"}
             baseline_kwargs = {k: v for k, v in self.env_kwargs.items() if k not in _rk}
             eval_env = PursuitEvasionEnv(
                 **baseline_kwargs, n_obstacles=self.n_obstacles
