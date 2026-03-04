@@ -242,6 +242,9 @@ def parse_args():
     parser.add_argument("--freeze_switch_threshold", type=float, default=0.6,
                         help="Switch frozen role when active agent's SR exceeds "
                              "this threshold (default: 0.6 = 60%%).")
+    parser.add_argument("--freeze_switch_consecutive", type=int, default=1,
+                        help="Number of consecutive evals above threshold before "
+                             "switching frozen role (default: 1).")
 
     # Asymmetric training ratio
     parser.add_argument("--train_ratio", type=int, default=1,
@@ -459,6 +462,7 @@ def main():
         freeze_role=args.freeze_role,
         alternate_freeze=args.alternate_freeze,
         freeze_switch_threshold=args.freeze_switch_threshold,
+        freeze_switch_consecutive=args.freeze_switch_consecutive,
         train_ratio=args.train_ratio,
         lstm_hidden_size=args.lstm_hidden_size,
         n_lstm_layers=args.n_lstm_layers,

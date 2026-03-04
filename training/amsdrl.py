@@ -833,6 +833,7 @@ class AMSDRLSelfPlay:
         freeze_role: str | None = None,
         alternate_freeze: bool = False,
         freeze_switch_threshold: float = 0.6,
+        freeze_switch_consecutive: int = 1,
         train_ratio: int = 1,
         lstm_hidden_size: int = 256,
         n_lstm_layers: int = 1,
@@ -869,6 +870,8 @@ class AMSDRLSelfPlay:
         # Alternating freeze: switch which agent is frozen based on SR threshold
         self.alternate_freeze = alternate_freeze
         self.freeze_switch_threshold = freeze_switch_threshold
+        self.freeze_switch_consecutive = freeze_switch_consecutive
+        self._freeze_switch_streak = 0
         if self.alternate_freeze:
             # Override freeze_role to start with evader frozen (train pursuer first)
             self.freeze_role = "evader"
@@ -2037,8 +2040,10 @@ class AMSDRLSelfPlay:
             if self.pfsp_enabled:
                 print(f"  PFSP-lite: enabled (bias toward weaker opponents when losing)")
             if self.alternate_freeze:
+                consec_str = (f" for {self.freeze_switch_consecutive} consecutive evals"
+                              if self.freeze_switch_consecutive > 1 else "")
                 print(f"  ALTERNATE FREEZE: switching frozen role when SR > "
-                      f"{self.freeze_switch_threshold:.0%}")
+                      f"{self.freeze_switch_threshold:.0%}{consec_str}")
                 print(f"  Starting with {self.freeze_role} frozen "
                       f"(training {'pursuer' if self.freeze_role == 'evader' else 'evader'})")
             elif self.freeze_role:
@@ -2289,22 +2294,31 @@ class AMSDRLSelfPlay:
                         print(f"    *BEST evader* SR={sr_e:.3f} at M{micro}")
 
                 # Alternating freeze: switch frozen role when active agent
-                # exceeds the SR threshold
+                # exceeds the SR threshold for N consecutive evals
                 if self.alternate_freeze and self.freeze_role is not None:
                     active_role = ("pursuer" if self.freeze_role == "evader"
                                    else "evader")
                     active_sr = sr_p if active_role == "pursuer" else sr_e
                     if active_sr > self.freeze_switch_threshold:
-                        old_frozen = self.freeze_role
-                        self.freeze_role = active_role  # freeze the strong one
-                        new_train = ("pursuer" if self.freeze_role == "evader"
-                                     else "evader")
-                        if self.verbose:
+                        self._freeze_switch_streak += 1
+                        if self.verbose and self.freeze_switch_consecutive > 1:
                             print(f"    [ALT-FREEZE] {active_role} SR="
                                   f"{active_sr:.3f} > "
-                                  f"{self.freeze_switch_threshold:.3f} → "
-                                  f"freezing {active_role}, "
-                                  f"now training {new_train}")
+                                  f"{self.freeze_switch_threshold:.3f} "
+                                  f"(streak: {self._freeze_switch_streak}/"
+                                  f"{self.freeze_switch_consecutive})")
+                        if self._freeze_switch_streak >= self.freeze_switch_consecutive:
+                            old_frozen = self.freeze_role
+                            self.freeze_role = active_role  # freeze the strong one
+                            new_train = ("pursuer" if self.freeze_role == "evader"
+                                         else "evader")
+                            self._freeze_switch_streak = 0
+                            if self.verbose:
+                                print(f"    [ALT-FREEZE] Switching → "
+                                      f"freezing {active_role}, "
+                                      f"now training {new_train}")
+                    else:
+                        self._freeze_switch_streak = 0
 
                 # Save history incrementally
                 self._save_history_incremental(
