@@ -382,12 +382,32 @@ class PursuitEvasionEnv(gym.Env):
             r_p -= self.w_wall * float(p_wall)
             r_e -= self.w_wall * float(e_wall)
 
-        # Search staleness reward (pursuer only)
+        # Search staleness reward (pursuer only, gated on visibility)
+        # Only reward exploration when evader is NOT visible — when visible,
+        # capture/distance rewards drive pursuit behavior instead.
         if self.search_tracker is not None:
-            mean_staleness = self.search_tracker.observe_and_reward(
-                self.pursuer_state, self.obstacles, self.current_step
-            )
-            r_p += self.w_search * mean_staleness
+            evader_visible = True
+            if self.partial_obs:
+                if self.sensing_radius is not None:
+                    out_of_range = d_curr > self.sensing_radius
+                    if self.combined_masking:
+                        los_blocked = line_of_sight_blocked(
+                            self.pursuer_state, self.evader_state,
+                            self.obstacles,
+                        )
+                        evader_visible = not (out_of_range or los_blocked)
+                    else:
+                        evader_visible = not out_of_range
+                else:
+                    evader_visible = not line_of_sight_blocked(
+                        self.pursuer_state, self.evader_state,
+                        self.obstacles,
+                    )
+            if not evader_visible:
+                mean_staleness = self.search_tracker.observe_and_reward(
+                    self.pursuer_state, self.obstacles, self.current_step
+                )
+                r_p += self.w_search * mean_staleness
 
         self.last_reward_pursuer = r_p
         self.last_reward_evader = r_e
