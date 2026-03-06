@@ -91,6 +91,7 @@ def _make_partial_obs_env(
     asymmetric_obs: bool = False,
     sensing_radius: float | None = None,
     combined_masking: bool = False,
+    p_full_obs: float = 0.0,
 ) -> tuple:
     """Create an environment stack for one agent.
 
@@ -111,6 +112,7 @@ def _make_partial_obs_env(
         capture_bonus: Terminal capture reward magnitude.
         n_obstacle_obs: Number of nearest obstacles in observation (0 = none).
         partial_obs_los: Enable LOS-based partial obs (mask opponent when occluded).
+        p_full_obs: Probability of overriding masking with full obs (masking curriculum).
 
     Returns:
         (env, base_env) where env is the fully-wrapped env and
@@ -156,7 +158,7 @@ def _make_partial_obs_env(
         w_search=w_search,
         t_stale=t_stale,
     )
-    single_env = SingleAgentPEWrapper(base_env, role=role)
+    single_env = SingleAgentPEWrapper(base_env, role=role, p_full_obs=p_full_obs)
 
     if full_obs:
         env = single_env
@@ -185,6 +187,7 @@ def _make_vec_env(
     rnd_module: RNDModule | None = None,
     rnd_coef: float = 0.0,
     rnd_update_freq: int = 256,
+    p_full_obs: float = 0.0,
     **env_kwargs,
 ) -> tuple:
     """Create vectorized environments.
@@ -205,6 +208,7 @@ def _make_vec_env(
                 n_obstacles=n_obstacles,
                 seed=env_seed,
                 full_obs=full_obs,
+                p_full_obs=p_full_obs,
                 **env_kwargs,
             )
             # RND wrapper for evader intrinsic motivation
@@ -838,6 +842,9 @@ class AMSDRLSelfPlay:
         lstm_hidden_size: int = 256,
         n_lstm_layers: int = 1,
         n_epochs: int = 10,
+        masking_curriculum: bool = False,
+        p_full_anneal_steps: int = 5_000_000,
+        p_full_residual: float = 0.0,
         verbose: int = 1,
     ):
         self.output_dir = Path(output_dir)
@@ -890,6 +897,12 @@ class AMSDRLSelfPlay:
         self.lstm_hidden_size = lstm_hidden_size
         self.n_lstm_layers = n_lstm_layers
         self.n_epochs = n_epochs
+
+        # Masking curriculum: anneal p_full_obs from 1.0 to residual over N steps
+        self.masking_curriculum = masking_curriculum
+        self.p_full_anneal_steps = p_full_anneal_steps
+        self.p_full_residual = p_full_residual
+
         self.buffer_size = buffer_size
         self.learning_starts = learning_starts
         self.sac_batch_size = sac_batch_size
@@ -2049,11 +2062,16 @@ class AMSDRLSelfPlay:
             elif self.freeze_role:
                 train_role = "evader" if self.freeze_role == "pursuer" else "pursuer"
                 print(f"  FREEZE: {self.freeze_role} frozen, only training {train_role}")
+            if self.masking_curriculum:
+                print(f"  MASKING CURRICULUM: p_full 1.0 → {self.p_full_residual} "
+                      f"over {self.p_full_anneal_steps:,} steps")
             if self.train_ratio > 1:
                 print(f"  ASYMMETRIC RATIO: {self.train_ratio}:1 pursuer:evader phases")
             print(f"{'=' * 60}")
 
         # 1. Create persistent environment sets
+        # Masking curriculum: start with p_full=1.0 (full obs override)
+        p_full_obs = 1.0 if self.masking_curriculum else 0.0
         pursuer_vec_env, pursuer_base_envs = _make_vec_env(
             role="pursuer",
             n_envs=self.n_envs,
@@ -2064,6 +2082,7 @@ class AMSDRLSelfPlay:
             seed=self.seed + 1000,
             full_obs=self.full_obs,
             fixed_speed=self.fixed_speed,
+            p_full_obs=p_full_obs,
             **self.env_kwargs,
         )
         evader_vec_env, evader_base_envs = _make_vec_env(
@@ -2157,6 +2176,22 @@ class AMSDRLSelfPlay:
                     base_lr = self.learning_rate
                     active_model.lr_schedule = lambda _, lr=base_lr: lr
 
+            # Masking curriculum: anneal p_full_obs on pursuer envs
+            if self.masking_curriculum:
+                progress = min(total_steps / self.p_full_anneal_steps, 1.0)
+                p_full_obs = (1.0 - progress) * (1.0 - self.p_full_residual) + self.p_full_residual
+                inner_vec = (pursuer_vec_env.venv
+                             if hasattr(pursuer_vec_env, "venv")
+                             else pursuer_vec_env)
+                for env in inner_vec.envs:
+                    wrapper = env
+                    while hasattr(wrapper, 'env'):
+                        if isinstance(wrapper, SingleAgentPEWrapper):
+                            break
+                        wrapper = wrapper.env
+                    if isinstance(wrapper, SingleAgentPEWrapper):
+                        wrapper.p_full_obs = p_full_obs
+
             # Train for one micro-phase
             active_model.learn(
                 total_timesteps=self.micro_phase_steps,
@@ -2216,6 +2251,8 @@ class AMSDRLSelfPlay:
                 }
                 if self.alternate_freeze and self.freeze_role:
                     entry["frozen"] = self.freeze_role
+                if self.masking_curriculum:
+                    entry["p_full_obs"] = p_full_obs
 
                 # Curriculum handling
                 if self.curriculum:
@@ -2267,6 +2304,8 @@ class AMSDRLSelfPlay:
                         status += f" | lr_scale={lr_scale:.2f}"
                     if self.alternate_freeze and self.freeze_role:
                         status += f" | frozen={self.freeze_role}"
+                    if self.masking_curriculum:
+                        status += f" | p_full={p_full_obs:.3f}"
                     print(status)
 
                 # Save checkpoint at eval intervals

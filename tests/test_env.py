@@ -1006,3 +1006,84 @@ class TestRadiusSensing:
         assert obs["pursuer"][5] != 0.0 or obs["pursuer"][6] != 0.0, \
             "radius-only should see through obstacles when in range"
         assert obs["pursuer"][14] == 1.0, "flag should be 1.0 (in range)"
+
+    def test_masking_curriculum_p_full_obs(self):
+        """SingleAgentPEWrapper with p_full_obs=1.0 always gives full obs."""
+        env = self.make_env(
+            sensing_radius=2.0,
+            combined_masking=True,
+            n_obstacles=1,
+            n_obstacle_obs=1,
+        )
+        wrapper = SingleAgentPEWrapper(
+            env, role="pursuer", opponent_policy=None,
+            p_full_obs=1.0,
+        )
+        obs, _ = wrapper.reset(seed=42)
+
+        # Place agents far apart (out of sensing range)
+        env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+        env.evader_state = np.array([3.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        # With p_full_obs=1.0, agent should always get full obs even when
+        # opponent is out of sensing range. Run a few steps and check.
+        n_full = 0
+        for _ in range(20):
+            action = wrapper.action_space.sample()
+            obs, _, terminated, truncated, _ = wrapper.step(action)
+            # Re-set positions after step to maintain out-of-range scenario
+            env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+            env.evader_state = np.array([3.0, 0.0, np.pi])
+            env.prev_distance = env._compute_distance()
+            # Check if opponent position is populated (non-zero = full obs)
+            if obs[5] != 0.0 or obs[6] != 0.0:
+                n_full += 1
+            if terminated or truncated:
+                obs, _ = wrapper.reset(seed=42)
+                env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+                env.evader_state = np.array([3.0, 0.0, np.pi])
+                env.prev_distance = env._compute_distance()
+
+        assert n_full == 20, (
+            f"p_full_obs=1.0 should always give full obs, but got {n_full}/20"
+        )
+
+    def test_masking_curriculum_p_full_obs_zero(self):
+        """SingleAgentPEWrapper with p_full_obs=0.0 preserves normal masking."""
+        env = self.make_env(
+            sensing_radius=2.0,
+            combined_masking=True,
+            n_obstacles=1,
+            n_obstacle_obs=1,
+        )
+        wrapper = SingleAgentPEWrapper(
+            env, role="pursuer", opponent_policy=None,
+            p_full_obs=0.0,
+        )
+        obs, _ = wrapper.reset(seed=42)
+
+        # Place agents far apart (out of sensing range)
+        env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+        env.evader_state = np.array([3.0, 0.0, np.pi])
+        env.prev_distance = env._compute_distance()
+
+        # With p_full_obs=0.0, agent should get masked obs (opponent out of range)
+        n_masked = 0
+        for _ in range(20):
+            action = wrapper.action_space.sample()
+            obs, _, terminated, truncated, _ = wrapper.step(action)
+            env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+            env.evader_state = np.array([3.0, 0.0, np.pi])
+            env.prev_distance = env._compute_distance()
+            if obs[5] == 0.0 and obs[6] == 0.0:
+                n_masked += 1
+            if terminated or truncated:
+                obs, _ = wrapper.reset(seed=42)
+                env.pursuer_state = np.array([-3.0, 0.0, 0.0])
+                env.evader_state = np.array([3.0, 0.0, np.pi])
+                env.prev_distance = env._compute_distance()
+
+        assert n_masked == 20, (
+            f"p_full_obs=0.0 should preserve masking, but only {n_masked}/20 masked"
+        )

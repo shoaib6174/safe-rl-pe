@@ -145,6 +145,19 @@ def parse_args():
                         help="Combined masking: require both in-range AND clear LOS. "
                              "Use with --sensing_radius and --partial_obs_los.")
 
+    # Masking curriculum (PO-GRL style)
+    parser.add_argument("--masking_curriculum", action="store_true", default=False,
+                        help="Enable masking curriculum: anneal p_full_obs from 1.0 to 0.0 "
+                             "over --p_full_anneal_steps. Trains agent with full obs first, "
+                             "gradually introducing partial obs masking.")
+    parser.add_argument("--p_full_anneal_steps", type=int, default=5_000_000,
+                        help="Steps over which to anneal p_full_obs from 1.0 to 0.0 "
+                             "(default: 5M). Only used if --masking_curriculum is set.")
+    parser.add_argument("--p_full_residual", type=float, default=0.0,
+                        help="Residual p_full_obs after annealing completes "
+                             "(default: 0.0). Small values like 0.03 provide occasional "
+                             "full-obs glimpses as regularization.")
+
     # PBRS obstacle-seeking
     parser.add_argument("--w_obs_approach", type=float, default=0.0,
                         help="PBRS obstacle-seeking weight for evader (default: 0.0, off). "
@@ -467,6 +480,9 @@ def main():
         lstm_hidden_size=args.lstm_hidden_size,
         n_lstm_layers=args.n_lstm_layers,
         n_epochs=args.n_epochs,
+        masking_curriculum=args.masking_curriculum,
+        p_full_anneal_steps=args.p_full_anneal_steps,
+        p_full_residual=args.p_full_residual,
     )
 
     result = amsdrl.run()

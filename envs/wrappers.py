@@ -23,6 +23,9 @@ class SingleAgentPEWrapper(gym.Env):
         env: The base PursuitEvasionEnv instance.
         role: 'pursuer' or 'evader' — which agent this wrapper controls.
         opponent_policy: Callable with predict(obs) -> (action, _), or None for random.
+        greedy_full_obs: Give greedy opponent unmasked observations.
+        p_full_obs: Probability of giving agent full obs override (masking curriculum).
+            1.0 = always full obs, 0.0 = normal masking. Annealed externally.
     """
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
@@ -33,6 +36,7 @@ class SingleAgentPEWrapper(gym.Env):
         role: str = "pursuer",
         opponent_policy=None,
         greedy_full_obs: bool = False,
+        p_full_obs: float = 0.0,
     ):
         super().__init__()
 
@@ -43,6 +47,7 @@ class SingleAgentPEWrapper(gym.Env):
         self.role = role
         self.opponent_policy = opponent_policy
         self.greedy_full_obs = greedy_full_obs
+        self.p_full_obs = p_full_obs
         self._last_obs = None
 
         # Set action and observation spaces
@@ -53,6 +58,7 @@ class SingleAgentPEWrapper(gym.Env):
 
         self.observation_space = env.observation_space
         self.render_mode = env.render_mode
+        self._rng = np.random.default_rng()
 
     def set_opponent(self, opponent_policy):
         """Update the opponent policy (used in self-play)."""
@@ -100,7 +106,34 @@ class SingleAgentPEWrapper(gym.Env):
             obs, rewards, terminated, truncated, info = self.env.step(opp_action, action)
 
         self._last_obs = obs
-        return obs[self.role], rewards[self.role], terminated, truncated, info
+
+        # Masking curriculum: with probability p_full_obs, override observation
+        # to give the training agent full visibility (los_blocked=False).
+        # This lets the agent learn pursuit/interception first, then gradually
+        # adapt to searching under partial obs as p_full_obs anneals to 0.
+        agent_obs = obs[self.role]
+        if self.p_full_obs > 0.0 and self.env.obs_builder.partial_obs:
+            if self._rng.random() < self.p_full_obs:
+                if self.role == "pursuer":
+                    agent_obs = self.env.obs_builder.build(
+                        self_state=self.env.pursuer_state,
+                        self_action=self.env.pursuer_action,
+                        opp_state=self.env.evader_state,
+                        opp_action=self.env.evader_action,
+                        obstacles=self.env.obstacles,
+                        los_blocked=False,
+                    )
+                else:
+                    agent_obs = self.env.obs_builder.build(
+                        self_state=self.env.evader_state,
+                        self_action=self.env.evader_action,
+                        opp_state=self.env.pursuer_state,
+                        opp_action=self.env.pursuer_action,
+                        obstacles=self.env.obstacles,
+                        los_blocked=False,
+                    )
+
+        return agent_obs, rewards[self.role], terminated, truncated, info
 
     def render(self):
         """Delegate rendering to the base environment."""

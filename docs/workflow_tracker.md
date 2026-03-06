@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-03-04 (S70)
+## Last Updated: 2026-03-06 (S75)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -82,6 +82,10 @@
 | 69 | 2026-03-03 | **Masking Curriculum Research**: 15+ papers surveyed — PO-GRL (full→partial annealing with SAC), GPO, asymmetric actor-critic, observation dropout, PE-specific curricula. Concrete implementation strategies identified. | [S69](worklogs/2026-03-03_S69.md) |
 | 70 | 2026-03-04 | **Search/Exploration Reward Literature Review**: 20+ papers surveyed across PE/POMDP, multi-agent search, hide-and-seek, coverage/patrol, intrinsic motivation. Exact reward formulations documented. Top candidates: entropy reduction, 1/sqrt(visit_count), scan staleness. | [S70](worklogs/2026-03-04_S70.md) |
 | 71 | 2026-03-04 | **Staleness-Based Search Reward**: Implemented `SearchStalenessTracker` — 10x10 grid, tracks cell observation times, rewards pursuer for visiting stale cells. New `--w_search`/`--t_stale` CLI flags. 733 tests pass. | [S71](worklogs/2026-03-04_S71.md) |
+| 72 | 2026-03-05 | **Disk cleanup + 4 new runs**: All runs died from disk full. Freed 45GB. Added `--freeze_switch_consecutive` + visibility-gated search reward. Launched SP11e2 (warm-seed), SP11f2 (3-consec freeze), SP11g2/h2 (gated search). | [S72](worklogs/2026-03-05_S72.md) |
+| 73 | 2026-03-06 | **Diagnosis + multi-seed sweep**: SP11e2/g2/h2 all underperforming. Code bisect confirmed zero regression. Root cause: CUDA non-determinism + seed sensitivity. Killed weak runs + ComfyUI. Launched 4-seed sweep (SP11i seeds 42-45). | [S73](worklogs/2026-03-06_S73.md) |
+| 74 | 2026-03-06 | **Comprehensive project report**: Read all 73 worklogs + research docs. Created full project report (findings, lessons, experiment index) and path forward plan (masking curriculum → graduated co-evolution). | [S74](worklogs/2026-03-06_S74.md) |
+| 75 | 2026-03-06 | **Masking curriculum implementation**: PO-GRL-style p_full_obs annealing across wrapper, training loop, and CLI. Per-timestep full-obs override anneals 1.0→0.0. 2 new tests, 679 pass. | [S75](worklogs/2026-03-06_S75.md) |
 
 ## Paper Reading Status
 
