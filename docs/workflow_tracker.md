@@ -85,7 +85,7 @@
 | 72 | 2026-03-05 | **Disk cleanup + 4 new runs**: All runs died from disk full. Freed 45GB. Added `--freeze_switch_consecutive` + visibility-gated search reward. Launched SP11e2 (warm-seed), SP11f2 (3-consec freeze), SP11g2/h2 (gated search). | [S72](worklogs/2026-03-05_S72.md) |
 | 73 | 2026-03-06 | **Diagnosis + multi-seed sweep**: SP11e2/g2/h2 all underperforming. Code bisect confirmed zero regression. Root cause: CUDA non-determinism + seed sensitivity. Killed weak runs + ComfyUI. Launched 4-seed sweep (SP11i seeds 42-45). | [S73](worklogs/2026-03-06_S73.md) |
 | 74 | 2026-03-06 | **Comprehensive project report**: Read all 73 worklogs + research docs. Created full project report (findings, lessons, experiment index) and path forward plan (masking curriculum → graduated co-evolution). | [S74](worklogs/2026-03-06_S74.md) |
-| 75 | 2026-03-06 | **Masking curriculum implementation**: PO-GRL-style p_full_obs annealing across wrapper, training loop, and CLI. Per-timestep full-obs override anneals 1.0→0.0. 2 new tests, 679 pass. | [S75](worklogs/2026-03-06_S75.md) |
+| 75 | 2026-03-06 | **Masking curriculum + launch**: Implemented PO-GRL p_full_obs annealing (wrapper+loop+CLI, 2 tests). Launched SP12_mc (4 seeds, 5M anneal), SP12b (2 seeds, 10M slow anneal), SP12c (2 seeds, w_search=0.0001). Moved results to /mnt/data2 (symlink). SP12_mc showed +10-15pp over baseline before restart. | [S75](worklogs/2026-03-06_S75.md) |
 
 ## Paper Reading Status
 
