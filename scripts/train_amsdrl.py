@@ -144,6 +144,10 @@ def parse_args():
     parser.add_argument("--combined_masking", action="store_true", default=False,
                         help="Combined masking: require both in-range AND clear LOS. "
                              "Use with --sensing_radius and --partial_obs_los.")
+    parser.add_argument("--fov_angle", type=float, default=None,
+                        help="FOV cone angle in degrees (e.g. 120). Directional sensing: "
+                             "agent can only see within a triangle in front of its heading. "
+                             "None = omnidirectional. Use with --partial_obs_los.")
 
     # Masking curriculum (PO-GRL style)
     parser.add_argument("--masking_curriculum", action="store_true", default=False,
@@ -258,6 +262,13 @@ def parse_args():
     parser.add_argument("--freeze_switch_consecutive", type=int, default=1,
                         help="Number of consecutive evals above threshold before "
                              "switching frozen role (default: 1).")
+    parser.add_argument("--freeze_thr_schedule", type=str, default=None,
+                        help="Step-wise threshold schedule: 'step:thr,step:thr,...' "
+                             "e.g. '0:0.8,2500000:0.75,5000000:0.70'. "
+                             "Overrides --freeze_switch_threshold at each boundary.")
+    parser.add_argument("--self_play_start_steps", type=int, default=0,
+                        help="Transition to pure self-play (unfreeze both agents) "
+                             "after this many total steps. 0=disabled.")
 
     # Asymmetric training ratio
     parser.add_argument("--train_ratio", type=int, default=1,
@@ -368,6 +379,14 @@ def main():
     else:
         ent_coef = float(args.ent_coef)
 
+    # Parse freeze threshold schedule
+    freeze_thr_schedule = None
+    if args.freeze_thr_schedule:
+        freeze_thr_schedule = []
+        for pair in args.freeze_thr_schedule.split(","):
+            step_str, thr_str = pair.strip().split(":")
+            freeze_thr_schedule.append((int(step_str), float(thr_str)))
+
     # Device selection
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
@@ -463,6 +482,7 @@ def main():
         asymmetric_obs=args.asymmetric_obs,
         sensing_radius=args.sensing_radius,
         combined_masking=args.combined_masking,
+        fov_angle=np.radians(args.fov_angle) if args.fov_angle is not None else None,
         algorithm=args.algorithm,
         buffer_size=args.buffer_size,
         learning_starts=args.learning_starts,
@@ -476,6 +496,8 @@ def main():
         alternate_freeze=args.alternate_freeze,
         freeze_switch_threshold=args.freeze_switch_threshold,
         freeze_switch_consecutive=args.freeze_switch_consecutive,
+        freeze_thr_schedule=freeze_thr_schedule,
+        self_play_start_steps=args.self_play_start_steps,
         train_ratio=args.train_ratio,
         lstm_hidden_size=args.lstm_hidden_size,
         n_lstm_layers=args.n_lstm_layers,

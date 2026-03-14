@@ -27,6 +27,7 @@ import torch
 from sb3_contrib import RecurrentPPO
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.callbacks import CallbackList
+from torch.utils.tensorboard import SummaryWriter
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 
@@ -91,6 +92,7 @@ def _make_partial_obs_env(
     asymmetric_obs: bool = False,
     sensing_radius: float | None = None,
     combined_masking: bool = False,
+    fov_angle: float | None = None,
     p_full_obs: float = 0.0,
 ) -> tuple:
     """Create an environment stack for one agent.
@@ -112,6 +114,7 @@ def _make_partial_obs_env(
         capture_bonus: Terminal capture reward magnitude.
         n_obstacle_obs: Number of nearest obstacles in observation (0 = none).
         partial_obs_los: Enable LOS-based partial obs (mask opponent when occluded).
+        fov_angle: FOV cone angle in radians (None = omnidirectional).
         p_full_obs: Probability of overriding masking with full obs (masking curriculum).
 
     Returns:
@@ -155,6 +158,7 @@ def _make_partial_obs_env(
         asymmetric_obs=asymmetric_obs,
         sensing_radius=sensing_radius,
         combined_masking=combined_masking,
+        fov_angle=fov_angle,
         w_search=w_search,
         t_stale=t_stale,
     )
@@ -611,6 +615,7 @@ def _evaluate_head_to_head_full_obs(
     asymmetric_obs: bool = False,
     sensing_radius: float | None = None,
     combined_masking: bool = False,
+    fov_angle: float | None = None,
     recurrent: bool = False,
     **kwargs,
 ) -> dict:
@@ -636,6 +641,7 @@ def _evaluate_head_to_head_full_obs(
         asymmetric_obs=asymmetric_obs,
         sensing_radius=sensing_radius,
         combined_masking=combined_masking,
+        fov_angle=fov_angle,
     )
 
     captures = 0
@@ -825,6 +831,7 @@ class AMSDRLSelfPlay:
         asymmetric_obs: bool = False,
         sensing_radius: float | None = None,
         combined_masking: bool = False,
+        fov_angle: float | None = None,
         algorithm: str = "ppo",
         buffer_size: int = 1_000_000,
         learning_starts: int = 1000,
@@ -838,6 +845,8 @@ class AMSDRLSelfPlay:
         alternate_freeze: bool = False,
         freeze_switch_threshold: float = 0.6,
         freeze_switch_consecutive: int = 1,
+        freeze_thr_schedule: list[tuple[int, float]] | None = None,
+        self_play_start_steps: int = 0,
         train_ratio: int = 1,
         lstm_hidden_size: int = 256,
         n_lstm_layers: int = 1,
@@ -849,6 +858,7 @@ class AMSDRLSelfPlay:
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.eval_writer = SummaryWriter(str(self.output_dir / "tb" / "eval"))
 
         self.max_phases = max_phases
         self.timesteps_per_phase = timesteps_per_phase
@@ -879,6 +889,15 @@ class AMSDRLSelfPlay:
         self.freeze_switch_threshold = freeze_switch_threshold
         self.freeze_switch_consecutive = freeze_switch_consecutive
         self._freeze_switch_streak = 0
+        # Step-wise threshold schedule: [(step, threshold), ...]
+        # Sorted ascending by step. Overrides freeze_switch_threshold at each boundary.
+        self.freeze_thr_schedule = (
+            sorted(freeze_thr_schedule, key=lambda x: x[0])
+            if freeze_thr_schedule else None
+        )
+        # Transition to pure self-play (unfreeze both) after this many steps
+        self.self_play_start_steps = self_play_start_steps
+        self._transitioned_to_self_play = False
         if self.alternate_freeze:
             # Override freeze_role to start with evader frozen (train pursuer first)
             self.freeze_role = "evader"
@@ -939,6 +958,7 @@ class AMSDRLSelfPlay:
             "asymmetric_obs": asymmetric_obs,
             "sensing_radius": sensing_radius,
             "combined_masking": combined_masking,
+            "fov_angle": fov_angle,
         }
         self.fixed_speed = fixed_speed
         self.evader_training_multiplier = evader_training_multiplier
@@ -2059,6 +2079,10 @@ class AMSDRLSelfPlay:
                       f"{self.freeze_switch_threshold:.0%}{consec_str}")
                 print(f"  Starting with {self.freeze_role} frozen "
                       f"(training {'pursuer' if self.freeze_role == 'evader' else 'evader'})")
+                if self.freeze_thr_schedule:
+                    print(f"  THRESHOLD SCHEDULE: {self.freeze_thr_schedule}")
+                if self.self_play_start_steps > 0:
+                    print(f"  SELF-PLAY TRANSITION: at {self.self_play_start_steps:,} steps")
             elif self.freeze_role:
                 train_role = "evader" if self.freeze_role == "pursuer" else "pursuer"
                 print(f"  FREEZE: {self.freeze_role} frozen, only training {train_role}")
@@ -2249,8 +2273,12 @@ class AMSDRLSelfPlay:
                     "total_steps": total_steps,
                     **metrics,
                 }
-                if self.alternate_freeze and self.freeze_role:
-                    entry["frozen"] = self.freeze_role
+                if self.alternate_freeze:
+                    if self.freeze_role:
+                        entry["frozen"] = self.freeze_role
+                    else:
+                        entry["frozen"] = "none"  # pure self-play phase
+                    entry["freeze_threshold"] = self.freeze_switch_threshold
                 if self.masking_curriculum:
                     entry["p_full_obs"] = p_full_obs
 
@@ -2287,6 +2315,18 @@ class AMSDRLSelfPlay:
                                       f"obstacles={overrides['n_obstacles']}")
 
                 self.history.append(entry)
+
+                # Log eval metrics to TensorBoard
+                self.eval_writer.add_scalar("eval/capture_rate", sr_p, total_steps)
+                self.eval_writer.add_scalar("eval/escape_rate", sr_e, total_steps)
+                self.eval_writer.add_scalar("eval/ne_gap", ne_gap, total_steps)
+                if self.masking_curriculum:
+                    self.eval_writer.add_scalar("eval/p_full_obs", p_full_obs, total_steps)
+                if self.alternate_freeze:
+                    self.eval_writer.add_scalar(
+                        "eval/freeze_threshold",
+                        self.freeze_switch_threshold, total_steps)
+                self.eval_writer.flush()
 
                 if self.verbose:
                     status = (f"  [M{micro:>5d}] steps={total_steps:>9,} | "
@@ -2331,6 +2371,29 @@ class AMSDRLSelfPlay:
                     self.evader_model.save(str(best_dir / "evader"))
                     if self.verbose:
                         print(f"    *BEST evader* SR={sr_e:.3f} at M{micro}")
+
+                # Transition to pure self-play after threshold
+                if (self.self_play_start_steps > 0
+                        and total_steps >= self.self_play_start_steps
+                        and not self._transitioned_to_self_play):
+                    self._transitioned_to_self_play = True
+                    self.freeze_role = None
+                    self._freeze_switch_streak = 0
+                    if self.verbose:
+                        print(f"    [SELF-PLAY] Transitioned to pure self-play "
+                              f"at {total_steps:,} steps")
+
+                # Update threshold from step-wise schedule
+                if self.freeze_thr_schedule and self.freeze_role is not None:
+                    for step_boundary, thr in reversed(self.freeze_thr_schedule):
+                        if total_steps >= step_boundary:
+                            if thr != self.freeze_switch_threshold:
+                                if self.verbose:
+                                    print(f"    [ALT-FREEZE] Threshold "
+                                          f"{self.freeze_switch_threshold:.2f}"
+                                          f" → {thr:.2f} at {total_steps:,} steps")
+                                self.freeze_switch_threshold = thr
+                            break
 
                 # Alternating freeze: switch frozen role when active agent
                 # exceeds the SR threshold for N consecutive evals
