@@ -847,6 +847,7 @@ class AMSDRLSelfPlay:
         freeze_switch_consecutive: int = 1,
         freeze_thr_schedule: list[tuple[int, float]] | None = None,
         self_play_start_steps: int = 0,
+        force_first_switch_steps: int = 0,
         train_ratio: int = 1,
         lstm_hidden_size: int = 256,
         n_lstm_layers: int = 1,
@@ -897,6 +898,9 @@ class AMSDRLSelfPlay:
         )
         # Transition to pure self-play (unfreeze both) after this many steps
         self.self_play_start_steps = self_play_start_steps
+        # Force first freeze switch after this many steps (0 = disabled)
+        self.force_first_switch_steps = force_first_switch_steps
+        self._has_force_switched = False
         self._transitioned_to_self_play = False
         if self.alternate_freeze:
             # Override freeze_role to start with evader frozen (train pursuer first)
@@ -2394,6 +2398,23 @@ class AMSDRLSelfPlay:
                                           f" → {thr:.2f} at {total_steps:,} steps")
                                 self.freeze_switch_threshold = thr
                             break
+
+                # Force first switch after N steps (regardless of CR)
+                if (self.force_first_switch_steps > 0
+                        and not self._has_force_switched
+                        and self.freeze_role is not None
+                        and total_steps >= self.force_first_switch_steps):
+                    active_role = ("pursuer" if self.freeze_role == "evader"
+                                   else "evader")
+                    self.freeze_role = active_role
+                    new_train = ("pursuer" if self.freeze_role == "evader"
+                                 else "evader")
+                    self._has_force_switched = True
+                    self._freeze_switch_streak = 0
+                    if self.verbose:
+                        print(f"    [FORCE-SWITCH] Forced first switch at "
+                              f"{total_steps:,} steps → freezing {active_role}, "
+                              f"now training {new_train}")
 
                 # Alternating freeze: switch frozen role when active agent
                 # exceeds the SR threshold for N consecutive evals

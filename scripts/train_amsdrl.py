@@ -269,6 +269,9 @@ def parse_args():
     parser.add_argument("--self_play_start_steps", type=int, default=0,
                         help="Transition to pure self-play (unfreeze both agents) "
                              "after this many total steps. 0=disabled.")
+    parser.add_argument("--force_first_switch_steps", type=int, default=0,
+                        help="Force first freeze switch after this many steps "
+                             "regardless of CR. 0=disabled.")
 
     # Asymmetric training ratio
     parser.add_argument("--train_ratio", type=int, default=1,
@@ -498,6 +501,7 @@ def main():
         freeze_switch_consecutive=args.freeze_switch_consecutive,
         freeze_thr_schedule=freeze_thr_schedule,
         self_play_start_steps=args.self_play_start_steps,
+        force_first_switch_steps=args.force_first_switch_steps,
         train_ratio=args.train_ratio,
         lstm_hidden_size=args.lstm_hidden_size,
         n_lstm_layers=args.n_lstm_layers,
