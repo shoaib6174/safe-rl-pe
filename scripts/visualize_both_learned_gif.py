@@ -10,12 +10,13 @@ from sb3_contrib import RecurrentPPO
 from stable_baselines3 import PPO, SAC
 
 from envs.pursuit_evasion_env import PursuitEvasionEnv
-from envs.rewards import RewardComputer, line_of_sight_blocked
+from envs.opponent_adapter import PartialObsOpponentAdapter
+from envs.rewards import RewardComputer, line_of_sight_blocked, in_field_of_view
 from envs.wrappers import FixedSpeedWrapper
 
 
 def run_episode(pursuer_model, evader_model, env_kwargs, seed=None,
-                recurrent=False):
+                recurrent=False, use_partial_obs_adapter=False):
     """Run one episode with both learned agents and record trajectories."""
     arena_w = env_kwargs["arena_width"]
     arena_h = env_kwargs["arena_height"]
@@ -47,31 +48,62 @@ def run_episode(pursuer_model, evader_model, env_kwargs, seed=None,
         asymmetric_obs=env_kwargs.get("asymmetric_obs", False),
         sensing_radius=env_kwargs.get("sensing_radius"),
         combined_masking=env_kwargs.get("combined_masking", False),
+        fov_angle=env_kwargs.get("fov_angle"),
     )
     sensing_radius = env_kwargs.get("sensing_radius")
+    fov_angle = env_kwargs.get("fov_angle")  # in radians or None
 
     if seed is not None:
         base_env.np_random = np.random.default_rng(seed)
 
     obs, _ = base_env.reset()
 
+    # Create partial-obs adapters if models use Dict observation spaces
+    if use_partial_obs_adapter:
+        p_adapter = PartialObsOpponentAdapter(
+            model=pursuer_model, role="pursuer", base_env=base_env,
+            deterministic=True,
+        )
+        e_adapter = PartialObsOpponentAdapter(
+            model=evader_model, role="evader", base_env=base_env,
+            deterministic=True,
+        )
+        p_adapter.reset()
+        e_adapter.reset()
+
     pursuer_traj = []
     evader_traj = []
     obstacles = []
     visibility = []  # per-step: (p_sees_e, e_sees_p, distance)
 
-    pursuer_traj.append((base_env.pursuer_state[0], base_env.pursuer_state[1]))
-    evader_traj.append((base_env.evader_state[0], base_env.evader_state[1]))
+    pursuer_traj.append(base_env.pursuer_state.copy())  # [x, y, theta]
+    evader_traj.append(base_env.evader_state.copy())
 
     for obs_obj in base_env.obstacles:
         obstacles.append((obs_obj["x"], obs_obj["y"], obs_obj["radius"]))
 
     # Record initial visibility
-    dist = np.linalg.norm(base_env.pursuer_state[:2] - base_env.evader_state[:2])
-    in_range = (sensing_radius is None) or (dist <= sensing_radius)
-    los_clear = not line_of_sight_blocked(
-        base_env.pursuer_state[:2], base_env.evader_state[:2], base_env.obstacles)
-    visibility.append((in_range and los_clear, in_range and los_clear, dist))
+    def _check_visible(p_state, e_state):
+        dist = np.linalg.norm(p_state[:2] - e_state[:2])
+        if fov_angle is not None and sensing_radius is not None:
+            p_sees_e = in_field_of_view(p_state, e_state, fov_angle, sensing_radius)
+            e_sees_p = in_field_of_view(e_state, p_state, fov_angle, sensing_radius)
+            if base_env.obstacles:
+                p_sees_e = p_sees_e and not line_of_sight_blocked(
+                    p_state[:2], e_state[:2], base_env.obstacles)
+                e_sees_p = e_sees_p and not line_of_sight_blocked(
+                    e_state[:2], p_state[:2], base_env.obstacles)
+        else:
+            in_range = (sensing_radius is None) or (dist <= sensing_radius)
+            los_clear = not line_of_sight_blocked(
+                p_state[:2], e_state[:2], base_env.obstacles)
+            p_sees_e = in_range and los_clear
+            e_sees_p = in_range and los_clear
+        return p_sees_e, e_sees_p, dist
+
+    p_sees, e_sees, dist = _check_visible(
+        base_env.pursuer_state, base_env.evader_state)
+    visibility.append((p_sees, e_sees, dist))
 
     p_action_dim = pursuer_model.action_space.shape[0]
     e_action_dim = evader_model.action_space.shape[0]
@@ -85,7 +117,10 @@ def run_episode(pursuer_model, evader_model, env_kwargs, seed=None,
     steps = 0
     done = False
     while not done:
-        if recurrent:
+        if use_partial_obs_adapter:
+            p_raw, _ = p_adapter.predict(obs["pursuer"], deterministic=True)
+            e_raw, _ = e_adapter.predict(obs["evader"], deterministic=True)
+        elif recurrent:
             p_raw, p_lstm_states = pursuer_model.predict(
                 obs["pursuer"], state=p_lstm_states,
                 episode_start=p_episode_starts, deterministic=True)
@@ -115,24 +150,18 @@ def run_episode(pursuer_model, evader_model, env_kwargs, seed=None,
         done = terminated or truncated
         steps += 1
 
-        pursuer_traj.append(
-            (base_env.pursuer_state[0], base_env.pursuer_state[1]))
-        evader_traj.append(
-            (base_env.evader_state[0], base_env.evader_state[1]))
+        pursuer_traj.append(base_env.pursuer_state.copy())
+        evader_traj.append(base_env.evader_state.copy())
 
-        dist = np.linalg.norm(
-            base_env.pursuer_state[:2] - base_env.evader_state[:2])
-        in_range = (sensing_radius is None) or (dist <= sensing_radius)
-        los_clear = not line_of_sight_blocked(
-            base_env.pursuer_state[:2], base_env.evader_state[:2],
-            base_env.obstacles)
-        visibility.append((in_range and los_clear, in_range and los_clear, dist))
+        p_sees, e_sees, dist = _check_visible(
+            base_env.pursuer_state, base_env.evader_state)
+        visibility.append((p_sees, e_sees, dist))
 
     base_env.close()
 
     return {
-        "pursuer": np.array(pursuer_traj),
-        "evader": np.array(evader_traj),
+        "pursuer": np.array(pursuer_traj),   # shape (T, 3): x, y, theta
+        "evader": np.array(evader_traj),     # shape (T, 3): x, y, theta
         "obstacles": obstacles,
         "visibility": visibility,
         "steps": steps,
@@ -141,7 +170,21 @@ def run_episode(pursuer_model, evader_model, env_kwargs, seed=None,
         "arena_w": arena_w,
         "arena_h": arena_h,
         "sensing_radius": sensing_radius,
+        "fov_angle": fov_angle,  # radians or None
     }
+
+
+def _draw_fov_wedge(ax, x, y, theta, fov_angle, radius, color, alpha=0.15):
+    """Draw a FOV cone as a filled wedge on the axes."""
+    half_fov_deg = np.degrees(fov_angle / 2)
+    heading_deg = np.degrees(theta)
+    wedge = patches.Wedge(
+        (x, y), radius,
+        heading_deg - half_fov_deg, heading_deg + half_fov_deg,
+        facecolor=color, edgecolor=color,
+        alpha=alpha, linewidth=0.8, zorder=2,
+    )
+    ax.add_patch(wedge)
 
 
 def make_grid_gif(episodes, output_path, title, fps=30, skip=3):
@@ -200,8 +243,14 @@ def make_grid_gif(episodes, output_path, title, fps=30, skip=3):
                     alpha=0.6, zorder=3,
                 ))
 
-            # Sensing radius circles
-            if sr is not None:
+            # Sensing visualization: FOV wedge or radius circle
+            fov = ep.get("fov_angle")
+            if fov is not None and sr is not None:
+                _draw_fov_wedge(ax, p[i, 0], p[i, 1], p[i, 2],
+                                fov, sr, "red", alpha=0.15)
+                _draw_fov_wedge(ax, e[i, 0], e[i, 1], e[i, 2],
+                                fov, sr, "blue", alpha=0.15)
+            elif sr is not None:
                 ax.add_patch(patches.Circle(
                     (p[i, 0], p[i, 1]), sr,
                     facecolor="none", edgecolor="red",
@@ -318,6 +367,15 @@ def make_trajectory_png(episodes, output_path, title):
                 alpha=0.6, zorder=3,
             ))
 
+        # FOV wedge at start position
+        fov = ep.get("fov_angle")
+        sr = ep.get("sensing_radius")
+        if fov is not None and sr is not None:
+            _draw_fov_wedge(ax, p[0, 0], p[0, 1], p[0, 2],
+                            fov, sr, "red", alpha=0.12)
+            _draw_fov_wedge(ax, e[0, 0], e[0, 1], e[0, 2],
+                            fov, sr, "blue", alpha=0.12)
+
         # Trajectory lines
         ax.plot(p[:, 0], p[:, 1], color="red", linewidth=1.0, alpha=0.5)
         ax.plot(e[:, 0], e[:, 1], color="blue", linewidth=1.0, alpha=0.5)
@@ -389,6 +447,8 @@ def main():
                         help="Radius-based sensing distance")
     parser.add_argument("--combined_masking", action="store_true",
                         help="Combined masking: radius + LOS")
+    parser.add_argument("--fov_angle", type=float, default=None,
+                        help="FOV cone angle in degrees (e.g. 120)")
     parser.add_argument("--trajectory_only", action="store_true",
                         help="Only generate trajectory PNG, skip GIF")
     parser.add_argument("--algorithm", type=str, default="ppo",
@@ -420,6 +480,7 @@ def main():
         "asymmetric_obs": args.asymmetric_obs,
         "sensing_radius": args.sensing_radius,
         "combined_masking": args.combined_masking,
+        "fov_angle": np.radians(args.fov_angle) if args.fov_angle is not None else None,
     }
 
     if args.algorithm == "sac":
@@ -435,12 +496,19 @@ def main():
     print(f"Loading evader model: {args.evader_model} ({args.algorithm})")
     evader_model = model_class.load(args.evader_model, device="cpu")
 
+    # Auto-detect if models use Dict obs space (partial-obs adapter needed)
+    from gymnasium import spaces
+    use_po_adapter = isinstance(pursuer_model.observation_space, spaces.Dict)
+    if use_po_adapter:
+        print("Detected Dict observation space — using PartialObsOpponentAdapter")
+
     episodes = []
     captures = 0
     for i in range(args.n_episodes):
         ep = run_episode(pursuer_model, evader_model, env_kwargs,
                          seed=args.seed + i,
-                         recurrent=(args.algorithm == "recurrent_ppo"))
+                         recurrent=(args.algorithm == "recurrent_ppo"),
+                         use_partial_obs_adapter=use_po_adapter)
         status = "ESCAPED" if ep["escaped"] else f"CAPTURED at {ep['steps']}"
         print(f"  Ep {i+1}: {status}")
         if ep["captured"]:
@@ -452,7 +520,13 @@ def main():
 
     obs_label = ""
     if args.partial_obs:
-        if args.sensing_radius and args.combined_masking:
+        if args.fov_angle:
+            obs_label = f"  |  FOV {args.fov_angle:.0f}°"
+            if args.sensing_radius:
+                obs_label += f" {args.sensing_radius:.0f}m"
+            if args.combined_masking:
+                obs_label += "+LOS"
+        elif args.sensing_radius and args.combined_masking:
             obs_label = f"  |  Combined {args.sensing_radius:.0f}m+LOS"
         elif args.sensing_radius:
             obs_label = f"  |  Radius {args.sensing_radius:.0f}m"
