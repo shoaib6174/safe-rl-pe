@@ -2266,41 +2266,6 @@ class AMSDRLSelfPlay:
                     use_pfsp=pfsp_evader,
                 )
 
-            # Periodic forced switch every N steps (regardless of CR)
-            if (self.force_switch_steps > 0
-                    and self.freeze_role is not None
-                    and total_steps - self._last_forced_switch_step
-                    >= self.force_switch_steps):
-                active_role = ("pursuer" if self.freeze_role == "evader"
-                               else "evader")
-                self.freeze_role = active_role
-                new_train = ("pursuer" if self.freeze_role == "evader"
-                             else "evader")
-                self._last_forced_switch_step = total_steps
-                self._freeze_switch_streak = 0
-                if self.verbose:
-                    print(f"    [FORCE-SWITCH] Forced switch at "
-                          f"{total_steps:,} steps → freezing {active_role}, "
-                          f"now training {new_train}")
-
-            # Force first switch after N steps (regardless of CR)
-            # Only used if periodic switch is disabled
-            elif (self.force_first_switch_steps > 0
-                    and self._last_forced_switch_step == 0
-                    and self.freeze_role is not None
-                    and total_steps >= self.force_first_switch_steps):
-                active_role = ("pursuer" if self.freeze_role == "evader"
-                               else "evader")
-                self.freeze_role = active_role
-                new_train = ("pursuer" if self.freeze_role == "evader"
-                             else "evader")
-                self._last_forced_switch_step = total_steps
-                self._freeze_switch_streak = 0
-                if self.verbose:
-                    print(f"    [FORCE-SWITCH] Forced first switch at "
-                          f"{total_steps:,} steps → freezing {active_role}, "
-                          f"now training {new_train}")
-
             # Periodic evaluation
             if micro % self.eval_interval_micro == 0:
                 metrics = self._evaluate()
@@ -2436,6 +2401,41 @@ class AMSDRLSelfPlay:
                                           f" → {thr:.2f} at {total_steps:,} steps")
                                 self.freeze_switch_threshold = thr
                             break
+
+                # Periodic forced switch every N steps (regardless of CR)
+                if (self.force_switch_steps > 0
+                        and self.freeze_role is not None
+                        and total_steps - self._last_forced_switch_step
+                        >= self.force_switch_steps):
+                    active_role = ("pursuer" if self.freeze_role == "evader"
+                                   else "evader")
+                    self.freeze_role = active_role
+                    new_train = ("pursuer" if self.freeze_role == "evader"
+                                 else "evader")
+                    self._last_forced_switch_step = total_steps
+                    self._freeze_switch_streak = 0
+                    if self.verbose:
+                        print(f"    [FORCE-SWITCH] Forced switch at "
+                              f"{total_steps:,} steps → freezing {active_role}, "
+                              f"now training {new_train}")
+
+                # Force first switch after N steps (regardless of CR)
+                # Only used if periodic switch is disabled
+                elif (self.force_first_switch_steps > 0
+                        and self._last_forced_switch_step == 0
+                        and self.freeze_role is not None
+                        and total_steps >= self.force_first_switch_steps):
+                    active_role = ("pursuer" if self.freeze_role == "evader"
+                                   else "evader")
+                    self.freeze_role = active_role
+                    new_train = ("pursuer" if self.freeze_role == "evader"
+                                 else "evader")
+                    self._last_forced_switch_step = total_steps
+                    self._freeze_switch_streak = 0
+                    if self.verbose:
+                        print(f"    [FORCE-SWITCH] Forced first switch at "
+                              f"{total_steps:,} steps → freezing {active_role}, "
+                              f"now training {new_train}")
 
                 # Alternating freeze: switch frozen role when active agent
                 # exceeds the SR threshold for N consecutive evals

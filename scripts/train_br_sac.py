@@ -17,9 +17,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+# Allow imports when script is run from repo root as `python scripts/train_br_sac.py`.
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 from stable_baselines3 import SAC
@@ -157,7 +161,7 @@ def build_br_setup(
     zip_path = Path(frozen_opponent_path) / "ppo.zip"
     if not zip_path.exists():
         raise FileNotFoundError(f"frozen opponent zip missing: {zip_path}")
-    frozen_model = SAC.load(zip_path, device="cpu")
+    frozen_model = SAC.load(zip_path)
 
     # 3) Wrap frozen model into PartialObsOpponentAdapter.
     opp_adapter = PartialObsOpponentAdapter(

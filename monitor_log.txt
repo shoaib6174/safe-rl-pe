@@ -1,0 +1,33 @@
+=== BarrierNet Training Monitor ===
+Started at Sun Feb 22 08:23:05 +06 2026
+
+[08:23] Status:
+  Seed 42: 
+[08:28] Status:
+  Seed 42: [Iter   37] steps=  37888, reward=-50.30, policy_loss=0.1942, critic_loss=6.0934, qp_corr=0.4637, qp_time=4.5ms, interv=0.889, infeas=0.0000, entropy=1.691, std_v=0.437, std_w=0.733
+[08:33] Status:
+  Seed 42: [Iter   76] steps=  77824, reward=-50.30, policy_loss=0.2009, critic_loss=9.9281, qp_corr=0.6036, qp_time=4.6ms, interv=0.935, infeas=0.0000, entropy=2.303, std_v=0.591, std_w=1.002
+[08:38] Status:
+  Seed 42: [Iter  117] steps= 119808, reward=-49.92, policy_loss=0.1151, critic_loss=9.7671, qp_corr=0.9825, qp_time=4.9ms, interv=0.963, infeas=0.0000, entropy=3.003, std_v=0.830, std_w=1.432
+[08:43] Status:
+  Seed 42: [Iter  157] steps= 160768, reward=-49.94, policy_loss=0.0291, critic_loss=8.5887, qp_corr=0.7372, qp_time=5.1ms, interv=0.889, infeas=0.0000, entropy=3.646, std_v=1.144, std_w=1.971
+[08:48] Status:
+  Seed 42: [Iter  197] steps= 201728, reward=-49.90, policy_loss=0.0482, critic_loss=6.6391, qp_corr=0.4540, qp_time=4.8ms, interv=0.934, infeas=0.0000, entropy=4.284, std_v=1.580, std_w=2.701
+[08:53] Status:
+  Seed 42: [Iter  236] steps= 241664, reward=-50.07, policy_loss=0.0132, critic_loss=8.3430, qp_corr=0.5492, qp_time=4.6ms, interv=0.911, infeas=0.0000, entropy=4.752, std_v=1.995, std_w=3.416
+[08:58] Status:
+  Seed 42: [Iter  276] steps= 282624, reward=-50.13, policy_loss=0.0041, critic_loss=4.5093, qp_corr=0.5655, qp_time=5.2ms, interv=0.931, infeas=0.0000, entropy=5.160, std_v=2.401, std_w=4.264
+[09:03] Status:
+  Seed 42: [Iter  318] steps= 325632, reward=-49.63, policy_loss=0.0008, critic_loss=7.9600, qp_corr=0.8583, qp_time=5.1ms, interv=0.930, infeas=0.0000, entropy=5.413, std_v=2.691, std_w=4.897
+[09:08] Status:
+  Seed 42: [Iter  358] steps= 366592, reward=-49.97, policy_loss=0.0023, critic_loss=6.0833, qp_corr=0.6190, qp_time=4.1ms, interv=0.931, infeas=0.0000, entropy=5.529, std_v=2.831, std_w=5.213
+[09:13] Status:
+  Seed 42: [Iter  399] steps= 408576, reward=-50.05, policy_loss=-0.0024, critic_loss=4.5920, qp_corr=0.4917, qp_time=4.7ms, interv=0.895, infeas=0.0000, entropy=5.617, std_v=2.945, std_w=5.469
+[09:18] Status:
+  Seed 42: [Iter  440] steps= 450560, reward=-49.61, policy_loss=0.0012, critic_loss=5.4172, qp_corr=0.7629, qp_time=5.3ms, interv=0.952, infeas=0.0000, entropy=5.692, std_v=3.041, std_w=5.735
+[09:23] Status:
+  Seed 42: [Iter  482] steps= 493568, reward=-49.77, policy_loss=0.0019, critic_loss=6.6671, qp_corr=0.7423, qp_time=4.4ms, interv=0.942, infeas=0.0000, entropy=5.753, std_v=3.098, std_w=5.968
+[09:28] Status:
+  Seed 42: [Iter  523] steps= 535552, reward=-49.80, policy_loss=-0.0038, critic_loss=6.8802, qp_corr=0.5672, qp_time=4.6ms, interv=0.930, infeas=0.0000, entropy=5.819, std_v=3.186, std_w=6.181
+[09:33] Status:
+  Seed 42: [Iter  563] steps= 576512, reward=-49.68, policy_loss=-0.0007, critic_loss=4.4088, qp_corr=0.4810, qp_time=4.8ms, interv=0.967, infeas=0.0000, entropy=5.921, std_v=3.336, std_w=6.560
