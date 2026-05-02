@@ -203,3 +203,130 @@ def run_one_update(setup: BRSetup, n_train_steps: int = 200) -> None:
     """Run a small `learn()` call. Used by tests to verify frozen invariance."""
     setup.learner.learn(total_timesteps=n_train_steps,
                         reset_num_timesteps=False, progress_bar=False)
+
+
+def evaluate(setup: BRSetup, n_episodes: int = 200) -> tuple[float, float]:
+    """Roll out n_episodes deterministic episodes; return (capture_rate, avg_steps).
+
+    Build a SEPARATE eval env so the replay buffer is not polluted by eval rollouts.
+    """
+    eval_env_kwargs = dict(COHORT_ENV_KWARGS)
+    eval_base = _make_base_env(eval_env_kwargs)
+    eval_opp = PartialObsOpponentAdapter(
+        model=setup.frozen_model,
+        role=setup.frozen_role,
+        base_env=eval_base,
+        deterministic=True,
+    )
+    eval_single = SingleAgentPEWrapper(
+        eval_base,
+        role=setup.trained_role,
+        opponent_policy=eval_opp,
+        p_full_obs=0.0,
+    )
+    eval_env = PartialObsWrapper(
+        eval_single,
+        role=setup.trained_role,
+        history_length=eval_env_kwargs.get("history_length", 10),
+    )
+
+    captures = 0
+    steps_list: list[int] = []
+    for _ in range(n_episodes):
+        obs, _ = eval_env.reset()
+        terminated = truncated = False
+        ep_steps = 0
+        while not (terminated or truncated):
+            action, _ = setup.learner.predict(obs, deterministic=True)
+            obs, _r, terminated, truncated, _info = eval_env.step(action)
+            ep_steps += 1
+        if terminated:
+            captures += 1
+        steps_list.append(ep_steps)
+    eval_env.close()
+    return captures / n_episodes, float(np.mean(steps_list))
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--frozen_opponent_path", required=True,
+                   help="Dir containing ppo.zip of the frozen SAC opponent.")
+    p.add_argument("--frozen_role", required=True, choices=("pursuer", "evader"),
+                   help="Role of the FROZEN side.")
+    p.add_argument("--total_steps", type=int, default=1_500_000)
+    p.add_argument("--eval_freq",   type=int, default=250_000)
+    p.add_argument("--n_eval_episodes", type=int, default=200)
+    p.add_argument("--seed", type=int, required=True)
+    p.add_argument("--output_dir", required=True)
+    args = p.parse_args()
+
+    setup = build_br_setup(
+        frozen_opponent_path=args.frozen_opponent_path,
+        frozen_role=args.frozen_role,
+        seed=args.seed,
+        output_dir=args.output_dir,
+    )
+
+    print("=" * 70)
+    print("BR Exploitability Test")
+    print(f"  Frozen role:    {setup.frozen_role}")
+    print(f"  Trained role:   {setup.trained_role}")
+    print(f"  Frozen path:    {args.frozen_opponent_path}")
+    print(f"  Total steps:    {args.total_steps:,}")
+    print(f"  Eval cadence:   every {args.eval_freq:,} steps, "
+          f"{args.n_eval_episodes} episodes")
+    print(f"  Seed:           {args.seed}")
+    print(f"  Output:         {setup.output_dir}")
+    print("=" * 70)
+
+    history: list[dict] = []
+    best_metric = -1.0  # higher is better for the trained side
+    best_step = 0
+    start = time.time()
+    steps_done = 0
+
+    while steps_done < args.total_steps:
+        chunk = min(args.eval_freq, args.total_steps - steps_done)
+        setup.learner.learn(total_timesteps=chunk,
+                            reset_num_timesteps=False, progress_bar=False)
+        steps_done += chunk
+
+        cr, avg_ep = evaluate(setup, n_episodes=args.n_eval_episodes)
+        # For pursuer BR: high CR good. For evader BR: low CR good.
+        metric = cr if setup.trained_role == "pursuer" else (1.0 - cr)
+        is_best = metric > best_metric
+        if is_best:
+            best_metric = metric
+            best_step = steps_done
+            setup.learner.save(setup.output_dir / "best_model")
+
+        elapsed = time.time() - start
+        history.append({
+            "phase": f"BR{steps_done}",
+            "total_steps": steps_done,
+            "capture_rate": cr,
+            "escape_rate": 1.0 - cr,
+            "avg_ep_len": avg_ep,
+            "frozen": setup.frozen_role,
+            "trained": setup.trained_role,
+            "p_full_obs": 0.0,
+            "elapsed_seconds": elapsed,
+            "best_metric": best_metric,
+            "best_step": best_step,
+        })
+        # Persist after every eval — never lose progress on crash.
+        with open(setup.output_dir / "history.json", "w") as f:
+            json.dump({"history": history,
+                       "converged": False,
+                       "elapsed_seconds": elapsed}, f, indent=2)
+
+        flag = " *BEST*" if is_best else ""
+        print(f"  step={steps_done:>10,} | CR={cr:.3f} | "
+              f"avg_ep={avg_ep:>5.0f} | elapsed={elapsed/60:>5.1f}m{flag}")
+
+    setup.learner.save(setup.output_dir / "final_model")
+    print(f"\nDONE. best_metric={best_metric:.3f} at step {best_step:,}")
+
+
+if __name__ == "__main__":
+    main()
