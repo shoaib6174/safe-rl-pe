@@ -35,6 +35,15 @@ outputs/
 runs/
 results/
 
+# Visualization outputs
+viz_outputs/
+
+# LaTeX build artifacts
+*.aux
+*.out
+*.toc
+*.pdf
+
 # Tool config
 .claude/
 .serena/

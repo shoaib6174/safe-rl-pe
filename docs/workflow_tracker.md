@@ -12,8 +12,9 @@
 
 | Blocker | Since Session | Details |
 |---------|--------------|---------|
-| Only 2 converged seeds | S87 | Need 3+ for paper; s50/s51 launched, waiting for results |
-| niro-2 GPU saturation risk | S87 | 4 processes max; monitor nvidia-smi |
+| ABL-3/ABL-4 divergence check | S88+ | Need M2550 results (~May 7-8) to prove search + curriculum critical |
+| BR-5/BR-6 completion | S88+ | ~4.5h wall time; monitor running; will notify when done |
+| Paper body writing | — | Intro/Methods/Results for Framing C; deadline May 21 |
 
 ## Session Index
 
@@ -106,7 +107,7 @@
 | 85 | 2026-04-29 | **SP17 design, implementation, and launch**: Brainstormed path to paper. Fixed forced switch placement bug (inside eval block). Crash bug could not reproduce. Launched 4-seed SP17 on niro-2. | [S85](worklogs/2026-04-29_S85.md) |
 | 86 | 2026-04-30 | **SP17 s43 behavioral analysis + SP17b monitoring**: Trajectory visualizations generated (3×3 grid, 7/9 captures). Discovered CPU viz is 60× slower than GPU; created GPU script. SP17b seeds 46-49 running, logs buffered. s43 stable at gap=0.08, s45 gap widened to 0.28. | [S86](worklogs/2026-04-30_S86.md) |
 | 87 | 2026-05-01 | **CoRL 2026 Sprint — Plan & Launch**: CoRL feasibility assessment, hybrid experimental plan (niro-1 + niro-2), niro-2 cleanup (ComfyUI killed, SP12 deleted), PyTorch upgrade on niro-1 (2.10.0+cu128), launched s50/s51 on niro-2 + ABL-1/ABL-2 on niro-1, LaTeX skeleton created. | [S87](worklogs/2026-05-01_S87.md) |
-| 88 | 2026-05-02 | **BR exploitability test for SP17b cohort**: trajectory analysis revealed curriculum-end drift; implemented `scripts/train_br_sac.py` + `scripts/analyze_exploitability.py` (TDD); ran BR-1..BR-4 (4× 1.5M steps) on s48/s49 frozen at M2550; analyzer emitted cohort hypothesis H{X} → framing {Y}. | [S88](worklogs/2026-05-02_S88.md) |
+| 88 | 2026-05-02 | **BR exploitability test for SP17b cohort**: trajectory analysis revealed curriculum-end drift; implemented `scripts/train_br_sac.py` + `scripts/analyze_exploitability.py` (TDD); ran BR-1..BR-4 (4× 1.5M steps) on s48/s49 frozen at M2550; **verdict: H3** — both seeds L3 (evader exploitable, pursuer not), gap +0.08 to +0.10 > ε=0.05. Framing C adopted: paper reframes to characterize curriculum-induced exploitability hole. Abstract updated in `paper/main.tex`. | [S88](worklogs/2026-05-02_S88.md) |
 
 ## Paper Reading Status
 

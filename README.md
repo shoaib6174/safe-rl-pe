@@ -100,6 +100,31 @@ python scripts/train_br_sac.py \
 
 ---
 
+## Visualizations
+
+Learned pursuer (red, FOV cone) vs learned evader (blue) in a 20x20m arena. Red dotted line = pursuer sees evader; dashed red = occluded or out of FOV. Capture marked with black X.
+
+<p align="center">
+  <img src="docs/assets/pe_selfplay_s48.gif" width="48%" alt="Self-play with obstacles — 5/9 captured" />
+  &nbsp;
+  <img src="docs/assets/pe_selfplay_noobs.gif" width="48%" alt="Self-play without obstacles — 4/9 captured" />
+</p>
+
+<p align="center">
+  <sub><b>Left:</b> 2 random obstacles — pursuer uses occlusion for ambush, evader breaks LOS around corners.<br/>
+  <b>Right:</b> Open arena — faster capture when no cover; evader relies on raw maneuvering.</sub>
+</p>
+
+Static trajectory grids (higher resolution):
+
+<p align="center">
+  <img src="docs/assets/pe_selfplay_s48.png" width="48%" />
+  &nbsp;
+  <img src="docs/assets/pe_selfplay_noobs.png" width="48%" />
+</p>
+
+---
+
 ## Running the Code
 
 ### Setup
