@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-05-02 (S88)
+## Last Updated: 2026-05-03 (S89)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -108,6 +108,7 @@
 | 86 | 2026-04-30 | **SP17 s43 behavioral analysis + SP17b monitoring**: Trajectory visualizations generated (3×3 grid, 7/9 captures). Discovered CPU viz is 60× slower than GPU; created GPU script. SP17b seeds 46-49 running, logs buffered. s43 stable at gap=0.08, s45 gap widened to 0.28. | [S86](worklogs/2026-04-30_S86.md) |
 | 87 | 2026-05-01 | **CoRL 2026 Sprint — Plan & Launch**: CoRL feasibility assessment, hybrid experimental plan (niro-1 + niro-2), niro-2 cleanup (ComfyUI killed, SP12 deleted), PyTorch upgrade on niro-1 (2.10.0+cu128), launched s50/s51 on niro-2 + ABL-1/ABL-2 on niro-1, LaTeX skeleton created. | [S87](worklogs/2026-05-01_S87.md) |
 | 88 | 2026-05-02 | **BR exploitability test for SP17b cohort**: trajectory analysis revealed curriculum-end drift; implemented `scripts/train_br_sac.py` + `scripts/analyze_exploitability.py` (TDD); ran BR-1..BR-4 (4× 1.5M steps) on s48/s49 frozen at M2550; **verdict: H3** — both seeds L3 (evader exploitable, pursuer not), gap +0.08 to +0.10 > ε=0.05. Framing C adopted: paper reframes to characterize curriculum-induced exploitability hole. Abstract updated in `paper/main.tex`. | [S88](worklogs/2026-05-02_S88.md) |
+| 89 | 2026-05-03 | **S88 completion — visualizations + paper intro + git**: Generated self-play GIFs on niro-2 (obstacle + open arena), added visualization section to README, updated paper Introduction for Framing C, committed to git. Push pending (no GitHub auth on niro-1). | [S89](worklogs/2026-05-03_S89.md) |
 
 ## Paper Reading Status
 
