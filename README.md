@@ -1,120 +1,164 @@
-# Safe Deep RL for 1v1 Pursuit-Evasion
+# Multi-Agent Adversarial RL for Partially Observable Pursuit-Evasion
 
-Research project on **safe deep reinforcement learning** for **1v1 ground robot pursuit-evasion games** with nonholonomic dynamics and control barrier function (CBF) safety guarantees.
+A production-grade research codebase for training adversarial policies in 1v1 pursuit-evasion under strict partial observability. Built with **Stable-Baselines3**, **Gymnasium**, and **PyTorch**, featuring a custom self-play orchestrator, masking curriculum, best-response exploitability testing, and distributed training across GPU workstations.
 
-## Repository Structure
+> **Note:** This is an active research project targeting CoRL 2026. The codebase reflects 3+ months of iterative development, 40+ training runs, and systematic ablation studies.
+
+---
+
+## What This Project Demonstrates
+
+| Skill | Evidence |
+|-------|----------|
+| **Deep RL Engineering** | Custom SAC/PPO training loops, opponent pool with PFSP sampling, curriculum annealing |
+| **Multi-Agent Systems** | Adversarial self-play with alternating freeze, forced switching, collapse rollback |
+| **Reproducible Research** | 736+ unit tests, structured worklogs, decision logs, experiment tracking |
+| **Distributed Training** | Multi-machine coordination (niro-1 + niro-2), rsync-based artifact sync |
+| **Data Analysis** | Trajectory analysis, best-response exploitability testing, statistical aggregation |
+| **Visualization** | GPU-accelerated GIF generation, TensorBoard logging, sensing overlay plots |
+| **System Design** | Modular env wrappers, adapter pattern for opponent policies, clean CLI interfaces |
+
+---
+
+## Architecture
 
 ```
 safe-rl-pe/
-├── envs/                        # Gymnasium environments
-│   ├── pursuit_evasion_env.py   # Core PE env with sensing modes
-│   ├── observations.py          # ObservationBuilder (full/partial obs)
-│   ├── dynamics.py              # Unicycle dynamics
-│   └── rewards.py               # Reward functions
-├── training/                    # Training infrastructure
-│   ├── amsdrl.py                # AMS-DRL self-play orchestrator
-│   └── opponent_pool.py         # Opponent pool with PFSP sampling
-├── scripts/                     # Runnable scripts
-│   ├── train_evader_vs_greedy.py # Diagnostic training
-│   ├── train_amsdrl.py          # Self-play training
-│   ├── visualize_grid_gif.py    # Episode visualization
-│   └── visualize_sensing.py     # Sensing mode visualization
-├── tests/                       # Test suite (736+ tests)
-├── docs/
-│   ├── literature-review/       # Paper summaries and comprehensive review
-│   ├── pathway/                 # Pathway A: research plan and validation
-│   ├── phases/                  # Phase 1-5 implementation specifications
-│   ├── references/              # BibTeX, method indices, paper lists
-│   └── workflow_tracker.md      # Session log and progress tracking
-├── papers/
-│   ├── original/                # Papers 01-37 (PDFs gitignored)
-│   └── supplementary/           # Papers N01-N15 (PDFs gitignored)
+├── envs/                      # Gymnasium environments + wrappers
+│   ├── pursuit_evasion_env.py # Core PE env: unicycle dynamics, obstacles, FOV sensing
+│   ├── partial_obs_wrapper.py # Dict obs (obs_history + lidar + state)
+│   ├── opponent_adapter.py    # PartialObsOpponentAdapter: frozen opponent with own sensors
+│   └── wrappers.py            # SingleAgentPEWrapper, curriculum control
+├── training/                  # Training orchestration
+│   ├── amsdrl.py             # AMS-DRL self-play: alternate freeze, PFSP pool, health monitor
+│   └── opponent_pool.py      # Prioritized Fictitious Self-Play sampling
+├── scripts/                   # Runnable experiments
+│   ├── train_amsdrl.py       # Main self-play launcher (40+ runs executed)
+│   ├── train_br_sac.py       # Best-response exploitability tester
+│   ├── analyze_exploitability.py # Verdict computation (L1-L4 / H1-H5 classifier)
+│   └── visualize_both_learned_gif_gpu.py # GPU-rendered trajectory analysis
+├── tests/                     # 736+ tests across envs, training, safety
+├── docs/                      # Research docs, decisions, worklogs
+└── paper/                     # CoRL 2026 submission (LaTeX)
 ```
 
-## Documentation Index
+---
 
-### Literature Review
-| Document | Description |
-|----------|-------------|
-| [Final Literature Review](docs/literature-review/final_literature_review.md) | Comprehensive review of 36 papers across safe RL, CBFs, pursuit-evasion, self-play, and sim-to-real |
-| [Initial Research Report](docs/literature-review/research_1v1_pursuit_evasion_deep_rl_ground_robots.md) | Web-based research report on 1v1 PE with deep RL for ground robots |
-| [Paper Summaries 01-10](docs/literature-review/paper_summaries_01_to_10.md) | Core PE, CBF, self-play, and sim-to-real papers |
-| [Paper Summaries 11-14](docs/literature-review/paper_summaries_11_to_14.md) | Game theory, differential games, safe finite-time RL |
-| [Paper Summaries 15-20](docs/literature-review/paper_summaries_15_to_20.md) | Mobile robot PE, sampling-based safe RL, ViPER, emergent behaviors |
-| [Paper Summaries 21-35](docs/literature-review/paper_summaries_21_to_35.md) | DeepReach, HJ reachability, RESPO, LBAC, diffusion RL, and more |
+## Key Technical Contributions
 
-### Research Pathway
-| Document | Description |
-|----------|-------------|
-| [Pathway A: Safe Deep RL for 1v1 PE](docs/pathway/pathway_A_safe_deep_RL_1v1_PE.md) | Full research plan: VCP-CBF safety + PPO + self-play for nonholonomic robots |
-| [Pathway A Validation Report](docs/pathway/pathway_A_validation_report.md) | Expert validation of Pathway A against 51 papers |
+### 1. Stabilization Mechanisms for PO Self-Play
 
-### Implementation Phases
-| Phase | Document | Description |
-|-------|----------|-------------|
-| 1 | [Simulation Foundation](docs/phases/phase1_simulation_foundation.md) | Gymnasium env, VCP-CBF, PPO baseline, pygame viz, wandb tracking |
-| 2 | [Safety Integration](docs/phases/phase2_safety_integration.md) | CBF-PPO training, safety filtering, Lagrangian baselines |
-| 2.5 | [BarrierNet Experiment](docs/phases/phase2_5_barriernet_experiment.md) | End-to-end differentiable safety via BarrierNet comparison |
-| 3 | [Partial Observability + Self-Play](docs/phases/phase3_partial_observability_selfplay.md) | FOV/LiDAR observations, AMS-DRL self-play, health monitoring |
-| 4 | [Sim-to-Real Transfer](docs/phases/phase4_sim_to_real_transfer.md) | Domain randomization, ONNX export, ROS 2 deployment |
-| 5 | [Analysis & Publication](docs/phases/phase5_analysis_publication.md) | Statistical analysis, figures, paper writing |
+Standard self-play collapses under partial observability (our baseline: **0% escape rate**). We developed three mechanisms that extend stable co-evolution past 10M steps:
 
-### References
-| Document | Description |
-|----------|-------------|
-| [BibTeX References](docs/references/bibtex_references.bib) | Citation database for all papers |
-| [Key Methods Summary](docs/references/key_methods_summary.md) | Quick reference for CBF, BarrierNet, RESPO, POLICEd RL, etc. |
-| [Paper Collection Index](papers/original/README.md) | Full index of 37 original papers by category |
-| [Supplementary Papers](docs/references/safe_rl_papers_readme.md) | Index of 15 supplementary safe RL papers |
-| [New Papers List](docs/references/new_papers.md) | Papers identified during extended search |
+| Mechanism | Purpose | Impact |
+|-----------|---------|--------|
+| **Visibility Reward** (`w_vis=0.2`) | Explicit LOS-maintenance signal for pursuer | Without it: **collapse to 0%** |
+| **Forced Switching** (every 2M steps) | Breaks freeze-sticking where one role trains indefinitely | Without it: **pursuer-dominant 64% CR** |
+| **Search Staleness Reward** (`w_search=0.0001`) | Grid-based coverage bonus for systematic search | Under evaluation (ABL-3) |
+| **Masking Curriculum** | Anneals `p_full_obs` from 1.0 → 0.0 over 5M steps | Without it: under evaluation (ABL-4) |
 
-### Project Tracking
-| Document | Description |
-|----------|-------------|
-| [Workflow Tracker](docs/workflow_tracker.md) | Session log, paper reading status, research pathways |
+### 2. Best-Response Exploitability Testing
 
-## Implementation Status
+Most self-play papers claim "convergence" without verification. We implemented **fresh-init BR testing**:
 
-### Environment (`envs/`)
-- **PursuitEvasionEnv**: Gymnasium-based 1v1 PE with unicycle dynamics, circular obstacles, arena boundaries
-- **Observation modes**: Full observability, LOS-based partial obs, radius-based sensing, combined (radius + LOS)
-- **ObservationBuilder**: Configurable obs vectors — 14+2K dims (full) or 15+2K dims (partial, +1 for `los_visible` flag)
-- **Sensing parameters**: `partial_obs`, `sensing_radius`, `combined_masking`, `asymmetric_obs`
+- Train a new SAC agent from scratch against a **frozen** opponent snapshot
+- Compare BR performance against the self-play baseline
+- Classify into L1-L4 (per-seed) and H1-H5 (cohort) hypotheses
 
-### Training (`training/`, `scripts/`)
-| Script | Purpose |
-|--------|---------|
-| `scripts/train_evader_vs_greedy.py` | Diagnostic: evader vs greedy pursuer. Best-model checkpointing. |
-| `scripts/train_amsdrl.py` | AMS-DRL self-play with opponent pool, PFSP, collapse rollback |
-| `scripts/visualize_grid_gif.py` | Animated GIF of episode rollouts |
-| `scripts/visualize_sensing.py` | Sensing visualization: radius circles, LOS lines, visibility status |
+**Result (H3):** The self-play fixed point is **not** a Nash equilibrium. A BR evader achieves lower capture rates than the self-play evader (gap +0.08–0.10 > ε=0.05), revealing a curriculum-induced exploitability hole.
 
-### Sensing Modes
-| Mode | Flag | Behavior |
-|------|------|----------|
-| **Full obs** | (default) | Both agents see everything |
-| **LOS-only** | `--partial_obs` | Opponent masked when occluded by obstacles |
-| **Radius-only** | `--partial_obs --sensing_radius 3.0` | Opponent masked when distance > radius (sees through obstacles) |
-| **Combined** | `--partial_obs --sensing_radius 3.0 --combined_masking` | Opponent must be within radius AND have clear LOS |
+### 3. Modular, Tested Infrastructure
 
-### Key Results (Phase 3 diagnostics)
-| Run | Mode | Escape Rate |
-|-----|------|-------------|
-| S1v2b | Full obs | 98% |
-| S1v3 | LOS-only | 56% |
-| S1v4a | Asymmetric LOS | 80% peak → 20% final |
-| S1v5 | Radius 3.0m | 88% peak (running) |
-| S1v5b | Combined 3.0m | Running |
+```python
+# Example: BR trainer usage
+python scripts/train_br_sac.py \
+    --frozen_opponent_path results/BR_frozen/s48/evader \
+    --frozen_role evader \
+    --total_steps 1_500_000 \
+    --eval_freq 250_000 \
+    --seed 148 \
+    --output_dir results/BR_1
+```
 
-## Research Summary
+- **TDD throughout:** Every new script includes unit tests (`test_br_sac_loading.py`, `test_exploitability_analyzer.py`)
+- **Frozen-invariance test:** SHA-256 hash verification ensures opponent params don't mutate during training
+- **Smoke tests:** 50K-step validation before launching 1.5M-step production runs
 
-**Goal**: Train a pursuit agent and an evasion agent for 1v1 ground robot PE using deep RL, with formal safety guarantees via control barrier functions.
+---
 
-**Key Approach (Pathway A)**:
-- **Dynamics**: Unicycle/differential-drive with velocity-constrained polar (VCP) coordinate CBF
-- **Algorithm**: PPO (Stable-Baselines3) with CBF safety filter
-- **Training**: Asymmetric self-play (AMS-DRL) with health monitoring
-- **Safety**: CBF-QP layer ensuring collision avoidance + boundary constraints
-- **Transfer**: Domain randomization + ONNX export for ROS 2 deployment
+## Results Snapshot
 
-**Papers Read**: 36 (+ 15 supplementary) across safe RL, CBFs, HJ reachability, pursuit-evasion, self-play, and sim-to-real transfer.
+| Experiment | Seeds | Key Finding |
+|------------|-------|-------------|
+| SP17b (full config) | 48, 49, 50 | Stable co-evolution to M2550; curriculum-end drift post `p_full=0` |
+| ABL-1 (no vis reward) | 60 | **Total collapse** — CR → 0% |
+| ABL-2 (no forced switch) | 61 | **Freeze-sticking** — pursuer dominates at 64% CR |
+| ABL-3 (no search) | 62 | Running |
+| ABL-4 (no curriculum) | 63 | Running |
+| BR-1..BR-4 | 48, 49 | H3 verdict: evader-side exploitability, replicated |
+| BR-5..BR-6 | 50 | Running (3rd seed replication) |
+
+---
+
+## Running the Code
+
+### Setup
+
+```bash
+python -m venv venv
+./venv/bin/pip install -r requirements.txt
+```
+
+### Training
+
+```bash
+# Self-play with full config
+./venv/bin/python scripts/train_amsdrl.py \
+    --algorithm sac --fov_angle 90 --sensing_radius 8.0 \
+    --combined_masking --w_vis_pursuer 0.2 --w_search 0.0001 \
+    --masking_curriculum --force_switch_steps 2000000 \
+    --seed 100 --output results/SP17b_s100
+
+# Best-response test
+./venv/bin/python scripts/train_br_sac.py \
+    --frozen_opponent_path results/BR_frozen/s48/pursuer \
+    --frozen_role pursuer --seed 248 --output_dir results/BR_2
+```
+
+### Testing
+
+```bash
+./venv/bin/python -m pytest tests/ -v
+```
+
+---
+
+## Tech Stack
+
+| Layer | Tools |
+|-------|-------|
+| RL Framework | Stable-Baselines3 (SAC, PPO) |
+| Environment | Gymnasium + custom Dict obs space |
+| Compute | PyTorch 2.10, CUDA 12.8, RTX 5090 |
+| Visualization | matplotlib, pygame, GPU-accelerated GIF |
+| Experiment Tracking | TensorBoard, `history.json` schema |
+| Testing | pytest, SHA-256 param hashing |
+| Infra | Multi-machine SSH + rsync, nohup background jobs |
+
+---
+
+## Research Artifacts
+
+- **36 papers** reviewed across safe RL, CBFs, self-play, and sim-to-real
+- **40+ training runs** logged with structured `history.json` outputs
+- **Decision log** (`docs/decisions.md`): 36 architectural decisions with rationale
+- **Session worklogs** (`docs/worklogs/`): Per-session detailed records
+- **CoRL 2026 paper** (`paper/main.tex`): In submission
+
+---
+
+## About the Author
+
+This project was built as part of a research initiative on safe deep RL for robotics. The codebase reflects industry-grade practices applied to academic research: modular architecture, comprehensive testing, distributed training infrastructure, and rigorous empirical validation.
+
+For questions or collaboration, please open an issue.
