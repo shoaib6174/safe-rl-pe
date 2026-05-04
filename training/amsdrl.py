@@ -357,6 +357,57 @@ def _build_full_obs_recurrent_ppo(
     return model
 
 
+def _build_partial_obs_recurrent_ppo(
+    env,
+    encoder_type: str = "bimdn",
+    encoder_kwargs: dict | None = None,
+    seed: int = 42,
+    device: str = "cpu",
+    tensorboard_log: str | None = None,
+    learning_rate: float = 3e-4,
+    n_steps: int = 512,
+    batch_size: int = 256,
+    ent_coef: float = 0.01,
+    lstm_hidden_size: int = 256,
+    n_lstm_layers: int = 1,
+    n_epochs: int = 10,
+) -> RecurrentPPO:
+    """Create a RecurrentPPO model with MultiInputLstmPolicy (partial obs + LSTM)."""
+    policy_kwargs = {
+        "lstm_hidden_size": lstm_hidden_size,
+        "n_lstm_layers": n_lstm_layers,
+        "features_extractor_class": PartialObsFeaturesExtractor,
+        "features_extractor_kwargs": {
+            "features_dim": 256,
+            "encoder_type": encoder_type,
+            **(encoder_kwargs or {}),
+        },
+        "net_arch": dict(pi=[256, 256], vf=[256, 256]),
+        "activation_fn": torch.nn.Tanh,
+    }
+
+    model = RecurrentPPO(
+        "MultiInputLstmPolicy",
+        env,
+        learning_rate=learning_rate,
+        n_steps=n_steps,
+        batch_size=batch_size,
+        n_epochs=n_epochs,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=ent_coef,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+        seed=seed,
+        device=device,
+        tensorboard_log=tensorboard_log,
+        verbose=0,
+        policy_kwargs=policy_kwargs,
+    )
+    return model
+
+
 class RecurrentModelAdapter:
     """Wraps a RecurrentPPO model to manage LSTM state when used as opponent.
 
@@ -514,6 +565,7 @@ def _evaluate_head_to_head(
     w_collision: float = 0.0,
     w_wall: float = 0.0,
     n_obstacle_obs: int = 0,
+    recurrent: bool = False,
     **kwargs,
 ) -> dict:
     """Evaluate pursuer vs evader head-to-head using full-state obs.
@@ -537,6 +589,11 @@ def _evaluate_head_to_head(
         w_wall=w_wall,
         n_obstacle_obs=n_obstacle_obs,
     )
+
+    # Wrap recurrent models with LSTM state adapter
+    if recurrent:
+        pursuer_model = RecurrentModelAdapter(pursuer_model)
+        evader_model = RecurrentModelAdapter(evader_model)
 
     # Create adapters for both agents
     p_adapter = PartialObsOpponentAdapter(
@@ -1098,12 +1155,11 @@ class AMSDRLSelfPlay:
     def _get_build_fn(self):
         """Return the appropriate model builder function for the current algorithm."""
         if self.algorithm == "recurrent_ppo":
-            if not self.full_obs:
-                raise ValueError(
-                    "RecurrentPPO only supports --full_obs mode "
-                    "(LSTM replaces partial obs wrapper)."
-                )
-            return _build_full_obs_recurrent_ppo
+            return (
+                _build_full_obs_recurrent_ppo
+                if self.full_obs
+                else _build_partial_obs_recurrent_ppo
+            )
         if self.algorithm == "sac":
             return _build_full_obs_sac if self.full_obs else _build_partial_obs_sac
         else:
@@ -1813,6 +1869,9 @@ class AMSDRLSelfPlay:
             return model
         else:
             model = opp_model
+            # RecurrentPPO needs LSTM state management even under partial obs
+            if self.algorithm == "recurrent_ppo":
+                model = RecurrentModelAdapter(model)
             if self.fixed_speed:
                 opp_v_max = (base_env.evader_v_max if opponent_role == "evader"
                              else base_env.pursuer_v_max)
@@ -2886,6 +2945,7 @@ class AMSDRLSelfPlay:
             seed=self.seed + len(self.history) * 1000,
             n_obstacles=self.n_obstacles,
             fixed_speed=self.fixed_speed,
+            recurrent=(self.algorithm == "recurrent_ppo"),
             **self.env_kwargs,
         )
 
