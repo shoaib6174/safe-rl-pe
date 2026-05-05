@@ -47,6 +47,7 @@ class PartialObsPolicyNetwork(nn.Module):
         raw_obs_dim: int = 43,
         lidar_dim: int = 36,
         state_dim: int = 7,
+        belief_dim: int | None = None,
         encoder_type: str = "bimdn",
         encoder_kwargs: dict | None = None,
         features_dim: int = 256,
@@ -78,8 +79,20 @@ class PartialObsPolicyNetwork(nn.Module):
             nn.ReLU(),
         )
 
-        # Combined: 256 (lidar) + 64 (state) + encoder_latent_dim (belief)
-        combined_dim = 256 + 64 + encoder_latent_dim
+        # Belief branch (optional for backward compatibility)
+        self.belief_dim = belief_dim
+        if belief_dim is not None:
+            self.belief_mlp = nn.Sequential(
+                nn.Linear(belief_dim, 32),
+                nn.ReLU(),
+                nn.Linear(32, 64),
+                nn.ReLU(),
+            )
+            combined_dim = 256 + 64 + encoder_latent_dim + 64
+        else:
+            self.belief_mlp = None
+            combined_dim = 256 + 64 + encoder_latent_dim
+
         self.combined_mlp = nn.Sequential(
             nn.Linear(combined_dim, features_dim),
             nn.ReLU(),
@@ -111,7 +124,14 @@ class PartialObsPolicyNetwork(nn.Module):
         state_features = self.state_mlp(obs_dict["state"])
 
         # Combine all branches
-        combined = torch.cat([lidar_features, state_features, latent], dim=-1)
+        branches = [lidar_features, state_features, latent]
+
+        # Belief branch (if present in obs_dict and network has belief_mlp)
+        if self.belief_mlp is not None and "belief" in obs_dict:
+            belief_features = self.belief_mlp(obs_dict["belief"])
+            branches.append(belief_features)
+
+        combined = torch.cat(branches, dim=-1)
         return self.combined_mlp(combined)
 
     @property
@@ -158,10 +178,16 @@ class PartialObsFeaturesExtractor(BaseFeaturesExtractor):
         lidar_dim = lidar_shape[-1]
         state_dim = state_shape[0]
 
+        # Infer belief_dim if present in observation space
+        belief_dim = None
+        if "belief" in observation_space.spaces:
+            belief_dim = observation_space["belief"].shape[0]
+
         self.net = PartialObsPolicyNetwork(
             raw_obs_dim=raw_obs_dim,
             lidar_dim=lidar_dim,
             state_dim=state_dim,
+            belief_dim=belief_dim,
             encoder_type=encoder_type,
             encoder_kwargs=encoder_kwargs,
             features_dim=features_dim,
