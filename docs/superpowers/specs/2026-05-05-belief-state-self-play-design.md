@@ -39,24 +39,37 @@ PursuitEvasionEnv → PartialObsWrapper → BeliefTracker → Dict obs → SAC (
 
 A particle filter that maintains a probability distribution over the **opponent's** position. Instantiations are role-aware: a pursuer's tracker tracks the evader; an evader's tracker tracks the pursuer.
 
+**Interface:**
+```python
+class BeliefTracker:
+    def __init__(self, role: str, arena_width: float, arena_height: float,
+                 opponent_v_max: float, n_particles: int = 100,
+                 seed: int = 0)
+    def update(self, own_state: np.ndarray, opponent_state: np.ndarray,
+               is_visible: bool) -> None
+    def get_statistics(self) -> np.ndarray  # shape (6,)
+    def reset(self) -> None
+```
+
 **Parameters:**
 - `n_particles`: 100
 - `arena_width`: 20.0
 - `arena_height`: 20.0
-- `v_max`: 1.0 (evader max speed, used for process noise)
+- `opponent_v_max`: max speed of the opponent being tracked (pursuer tracks evader → evader_v_max; evader tracks pursuer → pursuer_v_max)
 
 **State:**
 - `particles`: [n_particles, 2] array of (x, y) positions
 - `weights`: [n_particles] uniform weights (simplified — no reweighting needed)
-- `last_visible_pos`: last known (x, y) when evader was visible
+- `last_visible_pos`: last known (x, y) when opponent was visible
 - `steps_since_seen`: integer counter
+- `rng`: np.random.Generator for reproducibility
 
 **Update Rules:**
 
 | Condition | Action |
 |-----------|--------|
-| Evader **visible** | Resample all particles around observed position with Gaussian noise (σ = 0.2m). Reset `steps_since_seen = 0`. |
-| Evader **not visible** | Propagate each particle: `particle += N(0, σ_process²)` where `σ_process = v_max * dt * steps_since_seen`. `dt = 0.1s` (simulation timestep). Clamp to arena bounds. Increment `steps_since_seen`. |
+| Opponent **visible** | Resample all particles around observed position with Gaussian noise (σ = 0.2m). Reset `steps_since_seen = 0`. |
+| Opponent **not visible** | Propagate each particle: `particle += N(0, σ_process²)` where `σ_process = opponent_v_max * dt * steps_since_seen`. `dt = 0.1s` (simulation timestep). Clamp to arena bounds. Increment `steps_since_seen`. |
 
 **Output Statistics (belief vector, 6-D):**
 ```
@@ -65,7 +78,7 @@ belief = [mean_x, mean_y, std_x, std_y, entropy, time_since_seen]
 
 - `mean_x, mean_y`: particle mean
 - `std_x, std_y`: particle standard deviation (independent axes)
-- `entropy`: log(det(covariance matrix)) — measures uncertainty
+- `entropy`: log(det(covariance matrix) + ε) with ε=1e-6 — measures uncertainty. Added epsilon prevents -inf when particles collapse.
 - `time_since_seen`: `steps_since_seen * dt` in seconds
 
 ### 3.2 Modified Component: PartialObsWrapper
@@ -95,25 +108,33 @@ New Dict obs:
 }
 ```
 
-**Note:** The `obs_history` still contains the raw FOV detection (`d_to_opp`, `bearing`), which is redundant with the belief but kept for backward compatibility and to let the policy learn its own implicit features if needed.
+**Note:** The `obs_history` still contains the raw FOV detection (`d_to_opp`, `bearing`), which is redundant with the belief but kept to let the policy learn its own implicit features if needed. The belief provides explicit geometric information; the obs_history provides temporal context.
 
 ### 3.3 Modified Component: PartialObsFeaturesExtractor
 
-**File:** `agents/partial_obs_policy.py`
+**Files:** `agents/partial_obs_policy.py` (both `PartialObsPolicyNetwork` and `PartialObsFeaturesExtractor`)
 
-Extend the existing `PartialObsFeaturesExtractor` to process the `"belief"` key.
+**Changes to `PartialObsPolicyNetwork`:**
+- Add `belief_dim: int = 6` parameter to `__init__`
+- Add `belief_mlp` branch: `nn.Sequential(nn.Linear(belief_dim, 32), nn.ReLU(), nn.Linear(32, 64), nn.ReLU())`
+- Update `combined_dim = 256 (lidar) + 64 (state) + encoder_latent_dim + 64 (belief)`
+- Update `forward()` to accept `"belief"` key from obs_dict
 
-**Architecture:**
+**Updated Architecture:**
 ```
-obs_history → BiMDN encoder → features (256)
-lidar       → Conv1D        → features (64)
-state       → MLP           → features (64)
-belief      → MLP (6→32→64) → features (64)
-                              ↓
-                        concat → 448-D → MLP → 256-D output
+obs_history → encoder (bimdn/lstm/mlp) → latent (varies by type)
+lidar       → Conv1D                  → 256
+state       → MLP                     → 64
+belief      → MLP (6→32→64)           → 64
+                                    ↓
+                              concat → combined_dim → MLP → 256-D output
 ```
 
-The belief MLP is small (6 → 32 → 64) because the belief vector is low-dimensional and structured.
+**Note:** The `encoder_type` parameter controls the `obs_history` encoder. SP17b used whatever encoder type was configured (check `configs/` or `train_amsdrl.py` defaults). The belief branch is independent and always active.
+
+**Changes to `PartialObsFeaturesExtractor`:**
+- Pass `belief_dim=6` to `PartialObsPolicyNetwork`
+- The `observation_space` dict now includes `"belief"` key; `PartialObsPolicyNetwork` infers `belief_dim` from `observation_space["belief"].shape[0]`
 
 ### 3.4 Training Protocol
 
@@ -152,8 +173,9 @@ Note: `--masking_curriculum` and `--p_full_anneal_steps` are intentionally omitt
    - Builds raw partial obs via FOV sensor + lidar + history buffer
    - Calls `belief_tracker.update(own_state, target_state, is_visible)`
    - Appends `belief_tracker.get_statistics()` to obs dict
-3. **Policy forward:** `PartialObsFeaturesExtractor` processes all 4 keys
-4. **SAC update:** Standard SAC training with Dict observations
+3. **Episode reset:** `PartialObsWrapper.reset()` calls `belief_tracker.reset()`
+4. **Policy forward:** `PartialObsFeaturesExtractor` processes all 4 keys
+5. **SAC update:** Standard SAC training with Dict observations
 
 ## 5. Error Handling
 
@@ -162,7 +184,7 @@ Note: `--masking_curriculum` and `--p_full_anneal_steps` are intentionally omitt
 | Belief particles drift outside arena | Clamp to `[0, arena_width] × [0, arena_height]` |
 | `steps_since_seen` exceeds 1200 (max episode length) | Cap at 1200 — entropy already captures uncertainty |
 | Particle collapse (all particles identical) | Add small noise (σ=0.01) on resample to maintain diversity |
-| Belief tracker called before first update | Return zero belief vector + high entropy (safe default) |
+| Belief tracker called before first update | Return `mean=arena_center, std=arena_diag, entropy=max, time_since_seen=0` (safe default) |
 
 ## 6. Testing
 
@@ -189,20 +211,23 @@ Note: `--masking_curriculum` and `--p_full_anneal_steps` are intentionally omitt
 | M2550–M5000 | CR drift | ≤ 0.15 drop | No curriculum-end collapse |
 | M5000 | BR evader gap | ≤ 0.05 | Policy is ε-NE (not exploitable) |
 
+**Note on backward compatibility:** Old SP17b checkpoints do NOT have the `"belief"` key. BELIEF_s200 trains from scratch. BR testing of BELIEF_s200 uses belief-aware BR training (same code, frozen opponent loaded from BELIEF checkpoint).
+
 ## 8. Risks & Mitigations
 
 | Risk | Likelihood | Mitigation |
 |------|-----------|------------|
 | Belief tracker is too simple (diffusion model ignores walls/obstacles) | Medium | v1 uses simple diffusion. If needed, v2 adds obstacle-aware propagation (reject particles inside walls). |
 | SAC cannot learn from belief vector (representation too abstract) | Low-Medium | Belief is only 6 numbers + raw obs still available. Policy can ignore belief if useless. |
-| Pure PO from start is too hard (ABL-4 CR=0.19 suggests this) | Medium | ABL-4 had no belief. Belief should bridge the gap. If still too hard, add short warm-start (100K steps with p_full=1.0) to initialize belief tracker. |
+| Pure PO from start is too hard (ABL-4 CR=0.19 suggests this) | Medium | ABL-4 had no belief. Belief should bridge the gap. If still too hard, reduce arena size (15×15) or increase sensing radius (10m) to make the game more tractable while keeping PO. **Do NOT reintroduce curriculum** — that reintroduces the distributional shift. |
 | Training diverges (same freeze-sticking as before) | Low | Forced switch + vis reward + search reward are proven mechanisms. Kept unchanged. |
 
 ## 9. Definition of Done
 
 - [ ] `envs/belief_tracker.py` implemented and unit-tested
-- [ ] `PartialObsWrapper` extended with belief key
-- [ ] `PartialObsFeaturesExtractor` extended with belief MLP
+- [ ] `PartialObsWrapper` extended with belief key and `reset()` integration
+- [ ] `PartialObsPolicyNetwork` extended with belief branch
+- [ ] `PartialObsFeaturesExtractor` updated to pass belief_dim
 - [ ] Smoke test passes (10K steps, no errors)
 - [ ] Launch BELIEF_s200 on niro-2
 - [ ] CR ≥ 0.40 at M2550
