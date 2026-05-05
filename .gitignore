@@ -47,3 +47,4 @@ viz_outputs/
 # Tool config
 .claude/
 .serena/
+.worktrees/
