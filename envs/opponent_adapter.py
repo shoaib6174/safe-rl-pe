@@ -71,18 +71,38 @@ class PartialObsOpponentAdapter:
         else:
             opp_v_max = base_env.pursuer_v_max
 
-        self.belief_tracker = BeliefTracker(
-            role=self.role,
-            arena_width=base_env.arena_width,
-            arena_height=base_env.arena_height,
-            opponent_v_max=opp_v_max,
-            n_particles=100,
-            seed=0,
-        )
+        # Belief tracker for opponent position (only used if model expects it)
+        self._use_belief = self._model_expects_belief()
+        if self._use_belief:
+            self.belief_tracker = BeliefTracker(
+                role=self.role,
+                arena_width=base_env.arena_width,
+                arena_height=base_env.arena_height,
+                opponent_v_max=opp_v_max,
+                n_particles=100,
+                seed=0,
+            )
+        else:
+            self.belief_tracker = None
 
         # Track last known opponent position
         self.last_known_opp_pos = None
         self.steps_since_seen = 0
+
+    def _model_expects_belief(self) -> bool:
+        """Check if the wrapped model's observation space includes 'belief'."""
+        # For SB3 models, check the policy's observation space
+        model = self.model
+        if hasattr(model, 'policy') and hasattr(model.policy, 'observation_space'):
+            obs_space = model.policy.observation_space
+            if hasattr(obs_space, 'spaces') and 'belief' in obs_space.spaces:
+                return True
+        # Also check model-level observation_space (some wrappers expose it)
+        if hasattr(model, 'observation_space') and model.observation_space is not None:
+            obs_space = model.observation_space
+            if hasattr(obs_space, 'spaces') and 'belief' in obs_space.spaces:
+                return True
+        return False
 
     def predict(self, full_state_obs: np.ndarray, deterministic: bool | None = None) -> tuple:
         """Convert full-state obs to partial obs and predict action.
@@ -157,17 +177,18 @@ class PartialObsOpponentAdapter:
         raw_obs = np.concatenate([state_features, lidar]).astype(np.float32)
         self.buffer.add(raw_obs)
 
-        # Update belief tracker
-        is_visible = d_to_opp >= 0
-        self.belief_tracker.update(own_state, target_state, is_visible)
-        belief = self.belief_tracker.get_statistics()
-
-        return {
+        # Update belief tracker (only if model expects it)
+        obs_dict = {
             "obs_history": self.buffer.get_history(),
             "lidar": lidar.reshape(1, -1).astype(np.float32),
             "state": state_features,
-            "belief": belief,
         }
+        if self._use_belief:
+            is_visible = d_to_opp >= 0
+            self.belief_tracker.update(own_state, target_state, is_visible)
+            obs_dict["belief"] = self.belief_tracker.get_statistics()
+
+        return obs_dict
 
     def reset(self):
         """Reset the adapter's internal state for a new episode.
@@ -177,4 +198,5 @@ class PartialObsOpponentAdapter:
         self.buffer.reset()
         self.last_known_opp_pos = None
         self.steps_since_seen = 0
-        self.belief_tracker.reset()
+        if self.belief_tracker is not None:
+            self.belief_tracker.reset()
