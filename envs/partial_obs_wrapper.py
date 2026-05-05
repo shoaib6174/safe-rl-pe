@@ -14,6 +14,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from envs.belief_tracker import BeliefTracker
 from envs.sensors import FOVSensor, LidarSensor, ObservationHistoryBuffer
 
 
@@ -75,6 +76,21 @@ class PartialObsWrapper(gym.Wrapper):
         self.n_rays = config["lidar"].get("n_rays", 36)
         self.lidar_max_range = config["lidar"].get("max_range", 5.0)
 
+        # Belief tracker for opponent position
+        if self.role == "pursuer":
+            opp_v_max = self._base_env.evader_v_max
+        else:
+            opp_v_max = self._base_env.pursuer_v_max
+
+        self.belief_tracker = BeliefTracker(
+            role=self.role,
+            arena_width=self._base_env.arena_width,
+            arena_height=self._base_env.arena_height,
+            opponent_v_max=opp_v_max,
+            n_particles=100,
+            seed=0,
+        )
+
         # Observation history buffer
         self.buffer = ObservationHistoryBuffer(K=history_length, obs_dim=self.RAW_OBS_DIM)
 
@@ -99,6 +115,11 @@ class PartialObsWrapper(gym.Wrapper):
                 shape=(7,),
                 dtype=np.float32,
             ),
+            "belief": spaces.Box(
+                low=-np.inf, high=np.inf,
+                shape=(6,),
+                dtype=np.float32,
+            ),
         })
 
         # Action space: inherit from the wrapped env if it already has one
@@ -116,6 +137,7 @@ class PartialObsWrapper(gym.Wrapper):
         self.buffer.reset()
         self.last_known_opp_pos = None
         self.steps_since_seen = 0
+        self.belief_tracker.reset()
         obs_dict = self._build_obs_dict()
         return obs_dict, info
 
@@ -196,10 +218,16 @@ class PartialObsWrapper(gym.Wrapper):
         raw_obs = np.concatenate([state_features, lidar]).astype(np.float32)
         self.buffer.add(raw_obs)
 
+        # Update belief tracker
+        is_visible = d_to_opp >= 0
+        self.belief_tracker.update(own_state, target_state, is_visible)
+        belief = self.belief_tracker.get_statistics()
+
         return {
             "obs_history": self.buffer.get_history(),
             "lidar": lidar.reshape(1, -1).astype(np.float32),
             "state": state_features,
+            "belief": belief,
         }
 
     def get_true_state(self) -> np.ndarray:
