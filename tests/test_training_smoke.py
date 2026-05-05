@@ -174,3 +174,43 @@ class TestTrainingSmoke:
         model.learn(total_timesteps=512, callback=cb)
 
         envs.close()
+
+
+# --- Smoke tests: Belief-enabled partial obs wrapper ---
+
+def test_belief_observation_dict():
+    """PartialObsWrapper should include 'belief' key in obs dict."""
+    from envs.pursuit_evasion_env import PursuitEvasionEnv
+    from envs.partial_obs_wrapper import PartialObsWrapper
+
+    base_env = PursuitEvasionEnv(arena_width=20, arena_height=20)
+    wrapper = PartialObsWrapper(base_env, role="pursuer")
+
+    obs, info = wrapper.reset(seed=42)
+
+    assert "belief" in obs, f"obs dict missing 'belief' key. Got: {obs.keys()}"
+    assert obs["belief"].shape == (6,), f"belief shape should be (6,), got {obs['belief'].shape}"
+    assert obs["belief"].dtype == np.float32
+
+
+def test_belief_after_step():
+    """Belief should update after each step."""
+    from envs.pursuit_evasion_env import PursuitEvasionEnv
+    from envs.wrappers import SingleAgentPEWrapper
+    from envs.partial_obs_wrapper import PartialObsWrapper
+
+    base_env = PursuitEvasionEnv(arena_width=20, arena_height=20)
+    single = SingleAgentPEWrapper(base_env, role="pursuer")
+    wrapper = PartialObsWrapper(single, role="pursuer")
+
+    obs, _ = wrapper.reset(seed=42)
+    initial_belief = obs["belief"].copy()
+
+    # Take one step
+    action = np.array([0.5, 0.1], dtype=np.float32)
+    obs, reward, terminated, truncated, info = wrapper.step(action)
+
+    assert "belief" in obs
+    # Belief should have changed after a step
+    assert not np.array_equal(obs["belief"], initial_belief), \
+        "belief should change after stepping"
