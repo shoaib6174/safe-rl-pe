@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-05-03 (S89)
+## Last Updated: 2026-05-07 (S90)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -12,8 +12,12 @@
 
 | Blocker | Since Session | Details |
 |---------|--------------|---------|
-| ABL-3/ABL-4 divergence check | S88+ | Need M2550 results (~May 7-8) to prove search + curriculum critical |
-| BR-5/BR-6 completion | S88+ | ~4.5h wall time; monitor running; will notify when done |
+| ABL-3/ABL-4 divergence check | S88+ | ✅ **RESOLVED** — ABL-3 collapsed (CR=0.04), ABL-4 struggling (CR=0.15). Both show clear divergence. |
+| BR-5/BR-6 completion | S88+ | ✅ **COMPLETE** — H3 replicated for s50. Full cohort verdict confirmed across all 3 seeds. |
+| SP17b_s49/s50 completion | S89 | ✅ **COMPLETE** — Ran 30M steps, terminal drift confirmed (CR→0.05, 0.13). |
+| BR-ws-s50 warm-start | S89 | ❌ **FAILED** — CR dropped 0.46→0.115. Warm-start cannot close exploitability gap. |
+| RecurrentPPO partial obs | S89 | ❌ **FAILED** — CR=0.00 under full PO. LSTM memory does not help. |
+| BELIEF_s200 convergence | S90 | ⏳ **RUNNING** — Explicit belief-state self-play launched on niro-2. Monitoring for CR ≥ 0.40 at M2550. |
 | Paper body writing | — | Intro/Methods/Results for Framing C; deadline May 21 |
 
 ## Session Index
@@ -109,6 +113,7 @@
 | 87 | 2026-05-01 | **CoRL 2026 Sprint — Plan & Launch**: CoRL feasibility assessment, hybrid experimental plan (niro-1 + niro-2), niro-2 cleanup (ComfyUI killed, SP12 deleted), PyTorch upgrade on niro-1 (2.10.0+cu128), launched s50/s51 on niro-2 + ABL-1/ABL-2 on niro-1, LaTeX skeleton created. | [S87](worklogs/2026-05-01_S87.md) |
 | 88 | 2026-05-02 | **BR exploitability test for SP17b cohort**: trajectory analysis revealed curriculum-end drift; implemented `scripts/train_br_sac.py` + `scripts/analyze_exploitability.py` (TDD); ran BR-1..BR-4 (4× 1.5M steps) on s48/s49 frozen at M2550; **verdict: H3** — both seeds L3 (evader exploitable, pursuer not), gap +0.08 to +0.10 > ε=0.05. Framing C adopted: paper reframes to characterize curriculum-induced exploitability hole. Abstract updated in `paper/main.tex`. | [S88](worklogs/2026-05-02_S88.md) |
 | 89 | 2026-05-03 | **S88 completion — visualizations + paper intro + git**: Generated self-play GIFs on niro-2 (obstacle + open arena), added visualization section to README, updated paper Introduction for Framing C, committed to git. Push pending (no GitHub auth on niro-1). | [S89](worklogs/2026-05-03_S89.md) |
+| 90 | 2026-05-07 | **Belief-state self-play implementation**: Implemented BeliefTracker (particle filter), integrated into PartialObsWrapper + policy network + opponent adapter. Two critical runtime fixes (KeyError 'belief', obs space mismatch). Launched BELIEF_s200 on niro-2. Design spec + impl plan written. All 13 tests pass. | [S90](worklogs/2026-05-07_S90.md) |
 
 ## Paper Reading Status
 

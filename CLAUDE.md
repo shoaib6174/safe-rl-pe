@@ -9,7 +9,8 @@
 - `docs/pathway/` - Pathway A research plan and validation
 - `docs/phases/` - Phase 1-5 implementation specifications
 - `docs/references/` - BibTeX, method indices, paper lists
-- `docs/workflow_tracker.md` - Session index and progress overview
+- `docs/workflow_tracker.md` - Session index, current blockers, progress overview
+- `docs/decisions.md` - Searchable decision log (aggregated from worklogs)
 - `docs/worklogs/` - Per-session detailed worklogs (see Session Protocol below)
 - `papers/original/` - Papers 01-37 (PDFs gitignored)
 - `papers/supplementary/` - Papers N01-N15 (PDFs gitignored)
@@ -17,9 +18,20 @@
 ## Session Protocol
 Every Claude Code session MUST maintain a worklog. Follow these steps:
 
-1. **Session start**: Create a new worklog file in `docs/worklogs/` using the naming convention `YYYY-MM-DD_S##.md` (see `docs/worklogs/TEMPLATE.md` for the template). Fill in the session number, date, context, and objectives.
-2. **During session**: Update the "Work Done" and "Files Changed" sections as tasks are completed.
-3. **Session end**: Complete all remaining sections (Decisions Made, Issues & Blockers, Next Steps). Add a one-liner entry to the Session Index table in `docs/workflow_tracker.md`.
+1. **Session start**:
+   - Read the **previous session's worklog** (linked in the template) — specifically its "Next Steps" section.
+   - Check **Current Blockers** in `docs/workflow_tracker.md` for unresolved issues.
+   - Create a new worklog file in `docs/worklogs/` using `YYYY-MM-DD_S##.md` (see `docs/worklogs/TEMPLATE.md`).
+   - Fill in session number, date, previous session link, context, and objectives.
+2. **During session**:
+   - Update "Work Done" and "Files Changed" as tasks are completed.
+   - For any non-obvious decision, add it to **both** the worklog's "Decisions Made" table **and** `docs/decisions.md`.
+   - If a training run is launched or completed, update `training-runs.md` in auto-memory.
+3. **Session end**:
+   - Complete all remaining sections (Decisions, Issues & Blockers, Next Steps).
+   - Add a one-liner entry to the Session Index in `docs/workflow_tracker.md`.
+   - If any blocker is unresolved, add/update it in the **Current Blockers** section of `docs/workflow_tracker.md`.
+   - If a blocker was resolved this session, remove it from Current Blockers.
 
 To determine the next session number, check the Session Index in `docs/workflow_tracker.md`.
 
@@ -61,6 +73,21 @@ To launch training:
 2. SSH into niro-2 and pull
 3. Run training there (via `nohup` or `tmux` for long runs)
 4. Copy results back when done
+
+## Auto Memory Organization
+
+Memory files are organized by topic. Keep MEMORY.md as a concise index (<50 lines).
+
+| File | Contents |
+|------|----------|
+| `MEMORY.md` | Current state + links to topic files |
+| `environment-config.md` | Env state format, obs space, sensing modes, speed ratios, proven configs |
+| `self-play-lessons.md` | What works/fails, training dynamics, curriculum strategies |
+| `debugging-ops.md` | niro-2 setup, known bugs, diagnostic validity, seed sensitivity, reward pitfalls |
+| `training-runs.md` | Full experiment log — update when runs launch or complete |
+| `masking-curriculum-research.md` | PO-GRL literature and implementation notes |
+
+Do NOT dump everything into MEMORY.md. Check if a topic file exists first.
 
 ## Remote Servers
 

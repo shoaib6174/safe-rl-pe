@@ -69,7 +69,7 @@ class BeliefTracker:
 | Condition | Action |
 |-----------|--------|
 | Opponent **visible** | Resample all particles around observed position with Gaussian noise (σ = 0.2m). Reset `steps_since_seen = 0`. |
-| Opponent **not visible** | Propagate each particle: `particle += N(0, σ_process²)` where `σ_process = opponent_v_max * dt * steps_since_seen`. `dt = 0.1s` (simulation timestep). Clamp to arena bounds. Increment `steps_since_seen`. |
+| Opponent **not visible** | Propagate each particle: `particle += N(0, σ_process²)` where `σ_process = opponent_v_max * dt * sqrt(steps_since_seen)`. `dt = 0.05s` (simulation timestep). Clamp to arena bounds. Increment `steps_since_seen`. |
 
 **Output Statistics (belief vector, 6-D):**
 ```
@@ -79,7 +79,9 @@ belief = [mean_x, mean_y, std_x, std_y, entropy, time_since_seen]
 - `mean_x, mean_y`: particle mean
 - `std_x, std_y`: particle standard deviation (independent axes)
 - `entropy`: log(det(covariance matrix) + ε) with ε=1e-6 — measures uncertainty. Added epsilon prevents -inf when particles collapse.
-- `time_since_seen`: `steps_since_seen * dt` in seconds
+- `time_since_seen`: `steps_since_seen * dt` in seconds (`dt = 0.05s`)
+
+**Feature Scale Note:** The 6-D belief vector has heterogeneous scales: mean in [0, 20], std in [0, ~10], entropy unbounded, time in [0, 60]. SAC with adaptive optimizers can handle this, but convergence may be slower than with normalized features. If training is unstable, consider normalizing by arena dimensions (mean / 20, std / 10) or adding batch/layer norm in the `belief_mlp` branch.
 
 ### 3.2 Modified Component: PartialObsWrapper
 
@@ -132,11 +134,25 @@ belief      → MLP (6→32→64)           → 64
 
 **Note:** The `encoder_type` parameter controls the `obs_history` encoder. SP17b used whatever encoder type was configured (check `configs/` or `train_amsdrl.py` defaults). The belief branch is independent and always active.
 
+### 3.4 Modified Component: PartialObsOpponentAdapter
+
+**File:** `envs/opponent_adapter.py`
+
+`PartialObsOpponentAdapter` builds observation dicts **independently** of `PartialObsWrapper` (it has its own FOV sensor, Lidar sensor, and history buffer). When a belief-trained policy is frozen and loaded as an opponent, the adapter must also provide the `"belief"` key — otherwise `model.predict()` will raise `KeyError`.
+
+**Changes:**
+1. Add `BeliefTracker` instance in `__init__` (role-aware, same arena bounds / v_max as the wrapper)
+2. In `_build_obs_dict()`: call `belief_tracker.update(own_state, target_state, d_to_opp >= 0)` then append `"belief": belief_tracker.get_statistics()` to the returned dict
+3. In `reset()`: call `belief_tracker.reset()`
+4. The adapter must use the **same sensor config** as the training wrapper (FOV angle, range, lidar rays) so that visibility detection matches
+
+**Critical:** Without this change, BR testing and evaluation of belief-trained checkpoints will fail.
+
 **Changes to `PartialObsFeaturesExtractor`:**
 - Pass `belief_dim=6` to `PartialObsPolicyNetwork`
 - The `observation_space` dict now includes `"belief"` key; `PartialObsPolicyNetwork` infers `belief_dim` from `observation_space["belief"].shape[0]`
 
-### 3.4 Training Protocol
+### 3.5 Training Protocol
 
 **Config changes from SP17b:**
 - Remove `--masking_curriculum` (p_full_obs = 0.0 from start)
@@ -190,7 +206,7 @@ Note: `--masking_curriculum` and `--p_full_anneal_steps` are intentionally omitt
 
 ### 6.1 Unit Test: BeliefTracker
 - **Visible target:** Particles should cluster around true position (mean error < 0.1m)
-- **Hidden target (10s):** Particles should spread to std ≈ v_max * 10 = 10m (clamped to arena)
+- **Hidden target (10s):** Particles should spread to std ≈ v_max * dt * sqrt(steps) = 1.0 * 0.05 * sqrt(200) ≈ 0.71m (diffusion grows as O(sqrt(t)))
 - **Reappearance:** After 10s hidden, target reappears — belief should reconverge within 1 step
 
 ### 6.2 Smoke Test: Training Launch
@@ -209,7 +225,9 @@ Note: `--masking_curriculum` and `--p_full_anneal_steps` are intentionally omitt
 |-----------|--------|-----------|----------------|
 | M2550 | CR under pure PO | ≥ 0.40 | Belief enables learning without curriculum |
 | M2550–M5000 | CR drift | ≤ 0.15 drop | No curriculum-end collapse |
-| M5000 | BR evader gap | ≤ 0.05 | Policy is ε-NE (not exploitable) |
+| M5000 | BR evader gap | ≤ 0.05 (aspirational) | Policy is ε-NE (not exploitable) |
+
+**Note on thresholds:** The BR gap ≤ 0.05 target is aspirational. SP17b with curriculum achieved gaps of +0.08 to +0.10. A gap ≤ 0.10 with **no curriculum-end drift** is already a significant improvement over the baseline and validates the approach. Gap ≤ 0.05 is full success; gap ≤ 0.10 with stable CR is partial success.
 
 **Note on backward compatibility:** Old SP17b checkpoints do NOT have the `"belief"` key. BELIEF_s200 trains from scratch. BR testing of BELIEF_s200 uses belief-aware BR training (same code, frozen opponent loaded from BELIEF checkpoint).
 
@@ -221,6 +239,7 @@ Note: `--masking_curriculum` and `--p_full_anneal_steps` are intentionally omitt
 | SAC cannot learn from belief vector (representation too abstract) | Low-Medium | Belief is only 6 numbers + raw obs still available. Policy can ignore belief if useless. |
 | Pure PO from start is too hard (ABL-4 CR=0.19 suggests this) | Medium | ABL-4 had no belief. Belief should bridge the gap. If still too hard, reduce arena size (15×15) or increase sensing radius (10m) to make the game more tractable while keeping PO. **Do NOT reintroduce curriculum** — that reintroduces the distributional shift. |
 | Training diverges (same freeze-sticking as before) | Low | Forced switch + vis reward + search reward are proven mechanisms. Kept unchanged. |
+| Unnormalized belief statistics impede learning | Low-Medium | Monitor training curves. If unstable, add LayerNorm to `belief_mlp` or normalize statistics by arena bounds. |
 
 ## 9. Definition of Done
 
@@ -228,6 +247,7 @@ Note: `--masking_curriculum` and `--p_full_anneal_steps` are intentionally omitt
 - [ ] `PartialObsWrapper` extended with belief key and `reset()` integration
 - [ ] `PartialObsPolicyNetwork` extended with belief branch
 - [ ] `PartialObsFeaturesExtractor` updated to pass belief_dim
+- [ ] `PartialObsOpponentAdapter` updated with `BeliefTracker` support (critical for BR/eval)
 - [ ] Smoke test passes (10K steps, no errors)
 - [ ] Launch BELIEF_s200 on niro-2
 - [ ] CR ≥ 0.40 at M2550
