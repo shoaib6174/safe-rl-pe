@@ -19,6 +19,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from envs.belief_tracker import BeliefTracker
 from envs.sensors import FOVSensor, LidarSensor, ObservationHistoryBuffer
 from envs.partial_obs_wrapper import DEFAULT_SENSOR_CONFIG, PartialObsWrapper
 
@@ -89,6 +90,21 @@ class NavigationEnv(gym.Wrapper):
             K=history_length, obs_dim=PartialObsWrapper.RAW_OBS_DIM
         )
 
+        # Belief tracker (for flee mode compatibility with PartialObsWrapper)
+        if self.role == "pursuer":
+            opp_v_max = self._base_env.evader_v_max
+        else:
+            opp_v_max = self._base_env.pursuer_v_max
+
+        self.belief_tracker = BeliefTracker(
+            role=self.role,
+            arena_width=self._base_env.arena_width,
+            arena_height=self._base_env.arena_height,
+            opponent_v_max=opp_v_max,
+            n_particles=100,
+            seed=0,
+        )
+
         # Episode state
         self.goal = None
         self.goals_reached = 0
@@ -118,6 +134,11 @@ class NavigationEnv(gym.Wrapper):
                 shape=(7,),
                 dtype=np.float32,
             ),
+            "belief": spaces.Box(
+                low=-np.inf, high=np.inf,
+                shape=(6,),
+                dtype=np.float32,
+            ),
         })
 
     def reset(self, seed=None, options=None):
@@ -127,6 +148,7 @@ class NavigationEnv(gym.Wrapper):
 
         obs, info = self.env.reset(seed=seed, options=options)
         self.buffer.reset()
+        self.belief_tracker.reset()
         self.current_step = 0
         self.goals_reached = 0
 
@@ -325,6 +347,16 @@ class NavigationEnv(gym.Wrapper):
             bearing,
         ], dtype=np.float32)
 
+        # Update belief tracker (in flee mode, track pursuer; in goal mode, goal is always "visible")
+        if self.is_flee_mode:
+            is_visible = d_to_target >= 0
+            self.belief_tracker.update(own_state, target_state, is_visible)
+        else:
+            # Goal-reaching: goal is always "visible" at known position
+            goal_state = np.array([self.goal[0], self.goal[1], 0.0], dtype=np.float32)
+            self.belief_tracker.update(own_state, goal_state, is_visible=True)
+        belief = self.belief_tracker.get_statistics()
+
         # Raw obs = state_features + lidar = 43 dims
         raw_obs = np.concatenate([state_features, lidar]).astype(np.float32)
         self.buffer.add(raw_obs)
@@ -333,6 +365,7 @@ class NavigationEnv(gym.Wrapper):
             "obs_history": self.buffer.get_history(),
             "lidar": lidar.reshape(1, -1).astype(np.float32),
             "state": state_features,
+            "belief": belief,
         }
 
     def _sample_goal(self) -> np.ndarray:
