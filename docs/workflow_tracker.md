@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-05-07 (S90)
+## Last Updated: 2026-05-08 (S91)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -17,7 +17,7 @@
 | SP17b_s49/s50 completion | S89 | ✅ **COMPLETE** — Ran 30M steps, terminal drift confirmed (CR→0.05, 0.13). |
 | BR-ws-s50 warm-start | S89 | ❌ **FAILED** — CR dropped 0.46→0.115. Warm-start cannot close exploitability gap. |
 | RecurrentPPO partial obs | S89 | ❌ **FAILED** — CR=0.00 under full PO. LSTM memory does not help. |
-| BELIEF_s200 convergence | S90 | ⏳ **RUNNING** — Explicit belief-state self-play launched on niro-2. Monitoring for CR ≥ 0.40 at M2550. |
+| BELIEF_s200 convergence | S90-S91 | ❌ **FAILED** — CR peaked at 0.48 (phase 750) then declined to 0.10. At M2550: CR=0.16 (criterion ≥0.40). Drift is structural, not curriculum-induced. |
 | Paper body writing | — | Intro/Methods/Results for Framing C; deadline May 21 |
 
 ## Session Index
@@ -114,6 +114,7 @@
 | 88 | 2026-05-02 | **BR exploitability test for SP17b cohort**: trajectory analysis revealed curriculum-end drift; implemented `scripts/train_br_sac.py` + `scripts/analyze_exploitability.py` (TDD); ran BR-1..BR-4 (4× 1.5M steps) on s48/s49 frozen at M2550; **verdict: H3** — both seeds L3 (evader exploitable, pursuer not), gap +0.08 to +0.10 > ε=0.05. Framing C adopted: paper reframes to characterize curriculum-induced exploitability hole. Abstract updated in `paper/main.tex`. | [S88](worklogs/2026-05-02_S88.md) |
 | 89 | 2026-05-03 | **S88 completion — visualizations + paper intro + git**: Generated self-play GIFs on niro-2 (obstacle + open arena), added visualization section to README, updated paper Introduction for Framing C, committed to git. Push pending (no GitHub auth on niro-1). | [S89](worklogs/2026-05-03_S89.md) |
 | 90 | 2026-05-07 | **Belief-state self-play implementation**: Implemented BeliefTracker (particle filter), integrated into PartialObsWrapper + policy network + opponent adapter. Two critical runtime fixes (KeyError 'belief', obs space mismatch). Launched BELIEF_s200 on niro-2. Design spec + impl plan written. All 13 tests pass. | [S90](worklogs/2026-05-07_S90.md) |
+| 91 | 2026-05-08 | **Status check + BELIEF_s200 failure discovery**: Checked all running experiments. ABL-1/ABL-2 completed. BELIEF_s200 CR peaked at 0.48 then declined to 0.10 — **validation FAILED**. Key finding: drift is structural, not curriculum-induced. Updated training-runs.md and docs. | [S91](worklogs/2026-05-08_S91.md) |
 
 ## Paper Reading Status
 
