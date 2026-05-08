@@ -115,6 +115,7 @@
 | 89 | 2026-05-03 | **S88 completion — visualizations + paper intro + git**: Generated self-play GIFs on niro-2 (obstacle + open arena), added visualization section to README, updated paper Introduction for Framing C, committed to git. Push pending (no GitHub auth on niro-1). | [S89](worklogs/2026-05-03_S89.md) |
 | 90 | 2026-05-07 | **Belief-state self-play implementation**: Implemented BeliefTracker (particle filter), integrated into PartialObsWrapper + policy network + opponent adapter. Two critical runtime fixes (KeyError 'belief', obs space mismatch). Launched BELIEF_s200 on niro-2. Design spec + impl plan written. All 13 tests pass. | [S90](worklogs/2026-05-07_S90.md) |
 | 91 | 2026-05-08 | **Status check + BELIEF_s200 failure discovery**: Checked all running experiments. ABL-1/ABL-2 completed. BELIEF_s200 CR peaked at 0.48 then declined to 0.10 — **validation FAILED**. Key finding: drift is structural, not curriculum-induced. Updated training-runs.md and docs. | [S91](worklogs/2026-05-08_S91.md) |
+| 92 | 2026-05-08 | **Gonultas & Isler reproduction — full implementation**: 12-task inline execution. MADDPG + BiMDN standalone repro in `repro_gonultas_isler_2024/`. 35 tests passing. Training smoke test confirms end-to-end execution. `use_belief: false` default — run vanilla first, then toggle BiMDN. | [S92](worklogs/2026-05-08_S92.md) |
 
 ## Paper Reading Status
 
