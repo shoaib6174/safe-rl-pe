@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from envs.pursuit_evasion_env import PursuitEvasionEnv
+from training.curriculum import Curriculum
 
 
 def test_env_reset():
@@ -70,3 +71,23 @@ def test_timeout():
     for _ in range(5):
         _, _, _, _, done = env.step(np.array([0.0, 0.0]), np.array([0.0, 0.0]))
     assert done
+
+
+def test_curriculum_fov_decay():
+    curriculum = Curriculum(total_episodes=10000)
+    fov_start = curriculum.get_fov(0)
+    fov_mid = curriculum.get_fov(1500)
+    fov_end = curriculum.get_fov(10000)
+    assert fov_start == pytest.approx(6.283, abs=0.01)
+    assert fov_end == pytest.approx(2.094, abs=0.01)
+    assert fov_mid > fov_end and fov_mid < fov_start
+
+
+def test_curriculum_evader_velocity():
+    curriculum = Curriculum(total_episodes=10000)
+    v_start = curriculum.get_evader_vmax(0)
+    v_mid = curriculum.get_evader_vmax(1500)
+    v_end = curriculum.get_evader_vmax(10000)
+    assert v_start == pytest.approx(0.0, abs=0.01)
+    assert v_end == pytest.approx(1.5, abs=0.01)
+    assert v_mid > v_start and v_mid < v_end
