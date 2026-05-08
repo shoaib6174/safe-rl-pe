@@ -33,6 +33,9 @@ reward:
   lambda_time: 1
   lambda_distance: 1
 
+# Global toggle: enable BiMDN belief state
+use_belief: false
+
 # MADDPG
 maddpg:
   episodes: 20000
