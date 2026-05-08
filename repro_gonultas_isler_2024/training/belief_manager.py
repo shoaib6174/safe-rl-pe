@@ -1,3 +1,4 @@
+from typing import Optional
 import numpy as np
 import torch
 from agents.bimdn import BiMDN
@@ -37,7 +38,7 @@ class BeliefStateManager:
         if len(self.history) > self.history_length:
             self.history.pop(0)
 
-    def _get_sequence(self) -> np.ndarray | None:
+    def _get_sequence(self) -> Optional[np.ndarray]:
         """Extract downsampled sequence from history."""
         if len(self.history) < self.sequence_length * self.downsample:
             return None
