@@ -5,6 +5,7 @@ from typing import Callable
 
 from envs.pursuit_evasion_env import PursuitEvasionEnv
 from agents.maddpg import MADDPGAgent
+from training.belief_manager import BeliefStateManager
 
 
 def random_policy(obs: np.ndarray) -> np.ndarray:
@@ -35,15 +36,36 @@ def evaluate_agent(
     evader_policy: Callable,
     num_episodes: int = 500,
     frame_stack: int = 2,
+    use_belief: bool = False,
+    belief_pursuer: BeliefStateManager = None,
+    belief_evader: BeliefStateManager = None,
 ) -> dict:
     capture_count = 0
     episode_lengths = []
     pursuer_rewards = []
 
+    belief_norm = env.arena_size / 2.0
+
     for _ in range(num_episodes):
         obs_p, obs_e = env.reset()
-        obs_p_buffer = [obs_p.copy() for _ in range(frame_stack)]
-        obs_e_buffer = [obs_e.copy() for _ in range(frame_stack)]
+
+        if use_belief:
+            belief_pursuer.history.clear()
+            belief_evader.history.clear()
+            belief_pursuer.add_observation(obs_p)
+            belief_evader.add_observation(obs_e)
+
+        if use_belief:
+            b_p = belief_pursuer.get_belief() / belief_norm
+            b_e = belief_evader.get_belief() / belief_norm
+            aug_obs_p = np.concatenate([obs_p, b_p])
+            aug_obs_e = np.concatenate([obs_e, b_e])
+        else:
+            aug_obs_p = obs_p
+            aug_obs_e = obs_e
+
+        obs_p_buffer = [aug_obs_p.copy() for _ in range(frame_stack)]
+        obs_e_buffer = [aug_obs_e.copy() for _ in range(frame_stack)]
 
         done = False
         step = 0
@@ -60,8 +82,19 @@ def evaluate_agent(
             ep_reward += r_p
             step += 1
 
-            obs_p_buffer.append(obs_p.copy())
-            obs_e_buffer.append(obs_e.copy())
+            if use_belief:
+                belief_pursuer.add_observation(obs_p)
+                belief_evader.add_observation(obs_e)
+                b_p = belief_pursuer.get_belief() / belief_norm
+                b_e = belief_evader.get_belief() / belief_norm
+                aug_obs_p = np.concatenate([obs_p, b_p])
+                aug_obs_e = np.concatenate([obs_e, b_e])
+            else:
+                aug_obs_p = obs_p
+                aug_obs_e = obs_e
+
+            obs_p_buffer.append(aug_obs_p.copy())
+            obs_e_buffer.append(aug_obs_e.copy())
 
         if ep_reward > 0:
             capture_count += 1
@@ -88,25 +121,63 @@ def run_evaluation(
 ):
     env = PursuitEvasionEnv(config)
     frame_stack = config["maddpg"]["frame_stack"]
-    obs_dim = 11 * frame_stack
+    use_belief = config.get("use_belief", False)
+    use_amp = config.get("use_amp", False) and torch.cuda.is_available()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    raw_obs_dim = 11
+    belief_dim = 2 if use_belief else 0
+    obs_dim = (raw_obs_dim + belief_dim) * frame_stack
     action_dim = 2
+
+    # Belief managers
+    belief_pursuer = None
+    belief_evader = None
+    if use_belief:
+        bimdn_cfg = config["bimdn"]
+        belief_pursuer = BeliefStateManager(
+            obs_dim=raw_obs_dim,
+            buffer_size=bimdn_cfg["belief_buffer_size"],
+            history_length=bimdn_cfg["history_length"],
+            downsample=bimdn_cfg["downsample_factor"],
+            lr=bimdn_cfg["belief_lr"],
+            device=device,
+            use_amp=use_amp,
+        )
+        belief_evader = BeliefStateManager(
+            obs_dim=raw_obs_dim,
+            buffer_size=bimdn_cfg["belief_buffer_size"],
+            history_length=bimdn_cfg["history_length"],
+            downsample=bimdn_cfg["downsample_factor"],
+            lr=bimdn_cfg["belief_lr"],
+            device=device,
+            use_amp=use_amp,
+        )
 
     pursuer = MADDPGAgent(
         obs_dim=obs_dim,
         action_dim=action_dim,
         total_obs_dim=obs_dim * 2,
         total_action_dim=action_dim * 2,
+        use_amp=use_amp,
+        device=device,
     )
     evader = MADDPGAgent(
         obs_dim=obs_dim,
         action_dim=action_dim,
         total_obs_dim=obs_dim * 2,
         total_action_dim=action_dim * 2,
+        use_amp=use_amp,
+        device=device,
     )
 
     checkpoint_path = Path(checkpoint_dir)
     load_policy(pursuer, checkpoint_path / "pursuer_actor.pt")
     load_policy(evader, checkpoint_path / "evader_actor.pt")
+
+    if use_belief:
+        belief_pursuer.load(checkpoint_path / "bimdn_pursuer.pt")
+        belief_evader.load(checkpoint_path / "bimdn_evader.pt")
 
     def pursuer_nn_policy(obs):
         return pursuer.select_action(obs, noise_sigma=0.0)
@@ -117,23 +188,28 @@ def run_evaluation(
     results = {}
 
     results["pursuer_vs_random"] = evaluate_agent(
-        env, pursuer_nn_policy, random_policy, num_episodes, frame_stack
+        env, pursuer_nn_policy, random_policy, num_episodes, frame_stack,
+        use_belief, belief_pursuer, belief_evader,
     )
 
     results["pursuer_vs_greedy"] = evaluate_agent(
-        env, pursuer_nn_policy, greedy_evader_policy, num_episodes, frame_stack
+        env, pursuer_nn_policy, greedy_evader_policy, num_episodes, frame_stack,
+        use_belief, belief_pursuer, belief_evader,
     )
 
     results["pursuer_vs_selfplay"] = evaluate_agent(
-        env, pursuer_nn_policy, evader_nn_policy, num_episodes, frame_stack
+        env, pursuer_nn_policy, evader_nn_policy, num_episodes, frame_stack,
+        use_belief, belief_pursuer, belief_evader,
     )
 
     results["random_vs_evader"] = evaluate_agent(
-        env, random_policy, evader_nn_policy, num_episodes, frame_stack
+        env, random_policy, evader_nn_policy, num_episodes, frame_stack,
+        use_belief, belief_pursuer, belief_evader,
     )
 
     results["greedy_vs_evader"] = evaluate_agent(
-        env, greedy_pursuer_policy, evader_nn_policy, num_episodes, frame_stack
+        env, greedy_pursuer_policy, evader_nn_policy, num_episodes, frame_stack,
+        use_belief, belief_pursuer, belief_evader,
     )
 
     return results
@@ -141,10 +217,14 @@ def run_evaluation(
 
 if __name__ == "__main__":
     import yaml
-    with open("config.yaml", "r") as f:
+    import sys
+
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
+    checkpoint = sys.argv[2] if len(sys.argv) > 2 else "checkpoints/episode_1000"
+
+    with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    checkpoint = "checkpoints/episode_1000"
     results = run_evaluation(checkpoint, config)
     for key, val in results.items():
         print(f"{key}: {val}")

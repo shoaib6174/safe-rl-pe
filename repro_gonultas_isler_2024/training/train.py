@@ -54,16 +54,19 @@ def run_episode(
     step = 0
     bimdn_updates = 0
 
+    # Normalize beliefs to [-1, 1] to match observation scale
+    belief_norm = env.arena_size / 2.0
+
     while not done and step < env.max_steps:
         # Add raw observations to BiMDN history
         if use_belief:
             belief_pursuer.add_observation(obs_p)
             belief_evader.add_observation(obs_e)
 
-        # Compute beliefs
+        # Compute beliefs (normalized to match observation scale [-1, 1])
         if use_belief:
-            belief_p = belief_pursuer.get_belief()
-            belief_e = belief_evader.get_belief()
+            belief_p = belief_pursuer.get_belief() / belief_norm
+            belief_e = belief_evader.get_belief() / belief_norm
             aug_obs_p = np.concatenate([obs_p, belief_p])
             aug_obs_e = np.concatenate([obs_e, belief_e])
         else:
@@ -95,11 +98,11 @@ def run_episode(
                 belief_pursuer.add_observation(next_obs_p)
                 belief_evader.add_observation(next_obs_e)
 
-            # Store BiMDN training samples
+            # Store BiMDN training samples (normalized targets)
             if use_belief and global_step % 1 == 0:
-                # Ground truth opponent positions
-                evader_pos = env.evader_state[:2]
-                pursuer_pos = env.pursuer_state[:2]
+                # Ground truth opponent positions, normalized to [-1, 1]
+                evader_pos = env.evader_state[:2] / belief_norm
+                pursuer_pos = env.pursuer_state[:2] / belief_norm
                 belief_pursuer.store_training_sample(evader_pos)
                 belief_evader.store_training_sample(pursuer_pos)
 
@@ -115,10 +118,10 @@ def run_episode(
             if done:
                 break
 
-        # Compute next augmented obs for replay buffer
+        # Compute next augmented obs for replay buffer (beliefs normalized)
         if use_belief:
-            next_belief_p = belief_pursuer.get_belief()
-            next_belief_e = belief_evader.get_belief()
+            next_belief_p = belief_pursuer.get_belief() / belief_norm
+            next_belief_e = belief_evader.get_belief() / belief_norm
             next_aug_obs_p = np.concatenate([next_obs_p, next_belief_p])
             next_aug_obs_e = np.concatenate([next_obs_e, next_belief_e])
         else:
@@ -166,8 +169,9 @@ def train(config_path: str = "config.yaml"):
         evader_vmax_end=config["curriculum"]["evader_vmax_end"],
     )
 
-    # Belief toggle
+    # Toggles
     use_belief = config.get("use_belief", False)
+    use_amp = config.get("use_amp", False) and torch.cuda.is_available()
 
     # Obs dimensions
     raw_obs_dim = 11
@@ -191,6 +195,7 @@ def train(config_path: str = "config.yaml"):
             downsample=bimdn_cfg["downsample_factor"],
             lr=bimdn_cfg["belief_lr"],
             device=device,
+            use_amp=use_amp,
         )
         belief_evader = BeliefStateManager(
             obs_dim=raw_obs_dim,
@@ -199,6 +204,7 @@ def train(config_path: str = "config.yaml"):
             downsample=bimdn_cfg["downsample_factor"],
             lr=bimdn_cfg["belief_lr"],
             device=device,
+            use_amp=use_amp,
         )
 
     # Agents
@@ -212,6 +218,7 @@ def train(config_path: str = "config.yaml"):
         gamma=config["maddpg"]["gamma"],
         tau=config["maddpg"]["tau"],
         device=device,
+        use_amp=use_amp,
     )
     evader = MADDPGAgent(
         obs_dim=obs_dim,
@@ -223,6 +230,7 @@ def train(config_path: str = "config.yaml"):
         gamma=config["maddpg"]["gamma"],
         tau=config["maddpg"]["tau"],
         device=device,
+        use_amp=use_amp,
     )
 
     # Replay buffer
@@ -232,8 +240,13 @@ def train(config_path: str = "config.yaml"):
         action_dim=action_dim,
     )
 
+    # Output directory
+    output_dir = Path(config.get("output_dir", "."))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     # Logger
-    logger = Logger(config["log_dir"])
+    log_dir = output_dir / config.get("log_dir", "runs")
+    logger = Logger(str(log_dir))
 
     # Training loop
     episodes = config["maddpg"]["episodes"]
@@ -283,7 +296,7 @@ def train(config_path: str = "config.yaml"):
 
         # Checkpoint
         if episode % config["eval"]["checkpoint_freq"] == 0:
-            checkpoint_dir = Path("checkpoints") / f"episode_{episode}"
+            checkpoint_dir = output_dir / "checkpoints" / f"episode_{episode}"
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             torch.save(pursuer.actor.state_dict(), checkpoint_dir / "pursuer_actor.pt")
             torch.save(evader.actor.state_dict(), checkpoint_dir / "evader_actor.pt")
@@ -295,4 +308,6 @@ def train(config_path: str = "config.yaml"):
 
 
 if __name__ == "__main__":
-    train()
+    import sys
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
+    train(config_path)
