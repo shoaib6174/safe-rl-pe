@@ -67,10 +67,16 @@ class MADDPGAgent:
         self.actor_target.load_state_dict(self.actor.state_dict())
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
 
+        # Twin critics (double centralized critics) to reduce overestimation bias
         self.critic = CriticNetwork(total_obs_dim, total_action_dim, hidden_dim).to(self.device)
         self.critic_target = CriticNetwork(total_obs_dim, total_action_dim, hidden_dim).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
+
+        self.critic2 = CriticNetwork(total_obs_dim, total_action_dim, hidden_dim).to(self.device)
+        self.critic2_target = CriticNetwork(total_obs_dim, total_action_dim, hidden_dim).to(self.device)
+        self.critic2_target.load_state_dict(self.critic2.state_dict())
+        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=critic_lr)
 
         self.actor_scaler = GradScaler() if self.use_amp else None
         self.critic_scaler = GradScaler() if self.use_amp else None
@@ -112,21 +118,22 @@ class MADDPGAgent:
                     next_actions_p = self.actor_target(next_obs_p)
                     next_actions_e = other_agent.actor_target(next_obs_e)
                     next_actions_all = torch.cat([next_actions_p, next_actions_e], dim=-1)
-                    target_q = rewards + self.gamma * (1 - dones) * self.critic_target(
-                        next_obs_all, next_actions_all
-                    )
+                    target_q1 = self.critic_target(next_obs_all, next_actions_all)
+                    target_q2 = self.critic2_target(next_obs_all, next_actions_all)
+                    target_q = rewards + self.gamma * (1 - dones) * torch.min(target_q1, target_q2)
             else:
                 next_actions_p = self.actor_target(next_obs_p)
                 next_actions_e = other_agent.actor_target(next_obs_e)
                 next_actions_all = torch.cat([next_actions_p, next_actions_e], dim=-1)
-                target_q = rewards + self.gamma * (1 - dones) * self.critic_target(
-                    next_obs_all, next_actions_all
-                )
+                target_q1 = self.critic_target(next_obs_all, next_actions_all)
+                target_q2 = self.critic2_target(next_obs_all, next_actions_all)
+                target_q = rewards + self.gamma * (1 - dones) * torch.min(target_q1, target_q2)
 
+        # Update first critic
         if self.use_amp:
             with autocast():
-                current_q = self.critic(obs_all, actions_all)
-                critic_loss = nn.MSELoss()(current_q, target_q)
+                current_q1 = self.critic(obs_all, actions_all)
+                critic_loss = nn.MSELoss()(current_q1, target_q)
             self.critic_optimizer.zero_grad()
             self.critic_scaler.scale(critic_loss).backward()
             self.critic_scaler.unscale_(self.critic_optimizer)
@@ -134,13 +141,33 @@ class MADDPGAgent:
             self.critic_scaler.step(self.critic_optimizer)
             self.critic_scaler.update()
         else:
-            current_q = self.critic(obs_all, actions_all)
-            critic_loss = nn.MSELoss()(current_q, target_q)
+            current_q1 = self.critic(obs_all, actions_all)
+            critic_loss = nn.MSELoss()(current_q1, target_q)
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
             self.critic_optimizer.step()
 
+        # Update second critic
+        if self.use_amp:
+            with autocast():
+                current_q2 = self.critic2(obs_all, actions_all)
+                critic2_loss = nn.MSELoss()(current_q2, target_q)
+            self.critic2_optimizer.zero_grad()
+            self.critic_scaler.scale(critic2_loss).backward()
+            self.critic_scaler.unscale_(self.critic2_optimizer)
+            torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=1.0)
+            self.critic_scaler.step(self.critic2_optimizer)
+            self.critic_scaler.update()
+        else:
+            current_q2 = self.critic2(obs_all, actions_all)
+            critic2_loss = nn.MSELoss()(current_q2, target_q)
+            self.critic2_optimizer.zero_grad()
+            critic2_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=1.0)
+            self.critic2_optimizer.step()
+
+        # Actor update uses first critic (standard practice)
         if self.use_amp:
             with autocast():
                 new_actions_p = self.actor(obs_p)
@@ -172,3 +199,4 @@ class MADDPGAgent:
     def update_targets(self):
         self.soft_update(self.actor, self.actor_target)
         self.soft_update(self.critic, self.critic_target)
+        self.soft_update(self.critic2, self.critic2_target)
