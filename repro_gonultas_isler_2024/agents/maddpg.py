@@ -2,6 +2,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+try:
+    from torch.amp import autocast as _autocast_raw, GradScaler
+    def autocast():
+        return _autocast_raw(device_type="cuda")
+except ImportError:
+    from torch.cuda.amp import autocast, GradScaler
 
 
 class ActorNetwork(nn.Module):
@@ -47,12 +53,14 @@ class MADDPGAgent:
         tau: float = 0.005,
         hidden_dim: int = 128,
         device: str = "cpu",
+        use_amp: bool = False,
     ):
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.gamma = gamma
         self.tau = tau
         self.device = torch.device(device)
+        self.use_amp = use_amp and self.device.type == "cuda"
 
         self.actor = ActorNetwork(obs_dim, action_dim, hidden_dim).to(self.device)
         self.actor_target = ActorNetwork(obs_dim, action_dim, hidden_dim).to(self.device)
@@ -64,10 +72,17 @@ class MADDPGAgent:
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
 
+        self.actor_scaler = GradScaler() if self.use_amp else None
+        self.critic_scaler = GradScaler() if self.use_amp else None
+
     def select_action(self, obs: np.ndarray, noise_sigma: float = 0.1) -> np.ndarray:
         obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            action = self.actor(obs_tensor).cpu().numpy()[0]
+            if self.use_amp:
+                with autocast():
+                    action = self.actor(obs_tensor).cpu().numpy()[0]
+            else:
+                action = self.actor(obs_tensor).cpu().numpy()[0]
         if noise_sigma > 0:
             noise = np.random.normal(0, noise_sigma, size=action.shape)
             action = np.clip(action + noise, -1.0, 1.0)
@@ -92,27 +107,59 @@ class MADDPGAgent:
         actions_all = torch.cat([actions_p, actions_e], dim=-1)
 
         with torch.no_grad():
-            next_actions_p = self.actor_target(next_obs_p)
-            next_actions_e = other_agent.actor_target(next_obs_e)
-            next_actions_all = torch.cat([next_actions_p, next_actions_e], dim=-1)
-            target_q = rewards + self.gamma * (1 - dones) * self.critic_target(
-                next_obs_all, next_actions_all
-            )
+            if self.use_amp:
+                with autocast():
+                    next_actions_p = self.actor_target(next_obs_p)
+                    next_actions_e = other_agent.actor_target(next_obs_e)
+                    next_actions_all = torch.cat([next_actions_p, next_actions_e], dim=-1)
+                    target_q = rewards + self.gamma * (1 - dones) * self.critic_target(
+                        next_obs_all, next_actions_all
+                    )
+            else:
+                next_actions_p = self.actor_target(next_obs_p)
+                next_actions_e = other_agent.actor_target(next_obs_e)
+                next_actions_all = torch.cat([next_actions_p, next_actions_e], dim=-1)
+                target_q = rewards + self.gamma * (1 - dones) * self.critic_target(
+                    next_obs_all, next_actions_all
+                )
 
-        current_q = self.critic(obs_all, actions_all)
-        critic_loss = nn.MSELoss()(current_q, target_q)
+        if self.use_amp:
+            with autocast():
+                current_q = self.critic(obs_all, actions_all)
+                critic_loss = nn.MSELoss()(current_q, target_q)
+            self.critic_optimizer.zero_grad()
+            self.critic_scaler.scale(critic_loss).backward()
+            self.critic_scaler.unscale_(self.critic_optimizer)
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
+            self.critic_scaler.step(self.critic_optimizer)
+            self.critic_scaler.update()
+        else:
+            current_q = self.critic(obs_all, actions_all)
+            critic_loss = nn.MSELoss()(current_q, target_q)
+            self.critic_optimizer.zero_grad()
+            critic_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
+            self.critic_optimizer.step()
 
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        self.critic_optimizer.step()
-
-        new_actions_p = self.actor(obs_p)
-        new_actions_all = torch.cat([new_actions_p, actions_e.detach()], dim=-1)
-        actor_loss = -self.critic(obs_all, new_actions_all).mean()
-
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        self.actor_optimizer.step()
+        if self.use_amp:
+            with autocast():
+                new_actions_p = self.actor(obs_p)
+                new_actions_all = torch.cat([new_actions_p, actions_e.detach()], dim=-1)
+                actor_loss = -self.critic(obs_all, new_actions_all).mean()
+            self.actor_optimizer.zero_grad()
+            self.actor_scaler.scale(actor_loss).backward()
+            self.actor_scaler.unscale_(self.actor_optimizer)
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+            self.actor_scaler.step(self.actor_optimizer)
+            self.actor_scaler.update()
+        else:
+            new_actions_p = self.actor(obs_p)
+            new_actions_all = torch.cat([new_actions_p, actions_e.detach()], dim=-1)
+            actor_loss = -self.critic(obs_all, new_actions_all).mean()
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+            self.actor_optimizer.step()
 
         return critic_loss.item(), actor_loss.item()
 
