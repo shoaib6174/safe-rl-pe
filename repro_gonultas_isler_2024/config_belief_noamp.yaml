@@ -6,7 +6,7 @@ sim_dt: 0.1               # simulation timestep (seconds)
 
 # Pursuer (bicycle model)
 pursuer:
-  wheelbase: 0.15
+  wheelbase: 0.30
   v_max: 2.5
   v_min: -1.0
   delta_max: 0.34
@@ -68,7 +68,7 @@ bimdn:
 
 # Curriculum
 curriculum:
-  t_end_ratio: 0.3           # fraction of total episodes
+  t_end_ratio: 0.1           # fraction of total episodes (T/10 = 2000 ep)
   fov_start: 6.283           # 2pi
   fov_end: 2.094             # 2pi/3
   evader_vmax_start: 0.0

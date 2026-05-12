@@ -12,7 +12,7 @@ class PursuitEvasionEnv:
         self.dt = 0.1
 
         # Pursuer params
-        self.L = 0.15
+        self.L = 0.30 if config is None else config.get("pursuer", {}).get("wheelbase", 0.30)
         self.pursuer_v_max = 2.5
         self.pursuer_v_min = -1.0
         self.delta_max = 0.34

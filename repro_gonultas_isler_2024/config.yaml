@@ -6,7 +6,7 @@ sim_dt: 0.1               # simulation timestep (seconds)
 
 # Pursuer (bicycle model)
 pursuer:
-  wheelbase: 0.15
+  wheelbase: 0.30
   v_max: 2.5
   v_min: -1.0
   delta_max: 0.34
@@ -33,8 +33,9 @@ reward:
   lambda_time: 1
   lambda_distance: 1
 
-# Global toggle: enable BiMDN belief state
+# Global toggles
 use_belief: false
+use_amp: true
 
 # MADDPG
 maddpg:
