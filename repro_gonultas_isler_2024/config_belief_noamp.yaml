@@ -36,6 +36,7 @@ reward:
 # Global toggles
 use_belief: true
 use_amp: false
+seed: 0
 
 # MADDPG
 maddpg:

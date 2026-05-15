@@ -27,6 +27,11 @@ class BiMDN(nn.Module):
         self.fc = nn.Linear(2 * hidden_dim, feature_dim)
         self.relu = nn.ReLU()
 
+        # Intermediate FC layers for each head (per paper Fig 4)
+        self.pi_fc = nn.Linear(feature_dim, feature_dim)
+        self.mu_fc = nn.Linear(feature_dim, feature_dim)
+        self.sigma_fc = nn.Linear(feature_dim, feature_dim)
+
         self.pi_head = nn.Linear(feature_dim, num_components)
         self.mu_head = nn.Linear(feature_dim, num_components * 2)
         self.sigma_head = nn.Linear(feature_dim, num_components * 2)
@@ -36,10 +41,10 @@ class BiMDN(nn.Module):
         last_hidden = lstm_out[:, -1, :]
         features = self.relu(self.fc(last_hidden))
 
-        pi = torch.softmax(self.pi_head(features), dim=-1)
-        mu = self.mu_head(features).view(-1, self.num_components, 2)
+        pi = torch.softmax(self.pi_head(self.relu(self.pi_fc(features))), dim=-1)
+        mu = self.mu_head(self.relu(self.mu_fc(features))).view(-1, self.num_components, 2)
 
-        sigma = nn.functional.elu(self.sigma_head(features)) + 1.0
+        sigma = nn.functional.elu(self.sigma_head(self.relu(self.sigma_fc(features)))) + 1.0
         sigma = sigma.view(-1, self.num_components, 2)
 
         return pi, mu, sigma

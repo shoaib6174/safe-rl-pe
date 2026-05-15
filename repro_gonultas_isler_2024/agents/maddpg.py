@@ -98,6 +98,7 @@ class MADDPGAgent:
         self,
         batch: dict,
         other_agent: "MADDPGAgent",
+        agent_id: str = "pursuer",
     ) -> tuple:
         obs_p = torch.FloatTensor(batch["obs_p"]).to(self.device)
         obs_e = torch.FloatTensor(batch["obs_e"]).to(self.device)
@@ -167,12 +168,19 @@ class MADDPGAgent:
             torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=1.0)
             self.critic2_optimizer.step()
 
-        # Actor update uses first critic (standard practice)
+        # Actor update uses min of both critics (conservative estimate)
+        own_obs = obs_p if agent_id == "pursuer" else obs_e
+
         if self.use_amp:
             with autocast():
-                new_actions_p = self.actor(obs_p)
-                new_actions_all = torch.cat([new_actions_p, actions_e.detach()], dim=-1)
-                actor_loss = -self.critic(obs_all, new_actions_all).mean()
+                new_actions = self.actor(own_obs)
+                if agent_id == "pursuer":
+                    new_actions_all = torch.cat([new_actions, actions_e.detach()], dim=-1)
+                else:
+                    new_actions_all = torch.cat([actions_p.detach(), new_actions], dim=-1)
+                q1_actor = self.critic(obs_all, new_actions_all)
+                q2_actor = self.critic2(obs_all, new_actions_all)
+                actor_loss = -torch.min(q1_actor, q2_actor).mean()
             self.actor_optimizer.zero_grad()
             self.actor_scaler.scale(actor_loss).backward()
             self.actor_scaler.unscale_(self.actor_optimizer)
@@ -180,9 +188,14 @@ class MADDPGAgent:
             self.actor_scaler.step(self.actor_optimizer)
             self.actor_scaler.update()
         else:
-            new_actions_p = self.actor(obs_p)
-            new_actions_all = torch.cat([new_actions_p, actions_e.detach()], dim=-1)
-            actor_loss = -self.critic(obs_all, new_actions_all).mean()
+            new_actions = self.actor(own_obs)
+            if agent_id == "pursuer":
+                new_actions_all = torch.cat([new_actions, actions_e.detach()], dim=-1)
+            else:
+                new_actions_all = torch.cat([actions_p.detach(), new_actions], dim=-1)
+            q1_actor = self.critic(obs_all, new_actions_all)
+            q2_actor = self.critic2(obs_all, new_actions_all)
+            actor_loss = -torch.min(q1_actor, q2_actor).mean()
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)

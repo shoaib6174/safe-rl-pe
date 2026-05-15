@@ -8,6 +8,7 @@ from agents.maddpg import MADDPGAgent
 from training.replay_buffer import ReplayBuffer
 from training.curriculum import Curriculum
 from training.belief_manager import BeliefStateManager
+from training.vectorized_env import VectorizedEnvRunner
 from utils.logger import Logger
 
 
@@ -16,150 +17,10 @@ def load_config(path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def run_episode(
-    env: PursuitEvasionEnv,
-    pursuer: MADDPGAgent,
-    evader: MADDPGAgent,
-    replay_buffer: ReplayBuffer,
-    noise_sigma: float,
-    frame_stack: int,
-    frame_skip: int,
-    use_belief: bool = False,
-    belief_pursuer: BeliefStateManager = None,
-    belief_evader: BeliefStateManager = None,
-    bimdn_update_freq: int = 10,
-    global_step: int = 0,
-) -> tuple:
-    obs_p, obs_e = env.reset()
-
-    # Raw observation history buffers for BiMDN
-    if use_belief:
-        belief_pursuer.history.clear()
-        belief_evader.history.clear()
-
-    # Frame stacking buffers (with belief if enabled)
-    obs_p_buffer = []
-    obs_e_buffer = []
-
-    episode_data = {
-        "pursuer_reward": 0.0,
-        "evader_reward": 0.0,
-        "length": 0,
-        "captured": False,
-        "bimdn_loss_p": 0.0,
-        "bimdn_loss_e": 0.0,
-    }
-
-    done = False
-    step = 0
-    bimdn_updates = 0
-
-    # Normalize beliefs to [-1, 1] to match observation scale
-    belief_norm = env.arena_size / 2.0
-
-    while not done and step < env.max_steps:
-        # Add raw observations to BiMDN history
-        if use_belief:
-            belief_pursuer.add_observation(obs_p)
-            belief_evader.add_observation(obs_e)
-
-        # Compute beliefs (normalized to match observation scale [-1, 1])
-        if use_belief:
-            belief_p = belief_pursuer.get_belief() / belief_norm
-            belief_e = belief_evader.get_belief() / belief_norm
-            aug_obs_p = np.concatenate([obs_p, belief_p])
-            aug_obs_e = np.concatenate([obs_e, belief_e])
-        else:
-            aug_obs_p = obs_p
-            aug_obs_e = obs_e
-
-        # Frame stack
-        if len(obs_p_buffer) < frame_stack:
-            obs_p_buffer.extend([aug_obs_p.copy()] * (frame_stack - len(obs_p_buffer)))
-            obs_e_buffer.extend([aug_obs_e.copy()] * (frame_stack - len(obs_e_buffer)))
-
-        stacked_p = np.concatenate(obs_p_buffer[-frame_stack:])
-        stacked_e = np.concatenate(obs_e_buffer[-frame_stack:])
-
-        # Select actions
-        action_p = pursuer.select_action(stacked_p, noise_sigma)
-        action_e = evader.select_action(stacked_e, noise_sigma)
-
-        # Frame skip: repeat action for multiple sim steps
-        for _ in range(frame_skip):
-            next_obs_p, next_obs_e, r_p, r_e, done = env.step(action_p, action_e)
-            episode_data["pursuer_reward"] += r_p
-            episode_data["evader_reward"] += r_e
-            step += 1
-            global_step += 1
-
-            # Add next obs to history too
-            if use_belief:
-                belief_pursuer.add_observation(next_obs_p)
-                belief_evader.add_observation(next_obs_e)
-
-            # Store BiMDN training samples (normalized targets)
-            if use_belief and global_step % 1 == 0:
-                # Ground truth opponent positions, normalized to [-1, 1]
-                evader_pos = env.evader_state[:2] / belief_norm
-                pursuer_pos = env.pursuer_state[:2] / belief_norm
-                belief_pursuer.store_training_sample(evader_pos)
-                belief_evader.store_training_sample(pursuer_pos)
-
-            # BiMDN update
-            if use_belief and global_step % bimdn_update_freq == 0:
-                if len(belief_pursuer.training_buffer) >= 256:
-                    loss_p = belief_pursuer.train_step(batch_size=256)
-                    loss_e = belief_evader.train_step(batch_size=256)
-                    episode_data["bimdn_loss_p"] += loss_p
-                    episode_data["bimdn_loss_e"] += loss_e
-                    bimdn_updates += 1
-
-            if done:
-                break
-
-        # Compute next augmented obs for replay buffer (beliefs normalized)
-        if use_belief:
-            next_belief_p = belief_pursuer.get_belief() / belief_norm
-            next_belief_e = belief_evader.get_belief() / belief_norm
-            next_aug_obs_p = np.concatenate([next_obs_p, next_belief_p])
-            next_aug_obs_e = np.concatenate([next_obs_e, next_belief_e])
-        else:
-            next_aug_obs_p = next_obs_p
-            next_aug_obs_e = next_obs_e
-
-        # Store transition
-        replay_buffer.add(
-            obs_p=stacked_p,
-            obs_e=stacked_e,
-            action_p=action_p,
-            action_e=action_e,
-            reward_p=r_p,
-            reward_e=r_e,
-            next_obs_p=np.concatenate(obs_p_buffer[-(frame_stack - 1):] + [next_aug_obs_p]),
-            next_obs_e=np.concatenate(obs_e_buffer[-(frame_stack - 1):] + [next_aug_obs_e]),
-            done=done,
-        )
-
-        obs_p = next_obs_p
-        obs_e = next_obs_e
-        obs_p_buffer.append(next_aug_obs_p.copy())
-        obs_e_buffer.append(next_aug_obs_e.copy())
-
-    episode_data["length"] = step
-    episode_data["captured"] = (episode_data["pursuer_reward"] > 0)
-    if bimdn_updates > 0:
-        episode_data["bimdn_loss_p"] /= bimdn_updates
-        episode_data["bimdn_loss_e"] /= bimdn_updates
-
-    return episode_data, global_step
-
-
 def train(config_path: str = "config.yaml"):
     config = load_config(config_path)
 
-    # Environment
-    env = PursuitEvasionEnv(config)
+    # Curriculum
     curriculum = Curriculum(
         total_episodes=config["maddpg"]["episodes"],
         t_end_ratio=config["curriculum"]["t_end_ratio"],
@@ -182,30 +43,12 @@ def train(config_path: str = "config.yaml"):
     total_obs_dim = obs_dim * 2
     total_action_dim = action_dim * 2
 
-    # Belief managers
+    # Parallel envs
+    n_envs = config["maddpg"].get("parallel_envs", 1)
+    update_freq = config["maddpg"].get("update_freq", 1)
+
+    # Device
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    belief_pursuer = None
-    belief_evader = None
-    if use_belief:
-        bimdn_cfg = config["bimdn"]
-        belief_pursuer = BeliefStateManager(
-            obs_dim=raw_obs_dim,
-            buffer_size=bimdn_cfg["belief_buffer_size"],
-            history_length=bimdn_cfg["history_length"],
-            downsample=bimdn_cfg["downsample_factor"],
-            lr=bimdn_cfg["belief_lr"],
-            device=device,
-            use_amp=use_amp,
-        )
-        belief_evader = BeliefStateManager(
-            obs_dim=raw_obs_dim,
-            buffer_size=bimdn_cfg["belief_buffer_size"],
-            history_length=bimdn_cfg["history_length"],
-            downsample=bimdn_cfg["downsample_factor"],
-            lr=bimdn_cfg["belief_lr"],
-            device=device,
-            use_amp=use_amp,
-        )
 
     # Agents
     pursuer = MADDPGAgent(
@@ -240,71 +83,179 @@ def train(config_path: str = "config.yaml"):
         action_dim=action_dim,
     )
 
-    # Output directory
+    # Output directory (include seed to prevent overwriting)
     output_dir = Path(config.get("output_dir", "."))
+    seed = config.get("seed", 0)
+    output_dir = output_dir / f"seed_{seed}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Logger
     log_dir = output_dir / config.get("log_dir", "runs")
     logger = Logger(str(log_dir))
 
-    # Training loop
+    # Training parameters
     episodes = config["maddpg"]["episodes"]
     batch_size = config["maddpg"]["batch_size"]
     noise_sigma = config["maddpg"]["exploration_sigma"]
     frame_skip = config["maddpg"]["frame_skip"]
     bimdn_update_freq = config["bimdn"]["belief_update_freq"]
+    checkpoint_freq = config["eval"]["checkpoint_freq"]
 
+    # Vectorized env runner
+    runner = VectorizedEnvRunner(
+        n_envs=n_envs,
+        config=config,
+        use_belief=use_belief,
+        frame_stack=frame_stack,
+        frame_skip=frame_skip,
+        device=device,
+    )
+    runner.reset_all()
+
+    # Apply initial curriculum
+    fov = curriculum.get_fov(0)
+    evader_vmax = curriculum.get_evader_vmax(0)
+    runner.set_curriculum_params(fov, evader_vmax)
+
+    # Training loop: step-based with continuous rollout
+    completed_episodes = 0
     global_step = 0
-    for episode in range(episodes):
-        # Update curriculum
-        fov = curriculum.get_fov(episode)
-        evader_vmax = curriculum.get_evader_vmax(episode)
-        env.pursuer_sensor.fov_angle = fov
-        env.evader_v_max = evader_vmax
+    episodes_since_log = 0
+    last_checkpoint_ep = 0
 
-        # Run episode
-        ep_data, global_step = run_episode(
-            env, pursuer, evader, replay_buffer,
-            noise_sigma, frame_stack, frame_skip,
-            use_belief, belief_pursuer, belief_evader,
-            bimdn_update_freq, global_step,
+    # Episode metric aggregators
+    agg_lengths = []
+    agg_rewards_p = []
+    agg_rewards_e = []
+    agg_captures = []
+
+    # Loss tracking for logging
+    last_c_loss_p = 0.0
+    last_a_loss_p = 0.0
+    last_c_loss_e = 0.0
+    last_a_loss_e = 0.0
+
+    print(f"Starting training: {episodes} episodes, {n_envs} parallel envs, device={device}")
+
+    while completed_episodes < episodes:
+        # Get stacked observations for all envs
+        stacked_p, stacked_e = runner.get_stacked_obs()
+
+        # Select actions
+        actions_p = [pursuer.select_action(o, noise_sigma) for o in stacked_p]
+        actions_e = [evader.select_action(o, noise_sigma) for o in stacked_e]
+
+        # Step all envs
+        transitions, completed_eps, bimdn_info = runner.step(
+            actions_p, actions_e, global_step, bimdn_update_freq
         )
 
-        logger.log_scalar("episode/length", ep_data["length"], episode)
-        logger.log_scalar("episode/pursuer_reward", ep_data["pursuer_reward"], episode)
-        logger.log_scalar("episode/evader_reward", ep_data["evader_reward"], episode)
-        logger.log_scalar("episode/capture_rate", float(ep_data["captured"]), episode)
+        # Store transitions in replay buffer
+        for t in transitions:
+            replay_buffer.add(
+                obs_p=t["obs_p"],
+                obs_e=t["obs_e"],
+                action_p=t["action_p"],
+                action_e=t["action_e"],
+                reward_p=t["reward_p"],
+                reward_e=t["reward_e"],
+                next_obs_p=t["next_obs_p"],
+                next_obs_e=t["next_obs_e"],
+                done=t["done"],
+            )
 
-        if use_belief and ep_data["bimdn_loss_p"] > 0:
-            logger.log_scalar("loss/bimdn_pursuer", ep_data["bimdn_loss_p"], episode)
-            logger.log_scalar("loss/bimdn_evader", ep_data["bimdn_loss_e"], episode)
+        global_step += 1
 
-        # Update MADDPG
+        # MADDPG updates: maintain ~1 update per env step
         if replay_buffer.size >= batch_size:
-            for _ in range(ep_data["length"]):
+            n_updates = n_envs * update_freq
+            for _ in range(n_updates):
                 batch = replay_buffer.sample(batch_size)
-                c_loss_p, a_loss_p = pursuer.update(batch, evader)
-                c_loss_e, a_loss_e = evader.update(batch, pursuer)
+                c_loss_p, a_loss_p = pursuer.update(batch, evader, agent_id="pursuer")
+                c_loss_e, a_loss_e = evader.update(batch, pursuer, agent_id="evader")
                 pursuer.update_targets()
                 evader.update_targets()
+            last_c_loss_p = c_loss_p
+            last_a_loss_p = a_loss_p
+            last_c_loss_e = c_loss_e
+            last_a_loss_e = a_loss_e
 
-            logger.log_scalar("loss/pursuer_critic", c_loss_p, episode)
-            logger.log_scalar("loss/pursuer_actor", a_loss_p, episode)
-            logger.log_scalar("loss/evader_critic", c_loss_e, episode)
-            logger.log_scalar("loss/evader_actor", a_loss_e, episode)
+        # Accumulate completed episode metrics
+        for ep_data in completed_eps:
+            completed_episodes += 1
+            episodes_since_log += 1
+            agg_lengths.append(ep_data["length"])
+            agg_rewards_p.append(ep_data["pursuer_reward"])
+            agg_rewards_e.append(ep_data["evader_reward"])
+            agg_captures.append(1.0 if ep_data["captured"] else 0.0)
+
+        # Update curriculum when episodes complete
+        if len(completed_eps) > 0:
+            fov = curriculum.get_fov(completed_episodes)
+            evader_vmax = curriculum.get_evader_vmax(completed_episodes)
+            runner.set_curriculum_params(fov, evader_vmax)
+
+        # Logging: aggregate and log every ~log_interval episodes
+        log_interval = max(1, n_envs)
+        if episodes_since_log >= log_interval and len(agg_lengths) > 0:
+            logger.log_scalar("episode/length", np.mean(agg_lengths), completed_episodes)
+            logger.log_scalar("episode/pursuer_reward", np.mean(agg_rewards_p), completed_episodes)
+            logger.log_scalar("episode/evader_reward", np.mean(agg_rewards_e), completed_episodes)
+            logger.log_scalar("episode/capture_rate", np.mean(agg_captures), completed_episodes)
+
+            if replay_buffer.size >= batch_size:
+                logger.log_scalar("loss/pursuer_critic", last_c_loss_p, completed_episodes)
+                logger.log_scalar("loss/pursuer_actor", last_a_loss_p, completed_episodes)
+                logger.log_scalar("loss/evader_critic", last_c_loss_e, completed_episodes)
+                logger.log_scalar("loss/evader_actor", last_a_loss_e, completed_episodes)
+
+            if use_belief and bimdn_info["updates"] > 0:
+                logger.log_scalar("loss/bimdn_pursuer", bimdn_info["loss_p"], completed_episodes)
+                logger.log_scalar("loss/bimdn_evader", bimdn_info["loss_e"], completed_episodes)
+
+            # Console print for monitoring
+            print(
+                f"Ep {completed_episodes:5d} | "
+                f"CR={np.mean(agg_captures):.3f} | "
+                f"Len={np.mean(agg_lengths):.1f} | "
+                f"PC={last_c_loss_p:.1f} PA={last_a_loss_p:.3f} | "
+                f"EC={last_c_loss_e:.1f} EA={last_a_loss_e:.3f} | "
+                f"BP={bimdn_info['loss_p']:.3f} BE={bimdn_info['loss_e']:.3f}"
+            )
+
+            # Reset aggregators
+            episodes_since_log = 0
+            agg_lengths = []
+            agg_rewards_p = []
+            agg_rewards_e = []
+            agg_captures = []
 
         # Checkpoint
-        if episode % config["eval"]["checkpoint_freq"] == 0:
-            checkpoint_dir = output_dir / "checkpoints" / f"episode_{episode}"
+        if completed_episodes // checkpoint_freq > last_checkpoint_ep // checkpoint_freq:
+            last_checkpoint_ep = (completed_episodes // checkpoint_freq) * checkpoint_freq
+            checkpoint_dir = output_dir / "checkpoints" / f"episode_{last_checkpoint_ep}"
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             torch.save(pursuer.actor.state_dict(), checkpoint_dir / "pursuer_actor.pt")
             torch.save(evader.actor.state_dict(), checkpoint_dir / "evader_actor.pt")
             if use_belief:
-                belief_pursuer.save(checkpoint_dir / "bimdn_pursuer.pt")
-                belief_evader.save(checkpoint_dir / "bimdn_evader.pt")
+                for i in range(n_envs):
+                    # Save only the first env's belief models (they're all the same architecture,
+                    # and we only need one for evaluation)
+                    runner.belief_pursuers[0].save(checkpoint_dir / "bimdn_pursuer.pt")
+                    runner.belief_evaders[0].save(checkpoint_dir / "bimdn_evader.pt")
+                    break
+
+    # Final checkpoint
+    final_dir = output_dir / "checkpoints" / f"episode_{completed_episodes}"
+    final_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(pursuer.actor.state_dict(), final_dir / "pursuer_actor.pt")
+    torch.save(evader.actor.state_dict(), final_dir / "evader_actor.pt")
+    if use_belief:
+        runner.belief_pursuers[0].save(final_dir / "bimdn_pursuer.pt")
+        runner.belief_evaders[0].save(final_dir / "bimdn_evader.pt")
 
     logger.close()
+    print(f"Training complete: {completed_episodes} episodes, {global_step} steps")
 
 
 if __name__ == "__main__":

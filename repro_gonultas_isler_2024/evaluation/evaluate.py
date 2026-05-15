@@ -114,6 +114,180 @@ def load_policy(agent: MADDPGAgent, checkpoint_path: str):
     agent.actor.eval()
 
 
+def load_policy_from_state_dict(agent: MADDPGAgent, state_dict: dict):
+    agent.actor.load_state_dict(state_dict)
+    agent.actor.eval()
+
+
+def _make_agent(config: dict, use_belief: bool, use_amp: bool, device: str):
+    """Construct MADDPG agents with correct dimensions."""
+    frame_stack = config["maddpg"]["frame_stack"]
+    raw_obs_dim = 11
+    belief_dim = 2 if use_belief else 0
+    obs_dim = (raw_obs_dim + belief_dim) * frame_stack
+    action_dim = 2
+
+    pursuer = MADDPGAgent(
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        total_obs_dim=obs_dim * 2,
+        total_action_dim=action_dim * 2,
+        use_amp=use_amp,
+        device=device,
+    )
+    evader = MADDPGAgent(
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        total_obs_dim=obs_dim * 2,
+        total_action_dim=action_dim * 2,
+        use_amp=use_amp,
+        device=device,
+    )
+    return pursuer, evader
+
+
+def _make_belief_managers(config: dict, device: str):
+    """Construct belief managers for evaluation."""
+    bimdn_cfg = config["bimdn"]
+    raw_obs_dim = 11
+    belief_pursuer = BeliefStateManager(
+        obs_dim=raw_obs_dim,
+        buffer_size=bimdn_cfg["belief_buffer_size"],
+        history_length=bimdn_cfg["history_length"],
+        downsample=bimdn_cfg["downsample_factor"],
+        lr=bimdn_cfg["belief_lr"],
+        device=device,
+        use_amp=False,
+    )
+    belief_evader = BeliefStateManager(
+        obs_dim=raw_obs_dim,
+        buffer_size=bimdn_cfg["belief_buffer_size"],
+        history_length=bimdn_cfg["history_length"],
+        downsample=bimdn_cfg["downsample_factor"],
+        lr=bimdn_cfg["belief_lr"],
+        device=device,
+        use_amp=False,
+    )
+    return belief_pursuer, belief_evader
+
+
+def evaluate_checkpoint_tournament(
+    env: PursuitEvasionEnv,
+    checkpoint_state: dict,
+    opponent_pool: list,
+    num_opponents: int = 32,
+    num_episodes_per_match: int = 10,
+    frame_stack: int = 2,
+    use_belief: bool = False,
+    belief_pursuer: BeliefStateManager = None,
+    belief_evader: BeliefStateManager = None,
+) -> dict:
+    """Evaluate one checkpoint vs N random opponents from pool."""
+    n_pool = len(opponent_pool)
+    n_sample = min(num_opponents, n_pool)
+    if n_pool == 0:
+        return {"win_rate": 0.0}
+
+    indices = np.random.choice(n_pool, size=n_sample, replace=False)
+    sampled_opponents = [opponent_pool[i] for i in indices]
+
+    # Load main checkpoint
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    use_amp = False
+    main_pursuer, main_evader = _make_agent(env.config, use_belief, use_amp, device)
+    load_policy_from_state_dict(main_pursuer, checkpoint_state["pursuer"])
+    load_policy_from_state_dict(main_evader, checkpoint_state["evader"])
+
+    wins = 0.0
+    total_matches = 0
+
+    for opp_state in sampled_opponents:
+        opp_pursuer, opp_evader = _make_agent(env.config, use_belief, use_amp, device)
+        load_policy_from_state_dict(opp_pursuer, opp_state["pursuer"])
+        load_policy_from_state_dict(opp_evader, opp_state["evader"])
+
+        # Main pursuer vs opponent evader
+        def pursuer_policy(obs):
+            return main_pursuer.select_action(obs, noise_sigma=0.0)
+
+        def evader_policy(obs):
+            return opp_evader.select_action(obs, noise_sigma=0.0)
+
+        results = evaluate_agent(
+            env,
+            pursuer_policy,
+            evader_policy,
+            num_episodes=num_episodes_per_match,
+            frame_stack=frame_stack,
+            use_belief=use_belief,
+            belief_pursuer=belief_pursuer,
+            belief_evader=belief_evader,
+        )
+        wins += results["capture_rate"] * num_episodes_per_match
+        total_matches += num_episodes_per_match
+
+    return {"win_rate": wins / total_matches if total_matches > 0 else 0.0}
+
+
+def run_full_tournament(
+    checkpoint_dir: str,
+    config: dict,
+    num_opponents: int = 32,
+    episodes_per_match: int = 10,
+):
+    """Run tournament across all checkpoints and return the best one."""
+    checkpoint_path = Path(checkpoint_dir)
+    checkpoints = sorted(checkpoint_path.glob("episode_*"))
+
+    if len(checkpoints) == 0:
+        print(f"No checkpoints found in {checkpoint_dir}")
+        return None, 0.0, []
+
+    print(f"Found {len(checkpoints)} checkpoints. Loading state dicts...")
+
+    pool = []
+    for cp in checkpoints:
+        state = {
+            "pursuer": torch.load(cp / "pursuer_actor.pt", map_location="cpu"),
+            "evader": torch.load(cp / "evader_actor.pt", map_location="cpu"),
+        }
+        if config.get("use_belief", False):
+            state["bimdn_p"] = cp / "bimdn_pursuer.pt"
+            state["bimdn_e"] = cp / "bimdn_evader.pt"
+        pool.append(state)
+
+    env = PursuitEvasionEnv(config)
+    frame_stack = config["maddpg"]["frame_stack"]
+    use_belief = config.get("use_belief", False)
+
+    belief_pursuer, belief_evader = None, None
+    if use_belief:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        belief_pursuer, belief_evader = _make_belief_managers(config, device)
+
+    results = []
+    for i, cp_state in enumerate(pool):
+        # Exclude self from opponent pool
+        other_pool = pool[:i] + pool[i + 1:]
+        result = evaluate_checkpoint_tournament(
+            env,
+            cp_state,
+            other_pool,
+            num_opponents=num_opponents,
+            num_episodes_per_match=episodes_per_match,
+            frame_stack=frame_stack,
+            use_belief=use_belief,
+            belief_pursuer=belief_pursuer,
+            belief_evader=belief_evader,
+        )
+        results.append((checkpoints[i], result["win_rate"]))
+        print(f"  {checkpoints[i].name}: win_rate={result['win_rate']:.3f}")
+
+    best_cp, best_wr = max(results, key=lambda x: x[1])
+    print(f"\nBest checkpoint: {best_cp.name} with win_rate={best_wr:.3f}")
+    return best_cp, best_wr, results
+
+
 def run_evaluation(
     checkpoint_dir: str,
     config: dict,
