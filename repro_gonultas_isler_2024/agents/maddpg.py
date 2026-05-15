@@ -104,7 +104,7 @@ class MADDPGAgent:
         obs_e = torch.FloatTensor(batch["obs_e"]).to(self.device)
         actions_p = torch.FloatTensor(batch["actions_p"]).to(self.device)
         actions_e = torch.FloatTensor(batch["actions_e"]).to(self.device)
-        rewards = torch.FloatTensor(batch["rewards_p"]).unsqueeze(1).to(self.device)
+        rewards = torch.FloatTensor(batch["rewards_p" if agent_id == "pursuer" else "rewards_e"]).unsqueeze(1).to(self.device)
         next_obs_p = torch.FloatTensor(batch["next_obs_p"]).to(self.device)
         next_obs_e = torch.FloatTensor(batch["next_obs_e"]).to(self.device)
         dones = torch.FloatTensor(batch["dones"]).unsqueeze(1).to(self.device)
