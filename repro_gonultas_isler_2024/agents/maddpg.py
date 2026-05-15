@@ -114,18 +114,20 @@ class MADDPGAgent:
         actions_all = torch.cat([actions_p, actions_e], dim=-1)
 
         with torch.no_grad():
+            # Select correct actor for each agent's target action
+            if agent_id == "pursuer":
+                next_actions_p = self.actor_target(next_obs_p)
+                next_actions_e = other_agent.actor_target(next_obs_e)
+            else:
+                next_actions_p = other_agent.actor_target(next_obs_p)
+                next_actions_e = self.actor_target(next_obs_e)
+            next_actions_all = torch.cat([next_actions_p, next_actions_e], dim=-1)
             if self.use_amp:
                 with autocast():
-                    next_actions_p = self.actor_target(next_obs_p)
-                    next_actions_e = other_agent.actor_target(next_obs_e)
-                    next_actions_all = torch.cat([next_actions_p, next_actions_e], dim=-1)
                     target_q1 = self.critic_target(next_obs_all, next_actions_all)
                     target_q2 = self.critic2_target(next_obs_all, next_actions_all)
                     target_q = rewards + self.gamma * (1 - dones) * torch.min(target_q1, target_q2)
             else:
-                next_actions_p = self.actor_target(next_obs_p)
-                next_actions_e = other_agent.actor_target(next_obs_e)
-                next_actions_all = torch.cat([next_actions_p, next_actions_e], dim=-1)
                 target_q1 = self.critic_target(next_obs_all, next_actions_all)
                 target_q2 = self.critic2_target(next_obs_all, next_actions_all)
                 target_q = rewards + self.gamma * (1 - dones) * torch.min(target_q1, target_q2)
