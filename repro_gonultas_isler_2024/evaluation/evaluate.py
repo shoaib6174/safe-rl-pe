@@ -172,6 +172,7 @@ def _make_belief_managers(config: dict, device: str):
 
 
 def evaluate_checkpoint_tournament(
+    config: dict,
     env: PursuitEvasionEnv,
     checkpoint_state: dict,
     opponent_pool: list,
@@ -194,7 +195,7 @@ def evaluate_checkpoint_tournament(
     # Load main checkpoint
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_amp = False
-    main_pursuer, main_evader = _make_agent(env.config, use_belief, use_amp, device)
+    main_pursuer, main_evader = _make_agent(config, use_belief, use_amp, device)
     load_policy_from_state_dict(main_pursuer, checkpoint_state["pursuer"])
     load_policy_from_state_dict(main_evader, checkpoint_state["evader"])
 
@@ -202,7 +203,7 @@ def evaluate_checkpoint_tournament(
     total_matches = 0
 
     for opp_state in sampled_opponents:
-        opp_pursuer, opp_evader = _make_agent(env.config, use_belief, use_amp, device)
+        opp_pursuer, opp_evader = _make_agent(config, use_belief, use_amp, device)
         load_policy_from_state_dict(opp_pursuer, opp_state["pursuer"])
         load_policy_from_state_dict(opp_evader, opp_state["evader"])
 
@@ -270,6 +271,7 @@ def run_full_tournament(
         # Exclude self from opponent pool
         other_pool = pool[:i] + pool[i + 1:]
         result = evaluate_checkpoint_tournament(
+            config,
             env,
             cp_state,
             other_pool,
