@@ -96,7 +96,7 @@ def evaluate_agent(
             obs_p_buffer.append(aug_obs_p.copy())
             obs_e_buffer.append(aug_obs_e.copy())
 
-        if ep_reward > 0:
+        if step < env.max_steps:
             capture_count += 1
         episode_lengths.append(step)
         pursuer_rewards.append(ep_reward)
