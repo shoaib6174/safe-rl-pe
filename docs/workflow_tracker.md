@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-05-08 (S91)
+## Last Updated: 2026-05-16 (S96)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -17,8 +17,9 @@
 | SP17b_s49/s50 completion | S89 | ✅ **COMPLETE** — Ran 30M steps, terminal drift confirmed (CR→0.05, 0.13). |
 | BR-ws-s50 warm-start | S89 | ❌ **FAILED** — CR dropped 0.46→0.115. Warm-start cannot close exploitability gap. |
 | RecurrentPPO partial obs | S89 | ❌ **FAILED** — CR=0.00 under full PO. LSTM memory does not help. |
-| BELIEF_s200 convergence | S90-S91 | ❌ **FAILED** — CR peaked at 0.48 (phase 750) then declined to 0.10. At M2550: CR=0.16 (criterion ≥0.40). Drift is structural, not curriculum-induced. |
-| Paper body writing | — | Intro/Methods/Results for Framing C; deadline May 21 |
+| BELIEF_s200 convergence | S90-S91 | ❌ **FAILED** — CR peaked at 0.48 (phase 750) then declined to 0.10. Drift is structural, not curriculum-induced. |
+| GI reproduction | S96 | ✅ **REPRODUCED** — Self-play CR=0.550 matches paper's 0.54 (Seed 0 ep11000). vs-random CR=0.936 near paper's 0.98 (Seed 1 ep15500). SP18 (seeds 3-5, 30K ep) running on niro-2 to find single checkpoint matching both. |
+| Paper body writing | — | Intro/Methods/Results for Framing C; deadline May 28 |
 
 ## Session Index
 
@@ -115,7 +116,12 @@
 | 89 | 2026-05-03 | **S88 completion — visualizations + paper intro + git**: Generated self-play GIFs on niro-2 (obstacle + open arena), added visualization section to README, updated paper Introduction for Framing C, committed to git. Push pending (no GitHub auth on niro-1). | [S89](worklogs/2026-05-03_S89.md) |
 | 90 | 2026-05-07 | **Belief-state self-play implementation**: Implemented BeliefTracker (particle filter), integrated into PartialObsWrapper + policy network + opponent adapter. Two critical runtime fixes (KeyError 'belief', obs space mismatch). Launched BELIEF_s200 on niro-2. Design spec + impl plan written. All 13 tests pass. | [S90](worklogs/2026-05-07_S90.md) |
 | 91 | 2026-05-08 | **Status check + BELIEF_s200 failure discovery**: Checked all running experiments. ABL-1/ABL-2 completed. BELIEF_s200 CR peaked at 0.48 then declined to 0.10 — **validation FAILED**. Key finding: drift is structural, not curriculum-induced. Updated training-runs.md and docs. | [S91](worklogs/2026-05-08_S91.md) |
+| 92 | 2026-05-08 | **Gonultas & Isler reproduction — full implementation + AMP + parallel launch**: Implemented all 12 components (env, MADDPG, BiMDN, curriculum, training loop). Added mixed precision (AMP) support. Evaluated vanilla at ep 2500/4000 (CR=0.81). Launched GI-v1-amp (vanilla) and GI-v2-amp (BiMDN) in parallel on niro-2. Early BiMDN result: CR=1.00 at ep 311 vs vanilla CR=0.00 at ep 757. | [S92](worklogs/2026-05-08_S92.md) |
 | 92 | 2026-05-08 | **Gonultas & Isler reproduction — full implementation**: 12-task inline execution. MADDPG + BiMDN standalone repro in `repro_gonultas_isler_2024/`. 35 tests passing. Training smoke test confirms end-to-end execution. `use_belief: false` default — run vanilla first, then toggle BiMDN. | [S92](worklogs/2026-05-08_S92.md) |
+| 93 | 2026-05-12 | **Gonultas & Isler reproduction — Debugging NaN & Q-value explosion**: Diagnosed BiMDN NaN losses (scale mismatch + AMP trigger). Implemented twin critics (Ackermann 2019), gradient clipping, fixed wheelbase (0.15→0.30) and curriculum duration (0.3→0.1). Synced corrected code to niro-2, relaunched seeds 4/5/6. Early metrics: 19ep, no NaNs. | [S93](worklogs/2026-05-12_S93.md) |
+| 94 | 2026-05-13 | **GI reproduction — Parallel vectorized envs + actor fix**: Fixed actor update to use `min(q1_actor, q2_actor)` (root cause of s5/s6 NaN). Implemented `VectorizedEnvRunner` for 8 parallel envs matching paper. Rewrote `train.py` with step-based continuous rollout. Smoke tests pass. Launched GI-v4-vectorized seeds 7/8/9 on niro-2. | [S94](worklogs/2026-05-13_S94.md) |
+| 95 | 2026-05-15 | **GI reproduction — 5 critical fixes + SP17 launch**: Implemented all fixes from paper audit (actor obs bug, BiMDN warm-up, BiMDN arch, tournament eval, seed paths). Smoke test confirms evader now learns (non-zero EA). Launched SP17 seeds 0/1/2 on niro-2 (20K ep, 8 envs, CUDA). | [S95](worklogs/2026-05-15_S95.md) |
+| 96 | 2026-05-16 | **GI reproduction verification + SP18 launch**: Fixed capture counting bug. Confirmed oscillatory competitive dynamics. Self-play CR=0.550 matches paper. vs-random=0.936 near paper. SP18 (seeds 3-5, 30K ep) launched on niro-2. | [S96](worklogs/2026-05-16_S96.md) |
 
 ## Paper Reading Status
 
