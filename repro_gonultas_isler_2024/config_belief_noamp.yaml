@@ -35,15 +35,16 @@ reward:
 
 # Global toggles
 use_belief: true
-use_amp: false
+use_amp: true
+use_compile: true
 seed: 0
 
 # MADDPG
 maddpg:
   episodes: 20000
-  parallel_envs: 8
+  parallel_envs: 2
   replay_buffer_size: 100000
-  batch_size: 512
+  batch_size: 1024
   actor_lr: 0.0005
   critic_lr: 0.0005
   gamma: 0.99

@@ -128,3 +128,23 @@ def test_ema_update_slowly():
 
     # Verify EMA did NOT fully catch up
     assert not torch.allclose(ema_actor.fc1.weight.data, agent.actor.fc1.weight.data)
+
+
+def test_select_actions_batch():
+    """Verify batched action selection produces same results as individual calls."""
+    agent = MADDPGAgent(
+        obs_dim=13,
+        action_dim=2,
+        total_obs_dim=26,
+        total_action_dim=4,
+    )
+    obs_list = [np.ones(13, dtype=np.float32) * i for i in range(5)]
+
+    # Individual calls
+    actions_individual = np.stack([agent.select_action(o, noise_sigma=0.0) for o in obs_list])
+
+    # Batched call
+    actions_batch = agent.select_actions_batch(obs_list, noise_sigma=0.0)
+
+    assert actions_batch.shape == (5, 2)
+    np.testing.assert_allclose(actions_individual, actions_batch, atol=1e-6)

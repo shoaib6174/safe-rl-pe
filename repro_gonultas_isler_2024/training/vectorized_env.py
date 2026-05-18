@@ -134,8 +134,8 @@ class VectorizedEnvRunner:
 
     def step(
         self,
-        actions_p: List[np.ndarray],
-        actions_e: List[np.ndarray],
+        actions_p,
+        actions_e,
         global_step: int,
         bimdn_update_freq: int,
     ) -> Tuple[List[dict], List[dict], dict]:

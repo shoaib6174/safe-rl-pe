@@ -52,6 +52,8 @@ def train(config_path: str = "config.yaml"):
     # Device
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    use_compile = config.get("use_compile", False)
+
     # Agents
     pursuer = MADDPGAgent(
         obs_dim=obs_dim,
@@ -64,6 +66,7 @@ def train(config_path: str = "config.yaml"):
         tau=config["maddpg"]["tau"],
         device=device,
         use_amp=use_amp,
+        use_compile=use_compile,
     )
     evader = MADDPGAgent(
         obs_dim=obs_dim,
@@ -76,6 +79,7 @@ def train(config_path: str = "config.yaml"):
         tau=config["maddpg"]["tau"],
         device=device,
         use_amp=use_amp,
+        use_compile=use_compile,
     )
 
     # EMA (Exponential Moving Average) opponent networks for stable training
@@ -94,11 +98,12 @@ def train(config_path: str = "config.yaml"):
         ema_pursuer = None
         ema_evader = None
 
-    # Replay buffer
+    # Replay buffer (on GPU to eliminate CPU->GPU transfer on every sample)
     replay_buffer = ReplayBuffer(
         capacity=config["maddpg"]["replay_buffer_size"],
         obs_dim=obs_dim,
         action_dim=action_dim,
+        device=device,
     )
 
     # Output directory (include seed to prevent overwriting)
@@ -163,9 +168,9 @@ def train(config_path: str = "config.yaml"):
         # Get stacked observations for all envs
         stacked_p, stacked_e = runner.get_stacked_obs()
 
-        # Select actions
-        actions_p = [pursuer.select_action(o, noise_sigma) for o in stacked_p]
-        actions_e = [evader.select_action(o, noise_sigma) for o in stacked_e]
+        # Select actions (batched for efficiency)
+        actions_p = pursuer.select_actions_batch(stacked_p, noise_sigma)
+        actions_e = evader.select_actions_batch(stacked_e, noise_sigma)
 
         # Step all envs
         transitions, completed_eps, bimdn_info = runner.step(

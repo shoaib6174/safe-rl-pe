@@ -54,6 +54,7 @@ class MADDPGAgent:
         hidden_dim: int = 128,
         device: str = "cpu",
         use_amp: bool = False,
+        use_compile: bool = False,
     ):
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -78,6 +79,15 @@ class MADDPGAgent:
         self.critic2_target.load_state_dict(self.critic2.state_dict())
         self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=critic_lr)
 
+        # torch.compile for faster inference/training on modern GPUs
+        if use_compile and self.device.type == "cuda":
+            self.actor = torch.compile(self.actor, mode="reduce-overhead")
+            self.actor_target = torch.compile(self.actor_target, mode="reduce-overhead")
+            self.critic = torch.compile(self.critic, mode="reduce-overhead")
+            self.critic_target = torch.compile(self.critic_target, mode="reduce-overhead")
+            self.critic2 = torch.compile(self.critic2, mode="reduce-overhead")
+            self.critic2_target = torch.compile(self.critic2_target, mode="reduce-overhead")
+
         self.actor_scaler = GradScaler() if self.use_amp else None
         self.critic_scaler = GradScaler() if self.use_amp else None
 
@@ -94,20 +104,50 @@ class MADDPGAgent:
             action = np.clip(action + noise, -1.0, 1.0)
         return action
 
+    def select_actions_batch(
+        self, observations: list, noise_sigma: float = 0.1
+    ) -> np.ndarray:
+        """Batched action selection for multiple observations.
+
+        Args:
+            observations: List of np.ndarray observations.
+            noise_sigma: Exploration noise std dev.
+
+        Returns:
+            np.ndarray of shape (batch_size, action_dim).
+        """
+        obs_batch = torch.FloatTensor(np.stack(observations)).to(self.device)
+        with torch.no_grad():
+            if self.use_amp:
+                with autocast():
+                    actions = self.actor(obs_batch).cpu().numpy()
+            else:
+                actions = self.actor(obs_batch).cpu().numpy()
+        if noise_sigma > 0:
+            noise = np.random.normal(0, noise_sigma, size=actions.shape)
+            actions = np.clip(actions + noise, -1.0, 1.0)
+        return actions
+
+    def _to_tensor(self, arr):
+        """Convert array to tensor on device, avoiding double-copy if already a tensor."""
+        if isinstance(arr, torch.Tensor):
+            return arr.to(self.device)
+        return torch.FloatTensor(arr).to(self.device)
+
     def update(
         self,
         batch: dict,
         opponent_actor: nn.Module,
         agent_id: str = "pursuer",
     ) -> tuple:
-        obs_p = torch.FloatTensor(batch["obs_p"]).to(self.device)
-        obs_e = torch.FloatTensor(batch["obs_e"]).to(self.device)
-        actions_p = torch.FloatTensor(batch["actions_p"]).to(self.device)
-        actions_e = torch.FloatTensor(batch["actions_e"]).to(self.device)
-        rewards = torch.FloatTensor(batch["rewards_p" if agent_id == "pursuer" else "rewards_e"]).unsqueeze(1).to(self.device)
-        next_obs_p = torch.FloatTensor(batch["next_obs_p"]).to(self.device)
-        next_obs_e = torch.FloatTensor(batch["next_obs_e"]).to(self.device)
-        dones = torch.FloatTensor(batch["dones"]).unsqueeze(1).to(self.device)
+        obs_p = self._to_tensor(batch["obs_p"])
+        obs_e = self._to_tensor(batch["obs_e"])
+        actions_p = self._to_tensor(batch["actions_p"])
+        actions_e = self._to_tensor(batch["actions_e"])
+        rewards = self._to_tensor(batch["rewards_p" if agent_id == "pursuer" else "rewards_e"]).unsqueeze(1)
+        next_obs_p = self._to_tensor(batch["next_obs_p"])
+        next_obs_e = self._to_tensor(batch["next_obs_e"])
+        dones = self._to_tensor(batch["dones"]).unsqueeze(1)
 
         obs_all = torch.cat([obs_p, obs_e], dim=-1)
         next_obs_all = torch.cat([next_obs_p, next_obs_e], dim=-1)
