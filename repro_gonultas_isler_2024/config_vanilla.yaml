@@ -36,7 +36,7 @@ reward:
 # Global toggles
 use_belief: false
 use_amp: true
-use_compile: true
+use_compile: false
 
 # MADDPG
 maddpg:
