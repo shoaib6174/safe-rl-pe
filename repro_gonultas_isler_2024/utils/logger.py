@@ -19,5 +19,10 @@ class Logger:
     def increment_step(self):
         self.step += 1
 
+    def log_text(self, tag: str, text: str, step: int = None):
+        if step is None:
+            step = self.step
+        self.writer.add_text(tag, text, step)
+
     def close(self):
         self.writer.close()

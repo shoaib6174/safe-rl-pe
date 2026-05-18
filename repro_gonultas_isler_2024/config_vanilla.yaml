@@ -52,6 +52,7 @@ maddpg:
   frame_stack: 2
   frame_skip: 2
   update_freq: 1
+  ema_tau: 0.001            # EMA opponent decay (0 = vanilla self-play)
 
 # BiMDN
 bimdn:

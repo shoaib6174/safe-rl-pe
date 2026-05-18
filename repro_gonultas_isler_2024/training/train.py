@@ -1,6 +1,8 @@
 import numpy as np
 import torch
+import torch.nn as nn
 import yaml
+from copy import deepcopy
 from pathlib import Path
 
 from envs.pursuit_evasion_env import PursuitEvasionEnv
@@ -76,6 +78,22 @@ def train(config_path: str = "config.yaml"):
         use_amp=use_amp,
     )
 
+    # EMA (Exponential Moving Average) opponent networks for stable training
+    ema_tau = config["maddpg"].get("ema_tau", 0.0)
+    use_ema = ema_tau > 0.0
+    if use_ema:
+        ema_pursuer = deepcopy(pursuer.actor)
+        ema_evader = deepcopy(evader.actor)
+        ema_pursuer.eval()
+        ema_evader.eval()
+        for param in ema_pursuer.parameters():
+            param.requires_grad = False
+        for param in ema_evader.parameters():
+            param.requires_grad = False
+    else:
+        ema_pursuer = None
+        ema_evader = None
+
     # Replay buffer
     replay_buffer = ReplayBuffer(
         capacity=config["maddpg"]["replay_buffer_size"],
@@ -135,7 +153,11 @@ def train(config_path: str = "config.yaml"):
     last_c_loss_e = 0.0
     last_a_loss_e = 0.0
 
-    print(f"Starting training: {episodes} episodes, {n_envs} parallel envs, device={device}")
+    ema_status = f"EMA=ON (tau={ema_tau})" if use_ema else "EMA=OFF (vanilla SP)"
+    print(f"Starting training: {episodes} episodes, {n_envs} parallel envs, device={device}, {ema_status}")
+    logger.log_text("config/ema_status", ema_status, 0)
+    if use_ema:
+        logger.log_scalar("config/ema_tau", ema_tau, 0)
 
     while completed_episodes < episodes:
         # Get stacked observations for all envs
@@ -171,10 +193,21 @@ def train(config_path: str = "config.yaml"):
             n_updates = n_envs * update_freq
             for _ in range(n_updates):
                 batch = replay_buffer.sample(batch_size)
-                c_loss_p, a_loss_p = pursuer.update(batch, evader, agent_id="pursuer")
-                c_loss_e, a_loss_e = evader.update(batch, pursuer, agent_id="evader")
+                if use_ema:
+                    c_loss_p, a_loss_p = pursuer.update(batch, ema_evader, agent_id="pursuer")
+                    c_loss_e, a_loss_e = evader.update(batch, ema_pursuer, agent_id="evader")
+                else:
+                    c_loss_p, a_loss_p = pursuer.update(batch, evader.actor, agent_id="pursuer")
+                    c_loss_e, a_loss_e = evader.update(batch, pursuer.actor, agent_id="evader")
                 pursuer.update_targets()
                 evader.update_targets()
+            # Update EMA networks after all gradient updates
+            if use_ema:
+                with torch.no_grad():
+                    for ema_param, param in zip(ema_evader.parameters(), evader.actor.parameters()):
+                        ema_param.data.mul_(1 - ema_tau).add_(param.data, alpha=ema_tau)
+                    for ema_param, param in zip(ema_pursuer.parameters(), pursuer.actor.parameters()):
+                        ema_param.data.mul_(1 - ema_tau).add_(param.data, alpha=ema_tau)
             last_c_loss_p = c_loss_p
             last_a_loss_p = a_loss_p
             last_c_loss_e = c_loss_e
@@ -237,6 +270,9 @@ def train(config_path: str = "config.yaml"):
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             torch.save(pursuer.actor.state_dict(), checkpoint_dir / "pursuer_actor.pt")
             torch.save(evader.actor.state_dict(), checkpoint_dir / "evader_actor.pt")
+            if use_ema:
+                torch.save(ema_pursuer.state_dict(), checkpoint_dir / "ema_pursuer.pt")
+                torch.save(ema_evader.state_dict(), checkpoint_dir / "ema_evader.pt")
             if use_belief:
                 for i in range(n_envs):
                     # Save only the first env's belief models (they're all the same architecture,
@@ -250,6 +286,9 @@ def train(config_path: str = "config.yaml"):
     final_dir.mkdir(parents=True, exist_ok=True)
     torch.save(pursuer.actor.state_dict(), final_dir / "pursuer_actor.pt")
     torch.save(evader.actor.state_dict(), final_dir / "evader_actor.pt")
+    if use_ema:
+        torch.save(ema_pursuer.state_dict(), final_dir / "ema_pursuer.pt")
+        torch.save(ema_evader.state_dict(), final_dir / "ema_evader.pt")
     if use_belief:
         runner.belief_pursuers[0].save(final_dir / "bimdn_pursuer.pt")
         runner.belief_evaders[0].save(final_dir / "bimdn_evader.pt")

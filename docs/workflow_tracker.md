@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-05-16 (S96)
+## Last Updated: 2026-05-18 (S97)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -122,6 +122,7 @@
 | 94 | 2026-05-13 | **GI reproduction — Parallel vectorized envs + actor fix**: Fixed actor update to use `min(q1_actor, q2_actor)` (root cause of s5/s6 NaN). Implemented `VectorizedEnvRunner` for 8 parallel envs matching paper. Rewrote `train.py` with step-based continuous rollout. Smoke tests pass. Launched GI-v4-vectorized seeds 7/8/9 on niro-2. | [S94](worklogs/2026-05-13_S94.md) |
 | 95 | 2026-05-15 | **GI reproduction — 5 critical fixes + SP17 launch**: Implemented all fixes from paper audit (actor obs bug, BiMDN warm-up, BiMDN arch, tournament eval, seed paths). Smoke test confirms evader now learns (non-zero EA). Launched SP17 seeds 0/1/2 on niro-2 (20K ep, 8 envs, CUDA). | [S95](worklogs/2026-05-15_S95.md) |
 | 96 | 2026-05-16 | **GI reproduction verification + SP18 launch**: Fixed capture counting bug. Confirmed oscillatory competitive dynamics. Self-play CR=0.550 matches paper. vs-random=0.936 near paper. SP18 (seeds 3-5, 30K ep) launched on niro-2. | [S96](worklogs/2026-05-16_S96.md) |
+| 97 | 2026-05-18 | **EMA opponent stabilization — Phase 1**: Refactored MADDPG.update() for external opponent actors. Implemented EMA with tau=0.001 (3.5-episode half-life). Added checkpoint persistence, EMA evaluation modes, sweep script with robustness + oscillation metrics. Critical analysis fixed 10 issues. 5K comparison (vanilla vs EMA) launched on niro-2. | [S97](worklogs/2026-05-18_S97.md) |
 
 ## Paper Reading Status
 

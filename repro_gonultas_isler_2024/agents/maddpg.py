@@ -97,7 +97,7 @@ class MADDPGAgent:
     def update(
         self,
         batch: dict,
-        other_agent: "MADDPGAgent",
+        opponent_actor: nn.Module,
         agent_id: str = "pursuer",
     ) -> tuple:
         obs_p = torch.FloatTensor(batch["obs_p"]).to(self.device)
@@ -117,9 +117,9 @@ class MADDPGAgent:
             # Select correct actor for each agent's target action
             if agent_id == "pursuer":
                 next_actions_p = self.actor_target(next_obs_p)
-                next_actions_e = other_agent.actor_target(next_obs_e)
+                next_actions_e = opponent_actor(next_obs_e)
             else:
-                next_actions_p = other_agent.actor_target(next_obs_p)
+                next_actions_p = opponent_actor(next_obs_p)
                 next_actions_e = self.actor_target(next_obs_e)
             next_actions_all = torch.cat([next_actions_p, next_actions_e], dim=-1)
             if self.use_amp:

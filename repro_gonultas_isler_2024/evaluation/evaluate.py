@@ -119,6 +119,20 @@ def load_policy_from_state_dict(agent: MADDPGAgent, state_dict: dict):
     agent.actor.eval()
 
 
+def load_ema_policy(agent: MADDPGAgent, checkpoint_path: str, agent_type: str = "pursuer"):
+    """Load EMA weights into an agent's actor for evaluation.
+
+    Args:
+        agent_type: "pursuer" or "evader" to select the correct EMA file.
+    """
+    ema_path = Path(checkpoint_path) / f"ema_{agent_type}.pt"
+    if not ema_path.exists():
+        return False
+    agent.actor.load_state_dict(torch.load(ema_path, map_location="cpu"))
+    agent.actor.eval()
+    return True
+
+
 def _make_agent(config: dict, use_belief: bool, use_amp: bool, device: str):
     """Construct MADDPG agents with correct dimensions."""
     frame_stack = config["maddpg"]["frame_stack"]
@@ -387,6 +401,54 @@ def run_evaluation(
         env, greedy_pursuer_policy, evader_nn_policy, num_episodes, frame_stack,
         use_belief, belief_pursuer, belief_evader,
     )
+
+    # EMA evaluations (if EMA checkpoints exist)
+    ema_pursuer_loaded = load_ema_policy(pursuer, checkpoint_path, agent_type="pursuer")
+    if ema_pursuer_loaded:
+        def ema_pursuer_policy(obs):
+            return pursuer.select_action(obs, noise_sigma=0.0)
+
+        results["ema_pursuer_vs_evader"] = evaluate_agent(
+            env, ema_pursuer_policy, evader_nn_policy, num_episodes, frame_stack,
+            use_belief, belief_pursuer, belief_evader,
+        )
+        results["ema_pursuer_vs_random"] = evaluate_agent(
+            env, ema_pursuer_policy, random_policy, num_episodes, frame_stack,
+            use_belief, belief_pursuer, belief_evader,
+        )
+        results["ema_pursuer_vs_greedy"] = evaluate_agent(
+            env, ema_pursuer_policy, greedy_evader_policy, num_episodes, frame_stack,
+            use_belief, belief_pursuer, belief_evader,
+        )
+
+        # Reload current pursuer for next evaluations
+        load_policy(pursuer, checkpoint_path / "pursuer_actor.pt")
+
+    ema_evader_loaded = load_ema_policy(evader, checkpoint_path, agent_type="evader")
+    if ema_evader_loaded:
+        def ema_evader_policy(obs):
+            return evader.select_action(obs, noise_sigma=0.0)
+
+        results["pursuer_vs_ema_evader"] = evaluate_agent(
+            env, pursuer_nn_policy, ema_evader_policy, num_episodes, frame_stack,
+            use_belief, belief_pursuer, belief_evader,
+        )
+        results["random_vs_ema_evader"] = evaluate_agent(
+            env, random_policy, ema_evader_policy, num_episodes, frame_stack,
+            use_belief, belief_pursuer, belief_evader,
+        )
+        results["greedy_vs_ema_evader"] = evaluate_agent(
+            env, greedy_pursuer_policy, ema_evader_policy, num_episodes, frame_stack,
+            use_belief, belief_pursuer, belief_evader,
+        )
+
+        # EMA vs EMA
+        if ema_pursuer_loaded:
+            load_ema_policy(pursuer, checkpoint_path, agent_type="pursuer")
+            results["ema_pursuer_vs_ema_evader"] = evaluate_agent(
+                env, ema_pursuer_policy, ema_evader_policy, num_episodes, frame_stack,
+                use_belief, belief_pursuer, belief_evader,
+            )
 
     return results
 
