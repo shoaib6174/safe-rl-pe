@@ -134,6 +134,16 @@ class MADDPGAgent:
             return arr.to(self.device)
         return torch.FloatTensor(arr).to(self.device)
 
+    @staticmethod
+    def _clear_adam_state(optimizer, parameters):
+        """Clear Adam momentum buffers to recover from NaN/inf corruption."""
+        for param in parameters:
+            if param in optimizer.state:
+                state = optimizer.state[param]
+                for key in ("exp_avg", "exp_avg_sq"):
+                    if key in state:
+                        state[key].zero_()
+
     def update(
         self,
         batch: dict,
@@ -172,6 +182,11 @@ class MADDPGAgent:
                 target_q2 = self.critic2_target(next_obs_all, next_actions_all)
                 target_q = rewards + self.gamma * (1 - dones) * torch.min(target_q1, target_q2)
 
+            # Clip target Q to prevent unbounded growth that causes FP16 overflow
+            Q_MIN = -500.0
+            Q_MAX = 1500.0
+            target_q = torch.clamp(target_q, min=Q_MIN, max=Q_MAX)
+
         # Update first critic
         if self.use_amp:
             with autocast():
@@ -181,15 +196,20 @@ class MADDPGAgent:
             self.critic_scaler.scale(critic_loss).backward()
             self.critic_scaler.unscale_(self.critic_optimizer)
             torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
+            if torch.isnan(critic_loss) or torch.isinf(critic_loss):
+                self._clear_adam_state(self.critic_optimizer, self.critic.parameters())
             self.critic_scaler.step(self.critic_optimizer)
             self.critic_scaler.update()
         else:
             current_q1 = self.critic(obs_all, actions_all)
             critic_loss = nn.MSELoss()(current_q1, target_q)
-            self.critic_optimizer.zero_grad()
-            critic_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
-            self.critic_optimizer.step()
+            if torch.isnan(critic_loss) or torch.isinf(critic_loss):
+                self._clear_adam_state(self.critic_optimizer, self.critic.parameters())
+            else:
+                self.critic_optimizer.zero_grad()
+                critic_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
+                self.critic_optimizer.step()
 
         # Update second critic
         if self.use_amp:
@@ -200,15 +220,20 @@ class MADDPGAgent:
             self.critic_scaler.scale(critic2_loss).backward()
             self.critic_scaler.unscale_(self.critic2_optimizer)
             torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=1.0)
+            if torch.isnan(critic2_loss) or torch.isinf(critic2_loss):
+                self._clear_adam_state(self.critic2_optimizer, self.critic2.parameters())
             self.critic_scaler.step(self.critic2_optimizer)
             self.critic_scaler.update()
         else:
             current_q2 = self.critic2(obs_all, actions_all)
             critic2_loss = nn.MSELoss()(current_q2, target_q)
-            self.critic2_optimizer.zero_grad()
-            critic2_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=1.0)
-            self.critic2_optimizer.step()
+            if torch.isnan(critic2_loss) or torch.isinf(critic2_loss):
+                self._clear_adam_state(self.critic2_optimizer, self.critic2.parameters())
+            else:
+                self.critic2_optimizer.zero_grad()
+                critic2_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=1.0)
+                self.critic2_optimizer.step()
 
         # Actor update uses min of both critics (conservative estimate)
         own_obs = obs_p if agent_id == "pursuer" else obs_e
@@ -227,6 +252,8 @@ class MADDPGAgent:
             self.actor_scaler.scale(actor_loss).backward()
             self.actor_scaler.unscale_(self.actor_optimizer)
             torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+            if torch.isnan(actor_loss) or torch.isinf(actor_loss):
+                self._clear_adam_state(self.actor_optimizer, self.actor.parameters())
             self.actor_scaler.step(self.actor_optimizer)
             self.actor_scaler.update()
         else:
@@ -238,10 +265,13 @@ class MADDPGAgent:
             q1_actor = self.critic(obs_all, new_actions_all)
             q2_actor = self.critic2(obs_all, new_actions_all)
             actor_loss = -torch.min(q1_actor, q2_actor).mean()
-            self.actor_optimizer.zero_grad()
-            actor_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
-            self.actor_optimizer.step()
+            if torch.isnan(actor_loss) or torch.isinf(actor_loss):
+                self._clear_adam_state(self.actor_optimizer, self.actor.parameters())
+            else:
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+                self.actor_optimizer.step()
 
         return critic_loss.item(), actor_loss.item()
 
