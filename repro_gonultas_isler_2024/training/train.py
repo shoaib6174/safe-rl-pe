@@ -10,6 +10,7 @@ from agents.maddpg import MADDPGAgent
 from training.replay_buffer import ReplayBuffer
 from training.curriculum import Curriculum
 from training.belief_manager import BeliefStateManager
+from training.population_manager import PopulationManager
 from training.vectorized_env import VectorizedEnvRunner
 from utils.logger import Logger
 
@@ -98,6 +99,36 @@ def train(config_path: str = "config.yaml"):
         ema_pursuer = None
         ema_evader = None
 
+    # Pop-FSP (Population-Based Fictitious Self-Play)
+    use_pop_fsp = config["maddpg"].get("use_pop_fsp", False)
+    pop_size = config["maddpg"].get("pop_size", 8)
+    pop_add_freq = config["maddpg"].get("pop_add_freq", 250)
+    pop_warmup = config["maddpg"].get("pop_warmup", 500)
+
+    # Mutual exclusivity: EMA and Pop-FSP cannot both be active
+    if use_ema and use_pop_fsp:
+        raise ValueError("EMA and Pop-FSP are mutually exclusive. "
+                         "Set ema_tau=0 or use_pop_fsp=false.")
+
+    if use_pop_fsp:
+        pursuer_pop = PopulationManager(
+            max_size=pop_size,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            hidden_dim=config["maddpg"]["hidden_dim"],
+            device=device,
+        )
+        evader_pop = PopulationManager(
+            max_size=pop_size,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            hidden_dim=config["maddpg"]["hidden_dim"],
+            device=device,
+        )
+    else:
+        pursuer_pop = None
+        evader_pop = None
+
     # Replay buffer (on GPU to eliminate CPU->GPU transfer on every sample)
     replay_buffer = ReplayBuffer(
         capacity=config["maddpg"]["replay_buffer_size"],
@@ -158,7 +189,12 @@ def train(config_path: str = "config.yaml"):
     last_c_loss_e = 0.0
     last_a_loss_e = 0.0
 
-    ema_status = f"EMA=ON (tau={ema_tau})" if use_ema else "EMA=OFF (vanilla SP)"
+    if use_pop_fsp:
+        ema_status = f"Pop-FSP (K={pop_size}, add_freq={pop_add_freq}, warmup={pop_warmup})"
+    elif use_ema:
+        ema_status = f"EMA=ON (tau={ema_tau})"
+    else:
+        ema_status = "EMA=OFF (vanilla SP)"
     print(f"Starting training: {episodes} episodes, {n_envs} parallel envs, device={device}, {ema_status}")
     logger.log_text("config/ema_status", ema_status, 0)
     if use_ema:
@@ -198,7 +234,20 @@ def train(config_path: str = "config.yaml"):
             n_updates = n_envs * update_freq
             for _ in range(n_updates):
                 batch = replay_buffer.sample(batch_size)
-                if use_ema:
+                if use_pop_fsp:
+                    # Pop-FSP: sample random opponent from population
+                    # During warmup, fall back to current opponent
+                    if completed_episodes >= pop_warmup and len(evader_pop) > 0:
+                        opp_e_actor = evader_pop.sample()
+                    else:
+                        opp_e_actor = evader.actor
+                    if completed_episodes >= pop_warmup and len(pursuer_pop) > 0:
+                        opp_p_actor = pursuer_pop.sample()
+                    else:
+                        opp_p_actor = pursuer.actor
+                    c_loss_p, a_loss_p = pursuer.update(batch, opp_e_actor, agent_id="pursuer")
+                    c_loss_e, a_loss_e = evader.update(batch, opp_p_actor, agent_id="evader")
+                elif use_ema:
                     c_loss_p, a_loss_p = pursuer.update(batch, ema_evader, agent_id="pursuer")
                     c_loss_e, a_loss_e = evader.update(batch, ema_pursuer, agent_id="evader")
                 else:
@@ -232,6 +281,13 @@ def train(config_path: str = "config.yaml"):
             fov = curriculum.get_fov(completed_episodes)
             evader_vmax = curriculum.get_evader_vmax(completed_episodes)
             runner.set_curriculum_params(fov, evader_vmax)
+
+        # Update populations
+        if use_pop_fsp and completed_episodes > 0 and completed_episodes % pop_add_freq == 0:
+            pursuer_pop.add(pursuer.actor.state_dict())
+            evader_pop.add(evader.actor.state_dict())
+            print(f"  [Pop-FSP] Added checkpoint at episode {completed_episodes}. "
+                  f"Pursuer pop={len(pursuer_pop)}, Evader pop={len(evader_pop)}")
 
         # Logging: aggregate and log every ~log_interval episodes
         log_interval = max(1, n_envs)
@@ -278,6 +334,9 @@ def train(config_path: str = "config.yaml"):
             if use_ema:
                 torch.save(ema_pursuer.state_dict(), checkpoint_dir / "ema_pursuer.pt")
                 torch.save(ema_evader.state_dict(), checkpoint_dir / "ema_evader.pt")
+            if use_pop_fsp:
+                pursuer_pop.save(checkpoint_dir / "pursuer_pop.pt")
+                evader_pop.save(checkpoint_dir / "evader_pop.pt")
             if use_belief:
                 for i in range(n_envs):
                     # Save only the first env's belief models (they're all the same architecture,
@@ -294,6 +353,9 @@ def train(config_path: str = "config.yaml"):
     if use_ema:
         torch.save(ema_pursuer.state_dict(), final_dir / "ema_pursuer.pt")
         torch.save(ema_evader.state_dict(), final_dir / "ema_evader.pt")
+    if use_pop_fsp:
+        pursuer_pop.save(final_dir / "pursuer_pop.pt")
+        evader_pop.save(final_dir / "evader_pop.pt")
     if use_belief:
         runner.belief_pursuers[0].save(final_dir / "bimdn_pursuer.pt")
         runner.belief_evaders[0].save(final_dir / "bimdn_evader.pt")
