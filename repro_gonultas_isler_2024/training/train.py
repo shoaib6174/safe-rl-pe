@@ -65,6 +65,7 @@ def train(config_path: str = "config.yaml"):
         critic_lr=config["maddpg"]["critic_lr"],
         gamma=config["maddpg"]["gamma"],
         tau=config["maddpg"]["tau"],
+        hidden_dim=config["maddpg"]["hidden_dim"],
         device=device,
         use_amp=use_amp,
         use_compile=use_compile,
@@ -78,6 +79,7 @@ def train(config_path: str = "config.yaml"):
         critic_lr=config["maddpg"]["critic_lr"],
         gamma=config["maddpg"]["gamma"],
         tau=config["maddpg"]["tau"],
+        hidden_dim=config["maddpg"]["hidden_dim"],
         device=device,
         use_amp=use_amp,
         use_compile=use_compile,
@@ -183,6 +185,9 @@ def train(config_path: str = "config.yaml"):
     agg_rewards_e = []
     agg_captures = []
 
+    # Pop-FSP: track last episode we added to population
+    last_pop_add_ep = 0
+
     # Loss tracking for logging
     last_c_loss_p = 0.0
     last_a_loss_p = 0.0
@@ -282,10 +287,14 @@ def train(config_path: str = "config.yaml"):
             evader_vmax = curriculum.get_evader_vmax(completed_episodes)
             runner.set_curriculum_params(fov, evader_vmax)
 
-        # Update populations
-        if use_pop_fsp and completed_episodes > 0 and completed_episodes % pop_add_freq == 0:
+        # Update populations (once per checkpoint boundary)
+        if (use_pop_fsp
+            and len(completed_eps) > 0
+            and completed_episodes > last_pop_add_ep
+            and completed_episodes % pop_add_freq == 0):
             pursuer_pop.add(pursuer.actor.state_dict())
             evader_pop.add(evader.actor.state_dict())
+            last_pop_add_ep = completed_episodes
             print(f"  [Pop-FSP] Added checkpoint at episode {completed_episodes}. "
                   f"Pursuer pop={len(pursuer_pop)}, Evader pop={len(evader_pop)}")
 

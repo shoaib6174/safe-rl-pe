@@ -194,12 +194,16 @@ class VectorizedEnvRunner:
 
             # Build next stacked obs for replay buffer:
             # concatenate (frame_stack-1) most recent buffer entries + next_aug_obs
-            next_stacked_p = np.concatenate(
-                self.obs_p_buffers[i][-(self.frame_stack - 1):] + [next_aug_obs_p]
-            )
-            next_stacked_e = np.concatenate(
-                self.obs_e_buffers[i][-(self.frame_stack - 1):] + [next_aug_obs_e]
-            )
+            if self.frame_stack == 1:
+                next_stacked_p = next_aug_obs_p
+                next_stacked_e = next_aug_obs_e
+            else:
+                next_stacked_p = np.concatenate(
+                    self.obs_p_buffers[i][-(self.frame_stack - 1):] + [next_aug_obs_p]
+                )
+                next_stacked_e = np.concatenate(
+                    self.obs_e_buffers[i][-(self.frame_stack - 1):] + [next_aug_obs_e]
+                )
 
             # Accumulate episode stats
             self.episode_rewards_p[i] += total_r_p
