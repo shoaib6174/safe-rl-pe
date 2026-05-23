@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-05-18 (S97)
+## Last Updated: 2026-05-22 (S99)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -12,14 +12,16 @@
 
 | Blocker | Since Session | Details |
 |---------|--------------|---------|
-| ABL-3/ABL-4 divergence check | S88+ | ✅ **RESOLVED** — ABL-3 collapsed (CR=0.04), ABL-4 struggling (CR=0.15). Both show clear divergence. |
-| BR-5/BR-6 completion | S88+ | ✅ **COMPLETE** — H3 replicated for s50. Full cohort verdict confirmed across all 3 seeds. |
-| SP17b_s49/s50 completion | S89 | ✅ **COMPLETE** — Ran 30M steps, terminal drift confirmed (CR→0.05, 0.13). |
-| BR-ws-s50 warm-start | S89 | ❌ **FAILED** — CR dropped 0.46→0.115. Warm-start cannot close exploitability gap. |
-| RecurrentPPO partial obs | S89 | ❌ **FAILED** — CR=0.00 under full PO. LSTM memory does not help. |
-| BELIEF_s200 convergence | S90-S91 | ❌ **FAILED** — CR peaked at 0.48 (phase 750) then declined to 0.10. Drift is structural, not curriculum-induced. |
-| GI reproduction | S96 | ✅ **REPRODUCED** — Self-play CR=0.550 matches paper's 0.54 (Seed 0 ep11000). vs-random CR=0.936 near paper's 0.98 (Seed 1 ep15500). SP18 (seeds 3-5, 30K ep) running on niro-2 to find single checkpoint matching both. |
-| Paper body writing | — | Intro/Methods/Results for Framing C; deadline May 28 |
+| ABL-3/ABL-4 divergence check | S88+ | ✅ **RESOLVED** |
+| BR-5/BR-6 completion | S88+ | ✅ **COMPLETE** |
+| SP17b_s49/s50 completion | S89 | ✅ **COMPLETE** |
+| BR-ws-s50 warm-start | S89 | ❌ **FAILED** |
+| RecurrentPPO partial obs | S89 | ❌ **FAILED** |
+| BELIEF_s200 convergence | S90-S91 | ❌ **FAILED** |
+| GI reproduction | S96 | ✅ **REPRODUCED** — Self-play CR=0.550 matches paper. |
+| EMA seed 3 completion | S99 | ❌ **FAILED** — Training completed (5000 ep) but best robustness=0.292 (below 0.40 target). Evader-dominant collapse. Seed-dependent; seed 0 outlier at 0.698. |
+| niro-2 stability | S98-S99 | ✅ **RESOLVED** — Rebooted, CUDA driver fixed, Tailscale re-authed. |
+| Paper body writing | — | Intro/Methods/Results for Framing C; deadline ~September 2026 (ICRA 2027) |
 
 ## Session Index
 
@@ -123,6 +125,9 @@
 | 95 | 2026-05-15 | **GI reproduction — 5 critical fixes + SP17 launch**: Implemented all fixes from paper audit (actor obs bug, BiMDN warm-up, BiMDN arch, tournament eval, seed paths). Smoke test confirms evader now learns (non-zero EA). Launched SP17 seeds 0/1/2 on niro-2 (20K ep, 8 envs, CUDA). | [S95](worklogs/2026-05-15_S95.md) |
 | 96 | 2026-05-16 | **GI reproduction verification + SP18 launch**: Fixed capture counting bug. Confirmed oscillatory competitive dynamics. Self-play CR=0.550 matches paper. vs-random=0.936 near paper. SP18 (seeds 3-5, 30K ep) launched on niro-2. | [S96](worklogs/2026-05-16_S96.md) |
 | 97 | 2026-05-18 | **EMA opponent stabilization — Phase 1**: Refactored MADDPG.update() for external opponent actors. Implemented EMA with tau=0.001 (3.5-episode half-life). Added checkpoint persistence, EMA evaluation modes, sweep script with robustness + oscillation metrics. Critical analysis fixed 10 issues. 5K comparison (vanilla vs EMA) launched on niro-2. | [S97](worklogs/2026-05-18_S97.md) |
+| 98 | 2026-05-20 | **EMA 5K analysis — seeds 0-2**: Seed 0 EMA robustness=0.698 (exceeds target). Seed 1 vanilla NaN collapse, EMA evader-dominant. Seed 2 low robustness (0.148) due to actor_lr=0.0001. Key finding: LR=0.0005 needed. Analysis doc written. | [S98](worklogs/2026-05-20_S98.md) |
+| 99 | 2026-05-22 | **EMA seed 3 monitoring + departure**: Relaunched seed 3 with LR=0.0005 after niro-2 reboot/CUDA fix. Training at ep 1573 (29.6%), CR oscillating, losses stable. Persistent monitor active (30-min intervals). User leaving for 2 weeks. | [S99](worklogs/2026-05-22_S99.md) |
+| 100 | 2026-05-23 | **Pop-FSP implementation + first training**: Brainstormed, designed, and implemented actor-only PopulationManager. Integrated into training loop. Fixed 3 bugs (frame_stack=1 slice, hidden_dim missing, duplicate adds). Deployed to niro-2. Launched 500-ep smoke test. | [S100](worklogs/2026-05-23_S100.md) |
 
 ## Paper Reading Status
 
