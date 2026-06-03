@@ -22,7 +22,7 @@
 | EMA seed 3 completion | S99 | ❌ **FAILED** — Training completed (5000 ep) but best robustness=0.292 (below 0.40 target). Evader-dominant collapse. Seed-dependent; seed 0 outlier at 0.698. |
 | niro-2 stability | S98-S99 | ✅ **RESOLVED** — Rebooted, CUDA driver fixed, Tailscale re-authed. |
 | **Pop-FSP competitive balance** | **S103** | **❌ FAILED** — 0/5 configurations (v3-v7) achieved CR≈0.5. Structural ∀/∃ asymmetry is fundamental. **Pivoted to EMA seeds 4-6 + GI vanilla 20K baseline.** |
-| **A-EMA probe launch** | **S105** | **Pending** — Smoke test passed locally. Must push to GitHub, pull on niro-2, and launch 3 seeds. |
+| **A-EMA probe** | **S105** | **❌ NO-GO** — Seed 0 best robustness=0.060 (mean=0.026). Seeds 1, 2 collapsed. 0/3 with robustness > 0.40. Asymmetric LR alone fails. |
 | Paper body writing | — | Intro/Methods/Results for Framing C; deadline ~September 2026 (ICRA 2027) |
 
 ## Session Index
