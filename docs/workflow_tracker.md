@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-06-03 (S105 complete)
+## Last Updated: 2026-06-06 (S105 results compiled, all 3 seeds complete, NO-GO)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -134,7 +134,7 @@
 | 102 | 2026-05-24 | **Pop-FSP v3/v4/v5 postmortem + v6 launch prep**: v3 all seeds CR=1.0 (pursuer-dominant). v4 overcorrected to evader-dominant. v5 still pursuer-dominant. v6 (arena=19, evader=1.65, ratio=1.52x) prepared as intermediate sweet spot. | [S102](worklogs/2026-05-24_S102.md) |
 | 103 | 2026-05-25 | **Pop-FSP v6/v7 complete failure + pivot**: 0/5 configs achieved balance. Structural ∀/∃ asymmetry identified. Launched EMA seeds 4-6 + GI vanilla 20K baseline. Wrote asymmetry analysis doc. | [S103](worklogs/2026-05-25_S103.md) |
 | 104 | 2026-05-26 | **Full project reanalysis + ICRA 2027 master plan**: Comprehensive achievement assessment, publication strategy, phased plan with decision gates and contingencies. | [S104](worklogs/2026-05-26_S104.md) |
-| 105 | 2026-06-03 | **A-EMA Probe implementation + launch**: Fixed config, created launch script, smoke test passed (24 ep, 0 NaN). Ready for niro-2. | [S105](worklogs/2026-06-03_S105.md) |
+| 105 | 2026-06-03 | **A-EMA Probe implementation + results**: Fixed config, launched 3 seeds on niro-2, all complete. Seed 0 best robustness=0.060. **NO-GO** — 0/3 seeds pass. Checkpoint sweeps running for seeds 1, 2. | [S105](worklogs/2026-06-03_S105.md) |
 
 ## Paper Reading Status
 
