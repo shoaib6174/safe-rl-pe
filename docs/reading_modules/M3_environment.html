@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>M3_environment</title>
+<style>
+body { max-width: 800px; margin: 2em auto; padding: 0 1em; font-family: Georgia, serif; line-height: 1.6; color: #222; }
+h1 { border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+h2 { border-bottom: 1px solid #ccc; padding-bottom: 0.2em; margin-top: 1.5em; }
+h3 { margin-top: 1.2em; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+th { background: #f5f5f5; }
+code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+pre { background: #f4f4f4; padding: 1em; overflow-x: auto; border-radius: 4px; }
+blockquote { border-left: 4px solid #ddd; margin: 0; padding-left: 1em; color: #555; }
+</style>
+</head>
+<body>
+<h1 id="module-3-environment-design">Module 3: Environment Design</h1>
+<p><strong>Estimated reading time:</strong> 2–3 hours<br />
+<strong>Prerequisites:</strong> Module 1 (Pursuit-Evasion as a Differential Game), Module 2 (Deep RL for Continuous Multi-Agent Control)<br />
+<strong>Goal:</strong> Understand every design choice in the G&amp;I 2024 environment — the arena, the agents, the sensors, the reward, and the curriculum — and why each parameter matters. This module bridges differential game theory to the concrete simulation that all our experiments run in.</p>
+<hr />
+<h2 id="31-the-arena-why-1616-meters">3.1 The Arena: Why 16×16 Meters?</h2>
+<p>The <strong>arena</strong> is the bounded domain in which the game is played. Its size is the single most consequential hyperparameter: too small and capture is trivial; too large and the episode never terminates.</p>
+<h3 id="the-scaling-problem">The Scaling Problem</h3>
+<p>In a differential game with capture radius $c$ and maximum speed $v_{\max}$, the natural timescale is:</p>
+<p>$$T_{\text{capture}} \approx \frac{L_{\text{arena}}}{v_{\max}}$$</p>
+<p>For the G&amp;I environment: $L_{\text{arena}} = 16$ m, $v_{\max}^{(p)} = 2.5$ m/s, so $T_{\text{capture}} \approx 6.4$ s. With $\Delta t = 0.1$ s, this is $\approx 64$ steps. The episode length of 400 steps (40 s) gives roughly 6× the minimum capture time — enough for extended chases, pursuit-and-escape cycles, and boundary exploitation.</p>
+<p><strong>Why not smaller?</strong> Our Phase 1–3 10×10 m arena (S11–S84) gave $T_{\text{capture}} \approx 4$ s with 200 steps — agents reached the boundary quickly and strategies degenerated into corner-trapping. <strong>Why not larger?</strong> A 30×30 m arena would require 800+ steps for meaningful episodes; training time scales linearly, and the pursuer's speed advantage becomes less decisive at long range.</p>
+<table>
+<thead>
+<tr>
+<th>Arena Size</th>
+<th>$T_{\text{capture}}$</th>
+<th>Steps</th>
+<th>Tradeoff</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10×10 m</td>
+<td>4.0 s</td>
+<td>40</td>
+<td>Too fast; strategies degenerate</td>
+</tr>
+<tr>
+<td><strong>16×16 m</strong></td>
+<td><strong>6.4 s</strong></td>
+<td><strong>64</strong></td>
+<td><strong>Balanced: chase + boundary play</strong></td>
+</tr>
+<tr>
+<td>30×30 m</td>
+<td>12.0 s</td>
+<td>120</td>
+<td>Too long; evader outruns indefinitely</td>
+</tr>
+</tbody>
+</table>
+<h3 id="episode-length-400-steps">Episode Length: 400 Steps</h3>
+<p>The episode terminates when either:<br />
+1. <strong>Capture:</strong> distance $\leq 2c = 0.30$ m (two agent radii touching)<br />
+2. <strong>Timeout:</strong> 400 steps elapsed ($40$ s at $\Delta t = 0.1$ s)</p>
+<p>The timeout is not merely a computational convenience — it is a <strong>game-theoretic necessity</strong>. Without it, the evader's optimal strategy is to avoid capture forever (if possible). The timeout forces the evader to actively escape rather than passively evade, and it gives the pursuer a finite horizon within which to act.</p>
+<p>The 400-step limit ensures a pursuer at one corner can close a diagonal gap ($\approx 22.6$ m) in $\approx 23$ s at 1.0 m/s relative speed — well within the 40 s budget — while giving the evader $\approx 30$ s of boundary exploitation before cornering.</p>
+<hr />
+<h2 id="32-agent-dynamics-bicycle-vs-point-mass">3.2 Agent Dynamics: Bicycle vs Point Mass</h2>
+<p>The G&amp;I environment uses <strong>asymmetric dynamics</strong> — the pursuer is a bicycle model, the evader is a point mass. This is a deliberate design choice that creates a nuanced tradeoff.</p>
+<h3 id="pursuer-bicycle-model">Pursuer: Bicycle Model</h3>
+<p>The pursuer's state is $\mathbf{x}_p = [x, y, \delta, v, \psi]$ where:<br />
+- $(x, y)$: position<br />
+- $\delta$: steering angle<br />
+- $v$: longitudinal velocity<br />
+- $\psi$: heading angle</p>
+<p>The dynamics (Euler-integrated at $\Delta t = 0.1$ s) are:</p>
+<p>$$\begin{aligned}<br />
+\delta_{t+1} &amp;= \text{clip}\bigl(\delta_t + u_{\dot{\delta}} \cdot \Delta t, \; \delta_{\min}, \; \delta_{\max}\bigr) \<br />
+v_{t+1} &amp;= \text{clip}\bigl(v_t + u_a \cdot \Delta t, \; v_{\min}, \; v_{\max}\bigr) \<br />
+\psi_{t+1} &amp;= \psi_t + \frac{v_t}{L} \tan(\delta_t) \cdot \Delta t \<br />
+x_{t+1} &amp;= x_t + v_t \cos(\psi_t) \cdot \Delta t \<br />
+y_{t+1} &amp;= y_t + v_t \sin(\psi_t) \cdot \Delta t<br />
+\end{aligned}$$</p>
+<p><strong>Key parameters:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Wheelbase $L$</td>
+<td>0.30 m</td>
+<td>Distance between axles</td>
+</tr>
+<tr>
+<td>$v_{\max}$</td>
+<td>2.5 m/s</td>
+<td>Top speed</td>
+</tr>
+<tr>
+<td>$v_{\min}$</td>
+<td>−1.0 m/s</td>
+<td>Reverse speed</td>
+</tr>
+<tr>
+<td>$\delta_{\max}$</td>
+<td>0.34 rad</td>
+<td>Max steering angle</td>
+</tr>
+<tr>
+<td>$a_{\max}$</td>
+<td>2.0 m/s²</td>
+<td>Max acceleration</td>
+</tr>
+<tr>
+<td>$\dot{\delta}_{\max}$</td>
+<td>3.2 rad/s</td>
+<td>Max steering rate</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The bicycle model is non-holonomic:</strong> the pursuer cannot move sideways. To change direction, it must steer, which changes its heading $\psi$ gradually. The minimum turning radius is:</p>
+<p>$$R_{\min} = \frac{L}{\tan(\delta_{\max})} = \frac{0.30}{\tan(0.34)} \approx 0.85 \text{ m}$$</p>
+<p>This means the pursuer cannot turn in place — it needs space to maneuver. A tight corner or a quick direction change is physically impossible. The evader, with point-mass dynamics, can change direction instantly.</p>
+<h3 id="evader-point-mass-model">Evader: Point-Mass Model</h3>
+<p>The evader's state is $\mathbf{x}_e = [x, y, v_x, v_y]$ with dynamics:</p>
+<p>$$\begin{aligned}<br />
+v_{x,t+1} &amp;= \text{clip}\bigl(v_{x,t} + u_x \cdot \Delta t, \; v_{\min}, \; v_{\max}\bigr) \<br />
+v_{y,t+1} &amp;= \text{clip}\bigl(v_{y,t} + u_y \cdot \Delta t, \; v_{\min}, \; v_{\max}\bigr) \<br />
+x_{t+1} &amp;= x_t + v_{x,t} \cdot \Delta t \<br />
+y_{t+1} &amp;= y_t + v_{y,t} \cdot \Delta t<br />
+\end{aligned}$$</p>
+<p><strong>Key parameters:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$v_{\max}$</td>
+<td>1.5 m/s</td>
+<td>Top speed</td>
+</tr>
+<tr>
+<td>$v_{\min}$</td>
+<td>−1.5 m/s</td>
+<td>Reverse speed</td>
+</tr>
+<tr>
+<td>$a_{\max}$</td>
+<td>9.81 m/s²</td>
+<td>Max acceleration (≈ 1 g)</td>
+</tr>
+</tbody>
+</table>
+<p>The evader is <strong>omnidirectional</strong> — no heading angle, no steering constraint, no minimum turning radius. It can execute any velocity vector within the speed disk $|\mathbf{v}| \leq 1.5$.</p>
+<h3 id="why-asymmetric-dynamics">Why Asymmetric Dynamics?</h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Pursuer (Bicycle)</th>
+<th>Evader (Point Mass)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Top speed</td>
+<td>2.5 m/s (faster)</td>
+<td>1.5 m/s (slower)</td>
+</tr>
+<tr>
+<td>Turning</td>
+<td>Constrained ($R_{\min} \approx 0.85$ m)</td>
+<td>Instantaneous</td>
+</tr>
+<tr>
+<td>Reversing</td>
+<td>Limited ($v_{\min} = -1.0$)</td>
+<td>Full ($v_{\min} = -1.5$)</td>
+</tr>
+<tr>
+<td>Acceleration</td>
+<td>2.0 m/s²</td>
+<td>9.81 m/s²</td>
+</tr>
+</tbody>
+</table>
+<p>The asymmetry creates a genuine contest: the <strong>pursuer wins on speed</strong> (can close gaps in open space), while the <strong>evader wins on agility</strong> (can dodge and exploit the pursuer's turning radius). If both were point masses with equal speed, the evader could always escape (mirroring argument, M1 §1.5). The mixed dynamics create rich strategy spaces for both agents.</p>
+<h3 id="common-misconceptions">Common Misconceptions</h3>
+<p><strong>"Why not give both agents bicycle models?"</strong> Equal non-holonomic dynamics would eliminate the agility asymmetry that makes the game interesting. The evader's ability to change direction instantly is its primary defense; without it, the pursuer's speed advantage would dominate in every scenario. The bicycle model also introduces heading as a state variable, which complicates the evader's strategy without adding meaningful depth.</p>
+<p><strong>"Why not a larger capture radius?"</strong> A larger capture radius (e.g., 0.50 m) would make capture trivial — the pursuer could swerve into the evader without precise alignment. The current 0.30 m effective distance is roughly 1/3 of the pursuer's minimum turning radius (0.85 m), forcing the pursuer to plan its approach trajectory rather than relying on last-second corrections. This precision requirement is what makes the game competitive rather than a simple chase.</p>
+<blockquote>
+<p><strong>Implementation note:</strong> Our initial implementation used $L = 0.15$ m (half the paper's value), making $R_{\min} \approx 0.43$ m. The pursuer could execute hairpin turns impossible with $L = 0.30$ m — this single bug explained persistent pursuer dominance (CR = 1.0) across early runs. Fixing $L$ to 0.30 m was one of the two critical fixes in S93 (see D42, D43).</p>
+</blockquote>
+<hr />
+<h2 id="33-sensing-partial-observability-via-fov">3.3 Sensing: Partial Observability via FOV</h2>
+<p>Sensing is where the G&amp;I environment introduces <strong>partial observability</strong> — agents do not see the full state. This transforms the game from a fully-observable differential game into a <strong>Partially Observable Markov Decision Process (POMDP)</strong>.</p>
+<h3 id="the-wedge-sensor">The Wedge Sensor</h3>
+<p>Both agents use a <strong>WedgeSensor</strong> class that implements a triangular field of view:</p>
+<pre><code class="language-python">visible = (dist &lt;= fov_range) and (|angle_diff| &lt;= fov_angle / 2)
+</code></pre>
+<p><strong>Pursuer sensor:</strong> FOV = $120°$ ($2\pi/3$ rad), range = 6.0 m<br />
+<strong>Evader sensor:</strong> FOV = $360°$ ($2\pi$ rad), range = 1000.0 m (effectively infinite)</p>
+<h3 id="why-this-asymmetry">Why This Asymmetry?</h3>
+<p>The pursuer has <strong>worse sensing</strong> in two ways:<br />
+1. <strong>Directional:</strong> 120° wedge vs omnidirectional. The pursuer must physically turn to scan behind itself.<br />
+2. <strong>Limited range:</strong> 6.0 m vs 1000 m. Beyond 6 m, the pursuer has no information about the evader's position.</p>
+<p>This compensates for the pursuer's speed advantage. In a fully observable game with the pursuer 67% faster, capture would be nearly guaranteed. With FOV-limited sensing, the evader can:<br />
+- Hide outside the pursuer's FOV<br />
+- Use the boundary to create "shadows" — regions the pursuer cannot see into<br />
+- Approach from behind the pursuer (outside the 120° wedge)</p>
+<p><strong>Arena coverage:</strong> The pursuer's 6 m range covers $\pi \cdot 6^2 \approx 113$ m² (44% of the 256 m² arena), but because the FOV is directional, effective coverage is only a 120° wedge. The fraction is:</p>
+<p>$$\frac{\text{sector area}}{\text{arena area}} = \frac{120°}{360°} \cdot \frac{\pi \cdot 6^2}{16^2} = \frac{1}{3} \cdot \frac{36\pi}{256} \approx 14.7\%$$</p>
+<p>So the pursuer sees roughly 15% of the arena at any orientation.</p>
+<h3 id="observation-space-11-dimensional-raw-22-dimensional-stacked">Observation Space (11-Dimensional Raw, 22-Dimensional Stacked)</h3>
+<p>Each agent receives an 11-dimensional observation vector:</p>
+<table>
+<thead>
+<tr>
+<th>Index</th>
+<th>Feature</th>
+<th>Description</th>
+<th>Normalization</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0–1</td>
+<td>Own position $(x, y)$</td>
+<td>Arena coordinates</td>
+<td>$/ (L/2)$ → $[-1, 1]$</td>
+</tr>
+<tr>
+<td>2–3</td>
+<td>Own velocity $(v_x, v_y)$</td>
+<td>Current velocity</td>
+<td>Pursuer: $/ 1.75$; Evader: $/ 1.5$</td>
+</tr>
+<tr>
+<td>4–5</td>
+<td>Opponent position $(x_o, y_o)$</td>
+<td>If visible; else 0</td>
+<td>$/ (L/2)$</td>
+</tr>
+<tr>
+<td>6–7</td>
+<td>Opponent velocity $(v_{ox}, v_{oy})$</td>
+<td>If visible; else 0</td>
+<td>Pursuer: $/ 1.75$; Evader: $/ 1.5$</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Visibility flag $I$</td>
+<td>1.0 if visible, −1.0 otherwise</td>
+<td>Already ±1</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Timestep ratio $t_{\text{norm}}$</td>
+<td>step / max_steps</td>
+<td>$[0, 1]$</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Distance $d$</td>
+<td>Euclidean distance to opponent</td>
+<td>$/ (L\sqrt{2})$</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Frame stacking:</strong> Observations are stacked over <code>frame_stack = 2</code> steps, giving 22 dimensions. When the opponent is not visible, position/velocity/distance are zero and $I = -1.0$; the agent must rely on temporal context or belief (BiMDN, M7). Frame stacking provides short-term temporal context but cannot integrate information over long occlusions; see M7 for belief-state methods.</p>
+<blockquote>
+<p><strong>Note on observation dimensions.</strong> The G&amp;I paper (and our early reading plan) references a 43-dimensional observation space that includes Lidar rays. Our reproduction uses an 11-dimensional state-based observation (22 stacked) as described above. Lidar was part of the original environment specification but was later removed in favor of the compact state vector, which is sufficient for the MADDPG+BiMDN approach and reduces input dimensionality.</p>
+</blockquote>
+<h3 id="historical-context-our-sensing-journey">Historical Context: Our Sensing Journey</h3>
+<table>
+<thead>
+<tr>
+<th>Sensing Mode</th>
+<th>Sessions</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Full observability</td>
+<td>S11–S48</td>
+<td>Evader collapses; no hiding possible</td>
+</tr>
+<tr>
+<td>Radius-only</td>
+<td>S50–S51</td>
+<td>Evader sees through obstacles; unrealistic</td>
+</tr>
+<tr>
+<td>LOS-only</td>
+<td>S59</td>
+<td>Too restrictive; agents lose each other</td>
+</tr>
+<tr>
+<td><strong>Combined radius + LOS</strong></td>
+<td><strong>S63–S64</strong></td>
+<td><strong>Viable; evader adopts "hide and don't move"</strong></td>
+</tr>
+<tr>
+<td>FOV wedge (G&amp;I style)</td>
+<td>S76–S81</td>
+<td>Directional sensing creates geometry-based play</td>
+</tr>
+</tbody>
+</table>
+<p>The G&amp;I FOV design creates a <strong>geometry-dependent information game</strong>: the pursuer must manage orientation to maintain line of sight, while the evader can exploit blind spots by approaching from behind.</p>
+<hr />
+<h2 id="34-capture-condition-and-agent-radius">3.4 Capture Condition and Agent Radius</h2>
+<p><strong>Capture radius:</strong> $c = 0.15$ m per agent. Capture occurs when:</p>
+<p>$$|\mathbf{x}_p - \mathbf{x}_e| \leq 2c = 0.30 \text{ m}$$</p>
+<p><strong>Why 0.15 m?</strong> The 0.30 m effective capture distance is roughly 1/3 of the pursuer's minimum turning radius (0.85 m) — the pursuer cannot simply swerve into the evader; it must align its trajectory. Agents initialize with minimum separation 3.0 m to prevent immediate capture.</p>
+<hr />
+<h2 id="35-reward-structure">3.5 Reward Structure</h2>
+<p>The reward function is <strong>zero-sum</strong> and combines three terms:</p>
+<p>$$r_p = \lambda_{\text{capture}} \cdot \mathbb{1}[\text{capture}] - \lambda_{\text{time}} - \lambda_{\text{distance}} \cdot d$$</p>
+<p>$$r_e = -r_p$$</p>
+<p><strong>Terminal rewards:</strong><br />
+- Capture: $r_p = +1000$, $r_e = -1000$<br />
+- Timeout (no capture): $r_p = -1000$, $r_e = +1000$</p>
+<p><strong>Per-step (dense) reward:</strong><br />
+- Time penalty: $-\lambda_{\text{time}} = -1$ per step<br />
+- Distance penalty: $-\lambda_{\text{distance}} \cdot d = -d$ (distance in meters)</p>
+<h3 id="why-this-structure">Why This Structure?</h3>
+<p>The <strong>terminal reward</strong> ($\pm 1000$) provides a strong learning signal for capture/escape. The <strong>time penalty</strong> ($-1$ per step) discourages stalling — without it, the evader's optimal strategy is to run away indefinitely. The <strong>distance penalty</strong> ($-d$) provides dense gradient toward the opponent, crucial early in training when capture is rare.</p>
+<p><strong>Scale balance:</strong> The raw distance $d$ can reach $16\sqrt{2} \approx 22.6$ m, so per-step penalties range 0 to −22.6. Over 400 steps, cumulative distance penalty is at most −9040. The terminal ±1000 is roughly 10% of total episode magnitude — early training is dominated by dense penalties (approach/avoid), late training by terminal rewards (capture/escape).</p>
+<h3 id="historical-context-reward-experiments">Historical Context: Reward Experiments</h3>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Sessions</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>±50 terminal</td>
+<td>S48</td>
+<td>Insufficient signal; agents ignore capture</td>
+</tr>
+<tr>
+<td>±1000 terminal (G&amp;I)</td>
+<td>S92–S96</td>
+<td>Strong signal; capture clearly prioritized</td>
+</tr>
+<tr>
+<td>PBRS (obstacle approach)</td>
+<td>S44–S45</td>
+<td>Did not prevent collapse</td>
+</tr>
+<tr>
+<td>Search staleness reward</td>
+<td>S71</td>
+<td>Taught patrol instead of hunt</td>
+</tr>
+<tr>
+<td>Visibility reward (w=0.1)</td>
+<td>S83</td>
+<td>Only modification sustaining non-zero capture under PO (D20)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Key lesson (S83, D20):</strong> Under 90° FOV, the pursuer gets no gradient without explicit reward for maintaining line of sight. The G&amp;I environment's dense distance reward provides sufficient signal without visibility shaping.</p>
+<hr />
+<h2 id="36-curriculum-progressive-difficulty">3.6 Curriculum: Progressive Difficulty</h2>
+<p>The G&amp;I environment uses a <strong>two-parameter curriculum</strong> that anneals difficulty over the first 2000 episodes (10% of training):</p>
+<h3 id="fov-annealing">FOV Annealing</h3>
+<p>$$\text{FOV}(e) = \text{FOV}<em>{\text{start}} \cdot (1 - p) + \text{FOV}</em>{\text{end}} \cdot p$$</p>
+<p>where $p = \min(1.0, e / 2000)$, $\text{FOV}<em>{\text{start}} = 360°$, $\text{FOV}</em>{\text{end}} = 120°$.</p>
+<p><strong>Rationale:</strong> Starting with full observability lets agents learn basic behaviors before the sensing challenge. With 120° FOV from the start, the pursuer rarely sees the evader and receives almost no learning signal.</p>
+<h3 id="evader-speed-annealing">Evader Speed Annealing</h3>
+<p>$$v_{\max}^{(e)}(e) = v_{\text{start}} \cdot (1 - p) + v_{\text{end}} \cdot p$$</p>
+<p>where $v_{\text{start}} = 0.0$ m/s, $v_{\text{end}} = 1.5$ m/s.</p>
+<p><strong>Rationale:</strong> A stationary evader makes capture trivial, bootstrapping the pursuer with strong positive signal before the game becomes competitive. Starting from $v_{\text{start}} = 0.0$ (as opposed to, say, 0.5 m/s) maximizes this effect: the evader is completely immobile, so the pursuer can practice approach and capture with zero risk of escape. Any non-zero starting speed would introduce early evasion behavior before the pursuer has learned basic pursuit skills, degrading the bootstrapping signal. The annealing schedule ensures the pursuer has already acquired fundamental capture skills before the evader gains enough speed to require genuine evasion strategies.</p>
+<h3 id="curriculum-duration-2000-episodes">Curriculum Duration: 2000 Episodes</h3>
+<p>The paper specifies $T/10 = 2000$ episodes. Our initial implementation used $T/3 = 6000$ (S93) — a critical bug giving the pursuer 3× more full-FOV training time, contributing to dominance. Fixing to 2000 was one of the two critical fixes in S93 (see D42, D43).</p>
+<h3 id="historical-context-our-curriculum-experiments">Historical Context: Our Curriculum Experiments</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Sessions</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No curriculum</td>
+<td>S48</td>
+<td>Both agents stall; no bootstrapping</td>
+</tr>
+<tr>
+<td>Long curriculum (6000 ep)</td>
+<td>S93</td>
+<td>Pursuer overtrained; dominance</td>
+</tr>
+<tr>
+<td>Short curriculum (2000 ep)</td>
+<td>S95</td>
+<td>Matches paper; balanced bootstrapping</td>
+</tr>
+<tr>
+<td>Masking curriculum (full → partial obs)</td>
+<td>S75</td>
+<td>+10–15 pp improvement before restart killed it</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="37-action-space-and-control">3.7 Action Space and Control</h2>
+<p>Both agents output <strong>continuous actions</strong> in $[-1, 1]$, which are scaled to physical bounds:</p>
+<h3 id="pursuer-action-steering-rate-acceleration">Pursuer Action: [Steering Rate, Acceleration]</h3>
+<p>$$u_{\dot{\delta}} = a_0 \cdot 3.2 \text{ rad/s}, \quad u_a = a_1 \cdot 2.0 \text{ m/s}^2$$</p>
+<p>The pursuer controls <strong>steering rate</strong> and <strong>acceleration</strong> — heading and velocity emerge from bicycle dynamics. This indirection is realistic for car-like vehicles but makes control harder.</p>
+<h3 id="evader-action-x-acceleration-y-acceleration">Evader Action: [X Acceleration, Y Acceleration]</h3>
+<p>$$u_x = a_0 \cdot 9.81 \text{ m/s}^2, \quad u_y = a_1 \cdot 9.81 \text{ m/s}^2$$</p>
+<p>The evader controls <strong>acceleration in each axis independently</strong>, directly determining velocity change. Any acceleration vector in $[-9.81, 9.81]^2$ maps to a velocity disk $|\mathbf{v}| \leq 1.5$ after clipping.</p>
+<h3 id="exploration-noise">Exploration Noise</h3>
+<p>During training, actions are perturbed with Gaussian noise: $a_{\text{noisy}} = a_{\text{policy}} + 0.1 \cdot \mathcal{N}(0, 1)$. This prevents premature convergence to deterministic behavior.</p>
+<hr />
+<h2 id="38-vectorized-environments">3.8 Vectorized Environments</h2>
+<p>With the environment fully specified, we now turn to how it is executed efficiently during training. The paper specifies <strong>8 parallel environment instances</strong>, and S94 implemented vectorized environments to match this. However, the committed configs (<code>config.yaml</code>, <code>config_vanilla.yaml</code>, <code>config_belief_noamp.yaml</code>) currently use <code>parallel_envs: 2</code> for local testing. On niro-2, training runs use <code>parallel_envs: 8</code> for full throughput.</p>
+<p>With 8 envs and batch size 1024 (the paper specifies 512; we use 1024 for faster convergence), training completes in ~6–8 hours for 20K episodes on an RTX 5090. Each environment maintains independent frame stacking buffers and BeliefStateManager history to prevent leakage across episodes.</p>
+<blockquote>
+<p><strong>Note:</strong> Batch size 1024 is a deviation from the paper's specified 512. This was chosen for faster wall-clock training and does not change the environment semantics.</p>
+</blockquote>
+<hr />
+<h2 id="39-summary-the-complete-environment">3.9 Summary: The Complete Environment</h2>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Parameter</th>
+<th>Value</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Arena</strong></td>
+<td>Size</td>
+<td>16×16 m</td>
+<td>Balanced: non-trivial strategies, finite episodes</td>
+</tr>
+<tr>
+<td></td>
+<td>Episode length</td>
+<td>400 steps (40 s)</td>
+<td>6× minimum capture time; forces active play</td>
+</tr>
+<tr>
+<td></td>
+<td>Timestep</td>
+<td>0.1 s</td>
+<td>10 Hz control</td>
+</tr>
+<tr>
+<td><strong>Pursuer</strong></td>
+<td>Dynamics</td>
+<td>Bicycle model</td>
+<td>Car-like constraints; $R_{\min} \approx 0.85$ m</td>
+</tr>
+<tr>
+<td></td>
+<td>Wheelbase $L$</td>
+<td>0.30 m</td>
+<td>Critical: 0.15 m bug caused CR=1.0 (S93)</td>
+</tr>
+<tr>
+<td></td>
+<td>$v_{\max}$ / $v_{\min}$</td>
+<td>2.5 / −1.0 m/s</td>
+<td>Faster but limited reverse</td>
+</tr>
+<tr>
+<td></td>
+<td>Sensing</td>
+<td>120° FOV, 6 m</td>
+<td>Directional; creates information game</td>
+</tr>
+<tr>
+<td><strong>Evader</strong></td>
+<td>Dynamics</td>
+<td>Point mass</td>
+<td>Omnidirectional; instant turns</td>
+</tr>
+<tr>
+<td></td>
+<td>$v_{\max}$ / $v_{\min}$</td>
+<td>1.5 / −1.5 m/s</td>
+<td>Slower but full reverse</td>
+</tr>
+<tr>
+<td></td>
+<td>Sensing</td>
+<td>360°, 1000 m</td>
+<td>Omnidirectional; information advantage</td>
+</tr>
+<tr>
+<td><strong>Capture</strong></td>
+<td>Effective distance</td>
+<td>0.30 m ($2c$)</td>
+<td>Small relative to arena; rewards precision</td>
+</tr>
+<tr>
+<td><strong>Reward</strong></td>
+<td>Terminal / time / dist</td>
+<td>±1000 / −1 / −$d$</td>
+<td>Strong terminal signal + dense gradient</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>FOV / speed / duration</td>
+<td>360°→120° / 0→1.5 / 2000 ep</td>
+<td>Bootstraps pursuer before adding challenge (see <code>config_belief_noamp.yaml</code>; <code>config.yaml</code> and <code>config_vanilla.yaml</code> still have <code>t_end_ratio: 0.3</code> for legacy reasons)</td>
+</tr>
+<tr>
+<td><strong>Observation</strong></td>
+<td>Raw / stacked</td>
+<td>11 / 22</td>
+<td>Frame stack=2 for temporal context</td>
+</tr>
+<tr>
+<td><strong>Action</strong></td>
+<td>Pursuer / evader</td>
+<td>[steer, accel] / [$a_x$, $a_y$]</td>
+<td>Continuous, scaled to physical bounds</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="self-check">Self-Check</h2>
+<ol>
+<li>
+<p><strong>Why does the G&amp;I environment give the evader omnidirectional sensing (360°) while the pursuer has only a 120° wedge?</strong> What would happen if both had 120° FOV? What if both had omnidirectional sensing?</p>
+</li>
+<li>
+<p><strong>The bicycle model has a minimum turning radius of approximately 0.85 m. How does this constrain the pursuer's strategy compared to a point-mass model?</strong> Give a concrete example of a maneuver the evader can execute that the pursuer cannot.</p>
+</li>
+<li>
+<p><strong>Suppose the curriculum annealed over only 500 episodes instead of 2000. How would this affect the pursuer's ability to learn basic capture skills before the evader gains full speed? What failure mode would you expect?</strong></p>
+</li>
+<li>
+<p><strong>The reward function combines a terminal bonus of ±1000 with per-step penalties of −1 and −$d$. If you were to increase $\lambda_{\text{capture}}$ to 10,000 while keeping the per-step penalties the same, would the pursuer become more risk-seeking or risk-averse? Would the evader learn to stall less or more? What about decreasing $\lambda_{\text{capture}}$ to 100?</strong></p>
+</li>
+</ol>
+<hr />
+<h2 id="papers-to-read">Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> Gonultas &amp; Isler 2024, Section II: Complete environment description, including dynamics, sensing, reward, and curriculum. This is the primary reference for every parameter in this module.</li>
+<li><strong>(REFERENCE)</strong> Bilgin &amp; Karimpanal (2024): Car-like PE with sensor constraints. Compare their 20×20 m arena and sensing model to G&amp;I's 16×16 m.</li>
+<li><strong>(REFERENCE)</strong> S54 worklog (PE design choices survey): Comprehensive survey of arena sizes, speed ratios, episode lengths, and sensing modes across 15+ PE-RL papers. Shows G&amp;I's choices are representative but not universal.</li>
+<li><strong>(OPTIONAL)</strong> PettingZoo Simple Tag documentation: A simpler multi-agent environment with collision-based capture. Useful for understanding how capture radius and arena size interact in discrete-action settings.</li>
+</ul>
+<hr />
+<h2 id="deep-dive-sessions">Deep Dive Sessions</h2>
+<ul>
+<li><strong>S54</strong> (PE design choices survey): Comprehensive survey of arena sizes, speed ratios, episode lengths, and sensing modes across 15+ papers. Essential for understanding why G&amp;I chose 16×16 m, 400 steps, and asymmetric sensing.</li>
+<li><strong>S59</strong> (variable speed + partial observability): The pivotal session where we introduced LOS-based partial observability and discovered that information asymmetry alone creates viable game dynamics.</li>
+<li><strong>S76–S81</strong> (FOV variants): Extensive experiments with FOV angles (90°, 120°, 180°) and ranges (6 m, 8 m). FOV 90°/8 m was the best config in our Phase 1–3 framework, but G&amp;I's 120°/6 m is well-calibrated for the 16×16 m arena.</li>
+<li><strong>S92</strong> (full G&amp;I implementation): The session where the environment was first implemented. Every parameter was cross-referenced against the paper.</li>
+<li><strong>S93</strong> (NaN diagnosis + five fixes): Critical fixes including wheelbase (0.15 → 0.30) and curriculum duration (6000 → 2000). Understanding these bugs is essential for appreciating how sensitive the environment is to parameter choices.</li>
+<li><strong>S94</strong> (vectorized environments): Implementation of 8 parallel envs with per-env frame stacking and belief managers. Essential for understanding training throughput.</li>
+<li><strong>S95</strong> (five critical fixes): Actor observation bug, BiMDN warm-up, BiMDN architecture, tournament evaluation, and seed-based checkpoints. The first fix (actor observation) was the most critical — it explained why all prior runs showed CR = 1.0.</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>M2_rl_foundations</title>
+<style>
+body { max-width: 800px; margin: 2em auto; padding: 0 1em; font-family: Georgia, serif; line-height: 1.6; color: #222; }
+h1 { border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+h2 { border-bottom: 1px solid #ccc; padding-bottom: 0.2em; margin-top: 1.5em; }
+h3 { margin-top: 1.2em; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+th { background: #f5f5f5; }
+code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+pre { background: #f4f4f4; padding: 1em; overflow-x: auto; border-radius: 4px; }
+blockquote { border-left: 4px solid #ddd; margin: 0; padding-left: 1em; color: #555; }
+</style>
+</head>
+<body>
+<h1 id="module-2-deep-rl-for-continuous-multi-agent-control">Module 2: Deep RL for Continuous Multi-Agent Control</h1>
+<p><strong>Estimated reading time:</strong> 4–5 hours<br />
+<strong>Prerequisites:</strong> Module 1 (Pursuit-Evasion as a Differential Game)<br />
+<strong>Goal:</strong> Understand the deep RL algorithms that power our pursuit-evasion experiments, why each was chosen, and why some failed catastrophically. This module bridges single-agent RL theory to the competitive multi-agent setting where the "environment" is another learning agent.</p>
+<hr />
+<h2 id="21-the-single-agent-rl-foundation">2.1 The Single-Agent RL Foundation</h2>
+<p>Before tackling two agents that learn simultaneously, we need the single-agent framework. An agent interacts with an environment modeled as a <strong>Markov Decision Process (MDP)</strong>:</p>
+<ul>
+<li>State space $\mathcal{S}$, action space $\mathcal{A}$</li>
+<li>Transition dynamics $P(s' \mid s, a)$</li>
+<li>Reward function $R(s, a)$</li>
+<li>Discount factor $\gamma \in [0, 1)$</li>
+</ul>
+<p>The agent's goal is to learn a <strong>policy</strong> $\pi(a \mid s)$ that maximizes the expected <strong>discounted return</strong>:</p>
+<p>$$J(\pi) = \mathbb{E}<em>{\tau \sim \pi} \left[ \sum</em>{t=0}^{T} \gamma^t r_t \right]$$</p>
+<p>where $\tau = (s_0, a_0, r_0, s_1, \dots)$ is a trajectory sampled by following $\pi$.</p>
+<h3 id="the-policy-gradient-theorem">The Policy Gradient Theorem</h3>
+<p><strong>Policy gradient methods</strong> directly optimize the policy parameters $\theta$ by estimating the gradient $\nabla_\theta J(\pi_\theta)$. The <strong>policy gradient theorem</strong> (Sutton et al., 2000) states:</p>
+<p>$$\nabla_\theta J(\pi_\theta) = \mathbb{E}<em>{s \sim \rho^\pi, a \sim \pi</em>\theta} \left[ \nabla_\theta \log \pi_\theta(a \mid s) \cdot Q^\pi(s, a) \right]$$</p>
+<p>where $\rho^\pi$ is the state visitation distribution under $\pi$ and $Q^\pi(s, a)$ is the action-value function. In practice, we replace $Q^\pi(s, a)$ with an <strong>advantage estimate</strong> $A(s, a) = Q(s, a) - V(s)$ to reduce variance.</p>
+<p><strong>Why this matters for PE:</strong> The policy gradient theorem assumes a stationary environment. In competitive self-play, the opponent's policy changes continuously, so the state visitation distribution $\rho^\pi$ is non-stationary. This is the root cause of oscillation and collapse.</p>
+<hr />
+<h2 id="22-actor-critic-architecture">2.2 Actor-Critic Architecture</h2>
+<p>Most modern deep RL algorithms for continuous control use the <strong>actor-critic</strong> architecture, which maintains two neural networks:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Network</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Actor</strong></td>
+<td>$\pi_\theta(s) \rightarrow a$</td>
+<td>Maps states to actions (the policy)</td>
+</tr>
+<tr>
+<td><strong>Critic</strong></td>
+<td>$Q_\phi(s, a) \rightarrow \mathbb{R}$</td>
+<td>Estimates the value of state-action pairs</td>
+</tr>
+</tbody>
+</table>
+<p>The actor is updated using the critic's estimates (policy gradient), while the critic is updated via temporal-difference (TD) learning to approximate the true $Q$-function. This separation is crucial: the critic provides a learning signal for the actor, while the actor generates the data distribution the critic learns from.</p>
+<h3 id="target-networks-and-soft-updates">Target Networks and Soft Updates</h3>
+<p>To stabilize training, the critic typically uses a <strong>target network</strong> — a slowly-updated copy of the main network. The target $Q$-values are computed using the target network, preventing the "moving target" problem where the critic chases its own tail. In our MADDPG implementation, target networks are updated via <strong>soft updates</strong>:</p>
+<p>$$\phi_{\text{target}} \leftarrow (1 - \tau) \cdot \phi_{\text{target}} + \tau \cdot \phi$$</p>
+<p>with $\tau = 0.005$ (in G&amp;I 2024). This is much slower than the main network's gradient updates, keeping the target stable.</p>
+<hr />
+<h2 id="23-ppo-stable-policy-optimization">2.3 PPO: Stable Policy Optimization</h2>
+<p><strong>Proximal Policy Optimization (PPO)</strong> (Schulman et al., 2017) is the workhorse of stable RL. It addresses the instability of vanilla policy gradients by constraining how far the policy can change in a single update.</p>
+<h3 id="the-clipped-surrogate-objective">The Clipped Surrogate Objective</h3>
+<p>PPO replaces the vanilla policy gradient with a <strong>clipped surrogate objective</strong> built in three stages:</p>
+<p><strong>Stage 1 — Probability ratio.</strong> Define the ratio of new to old policy probabilities:</p>
+<p>$$r_t(\theta) = \frac{\pi_\theta(a_t \mid s_t)}{\pi_{\theta_{\text{old}}}(a_t \mid s_t)}$$</p>
+<p>If $r_t &gt; 1$, the new policy is more likely to take action $a_t$; if $r_t &lt; 1$, it is less likely.</p>
+<p><strong>Stage 2 — The clip operator.</strong> PPO clips the ratio to a small interval around 1:</p>
+<p>$$\text{clip}\bigl(r_t(\theta), 1 - \epsilon, 1 + \epsilon\bigr)$$</p>
+<p>This forces the ratio to stay within $[1 - \epsilon, 1 + \epsilon]$, typically $\epsilon = 0.2$. Even if the advantage estimate is strongly positive, the clipped term cannot grow beyond $1 + \epsilon$.</p>
+<p><strong>Stage 3 — The full objective.</strong> PPO takes the minimum of the unclipped and clipped objectives, so the gradient only flows through the smaller (more conservative) term:</p>
+<p>$$L^{\text{CLIP}}(\theta) = \mathbb{E}_t \left[ \min\Bigl( r_t(\theta) \hat{A}_t,\; \text{clip}\bigl(r_t(\theta), 1 - \epsilon, 1 + \epsilon\bigr) \hat{A}_t \Bigr) \right]$$</p>
+<p><strong>Why PPO is stable:</strong> The clip acts as a trust region. Even if the advantage estimate is wrong, the policy cannot change too aggressively. This makes PPO robust to noisy gradients and hyperparameter choices.</p>
+<h3 id="the-kl-penalty-variant-232">The KL-Penalty Variant (2.3.2)</h3>
+<p>An alternative trust-region mechanism is an <strong>adaptive KL penalty</strong>. Instead of clipping, PPO can penalize the KL divergence between the old and new policies:</p>
+<p>$$L^{\text{KL}}(\theta) = \mathbb{E}<em>t \left[ r_t(\theta) \hat{A}_t - \beta \cdot \text{KL}\bigl(\pi</em>{\theta_{\text{old}}} \,|\, \pi_\theta\bigr) \right]$$</p>
+<p>The coefficient $\beta$ is adapted dynamically: if the KL divergence exceeds a target threshold, $\beta$ is increased; if it falls below, $\beta$ is decreased. This serves the same purpose as clipping — preventing overly large policy updates — but uses a soft penalty rather than a hard bound. Stable-Baselines3 uses the <strong>clipped objective by default</strong>; we never experimented with the KL variant.</p>
+<h3 id="generalized-advantage-estimation-gae">Generalized Advantage Estimation (GAE)</h3>
+<p>PPO uses <strong>GAE</strong> to compute advantage estimates with a bias-variance tradeoff controlled by $\lambda \in [0, 1]$:</p>
+<p>$$\hat{A}<em>t^{\text{GAE}(\lambda)} = \sum</em>{l=0}^{\infty} (\gamma \lambda)^l \delta_{t+l}$$</p>
+<p>where $\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$ is the TD residual. With $\lambda = 0$, GAE reduces to one-step TD (high bias, low variance). With $\lambda = 1$, it becomes Monte Carlo (unbiased but high variance). In practice, $\lambda = 0.95$ is common.</p>
+<h3 id="project-application-phase-13">Project Application: Phase 1–3</h3>
+<p>Our early work (S11–S84) used <strong>PPO from Stable-Baselines3 (sb3)</strong> for self-play in a 10×10m arena with obstacles. PPO was chosen for its stability and ease of use. However, we discovered a critical limitation:</p>
+<ul>
+<li>PPO is <strong>on-policy</strong>: it can only learn from data collected by the current policy.</li>
+<li>In competitive self-play, both agents change simultaneously, making on-policy data stale almost immediately.</li>
+<li><strong>RecurrentPPO (LSTM)</strong> was attempted (S68) but abandoned — LSTM memory does not solve the core non-stationarity problem.</li>
+</ul>
+<p><strong>Decision D1 (S66):</strong> Switched from PPO to <strong>SAC</strong> after SAC reached 30–40% capture rate at step counts where PPO stalled. RecurrentPPO conclusively failed at 0–2% across 6 variants.</p>
+<p><strong>Why SAC comes next.</strong> PPO's stability comes at a cost: it is <strong>on-policy</strong>, which is fatal when the opponent changes every episode. The data PPO collected under yesterday's opponent is already stale today. Off-policy algorithms can reuse old experience, making them better suited to competitive self-play.</p>
+<hr />
+<h2 id="24-sac-maximum-entropy-rl">2.4 SAC: Maximum Entropy RL</h2>
+<p><strong>Soft Actor-Critic (SAC)</strong> (Haarnoja et al., 2018) is an off-policy actor-critic algorithm that maximizes both expected return and policy entropy:</p>
+<p>$$J(\pi) = \mathbb{E}<em>{\tau \sim \pi} \left[ \sum</em>{t=0}^{T} \gamma^t \left( r_t + \alpha \mathcal{H}(\pi(\cdot \mid s_t)) \right) \right]$$</p>
+<p>The <strong>entropy bonus</strong> $\alpha \mathcal{H}(\pi)$ encourages exploration by rewarding stochastic policies. SAC uses a <strong>twin-critic</strong> architecture (two $Q$-networks) to combat overestimation bias, taking the minimum $Q$-value for target computation.</p>
+<h3 id="automatic-temperature-tuning">Automatic Temperature Tuning</h3>
+<p>In the original SAC formulation, the entropy coefficient $\alpha$ is not fixed but learned via <strong>dual gradient descent</strong> to maintain a target entropy $\bar{\mathcal{H}}$:</p>
+<p>$$\min_{\alpha} \; \mathbb{E}_{a \sim \pi} \left[ -\alpha \log \pi(a \mid s) - \alpha \bar{\mathcal{H}} \right]$$</p>
+<p>The gradient $\partial L / \partial \alpha = -\mathbb{E}[\log \pi(a \mid s)] - \bar{\mathcal{H}}$ pushes $\alpha$ up when the policy is too deterministic and down when it is too stochastic. This auto-tuning removes the need to hand-tune $\alpha$.</p>
+<p><strong>Why we disabled it:</strong> Auto-tuning caused collapse in our experiments (SP11c dropped from 24% to 6% capture rate). We fixed $\alpha$ (ent_coef = 0.03) instead. See <strong>Decision D2 (S67)</strong>.</p>
+<h3 id="why-sac-over-ppo-for-self-play">Why SAC Over PPO for Self-Play?</h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>PPO</th>
+<th>SAC</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>On/off-policy</td>
+<td>On-policy</td>
+<td>Off-policy</td>
+</tr>
+<tr>
+<td>Sample efficiency</td>
+<td>Lower</td>
+<td>Higher</td>
+</tr>
+<tr>
+<td>Exploration</td>
+<td>Noise injection</td>
+<td>Entropy maximization</td>
+</tr>
+<tr>
+<td>Replay buffer</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Continuous actions</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Off-policy learning is essential for self-play.</strong> SAC's replay buffer stores transitions from past policies, so even when the opponent changes, the buffer contains diverse experience. This partially mitigates non-stationarity.</p>
+<h3 id="sac-in-our-early-work">SAC in Our Early Work</h3>
+<p>In Phase 1–3 (S66), SAC outperformed PPO for competitive self-play. However, SAC alone was insufficient to prevent collapse. The entropy coefficient $\alpha$ (or <code>ent_coef</code>) became a critical hyperparameter:</p>
+<ul>
+<li><strong>Decision D2 (S67):</strong> <code>ent_coef = 0.03</code> fixed, never auto-tuned. Auto entropy caused collapse (SP11c dropped from 24% to 6%).</li>
+<li><strong>Decision D3 (S59):</strong> <code>ent_coef = 0.03</code> for variable-speed evader. <code>0.01</code> stalled at 12% escape; <code>0.03</code> exploded to 98%.</li>
+</ul>
+<p>The lesson: exploration is critical, but too much or too little entropy destroys learning dynamics.</p>
+<h3 id="why-we-abandoned-sac-for-maddpg">Why We Abandoned SAC for MADDPG</h3>
+<p>SAC was our best single-agent algorithm for self-play, but the Gonultas &amp; Isler 2024 reproduction required <strong>MADDPG</strong> — the paper's stated algorithm. Once we switched to the G&amp;I codebase, all subsequent experiments (EMA, Pop-FSP, belief-state extensions) were built on that MADDPG foundation. SAC was never tested in the G&amp;I environment. This transition is recorded in <strong>Decision D4 (S92)</strong>.</p>
+<hr />
+<h2 id="25-maddpg-multi-agent-deep-deterministic-policy-gradient">2.5 MADDPG: Multi-Agent Deep Deterministic Policy Gradient</h2>
+<p><strong>MADDPG</strong> (Lowe et al., 2017) is the algorithm at the heart of our G&amp;I 2024 reproduction and all subsequent experiments (EMA, Pop-FSP). It extends DDPG (Lillicrap et al., 2015) to multi-agent settings with a key insight: <strong>centralized training with decentralized execution (CTDE)</strong>.</p>
+<h3 id="centralized-training-with-decentralized-execution">Centralized Training with Decentralized Execution</h3>
+<p>In MADDPG, each agent $i$ has:<br />
+- A <strong>decentralized actor</strong> $\pi_{\theta_i}(o_i)$ that observes only its own observation $o_i$<br />
+- A <strong>centralized critic</strong> $Q_{\phi_i}(o_1, \dots, o_N, a_1, \dots, a_N)$ that sees all observations and actions during training</p>
+<p>During <strong>training</strong>, the critic has full state information (all observations, all actions), enabling accurate $Q$-value estimation. During <strong>execution</strong>, each agent uses only its actor and its own observation — no central coordinator needed.</p>
+<h3 id="why-centralized-critic-but-decentralized-actor">Why Centralized Critic but Decentralized Actor?</h3>
+<p>Consider two agents learning simultaneously. If each agent's critic only saw its own observation, it would face the <strong>non-stationarity problem</strong>: the opponent's policy changes, so the transition dynamics $P(s' \mid s, a)$ appear non-stationary from any single agent's perspective. The centralized critic sidesteps this by conditioning on all agents' policies explicitly:</p>
+<p>$$\nabla_{\theta_i} J(\theta_i) = \mathbb{E}<em>{\mathbf{o}, \mathbf{a} \sim \mathcal{D}} \Bigl[ \underbrace{\nabla</em>{\theta_i} \pi_i(o_i)}<em>{\text{actor gradient}} \cdot \underbrace{\nabla</em>{a_i} Q_i^{\pi}(\mathbf{o}, \mathbf{a})}<em>{\text{critic gradient}} \Big|</em>{a_i = \pi_i(o_i)} \Bigr]$$</p>
+<p>where $\mathbf{o} = (o_1, \dots, o_N)$ and $\mathbf{a} = (a_1, \dots, a_N)$. The outer gradient $\nabla_{\theta_i} \pi_i(o_i)$ is the policy gradient (how the actor's parameters affect its actions). The inner gradient $\nabla_{a_i} Q_i$ tells the actor which direction to move its action to increase the $Q$-value. The evaluation bar $\big|_{a_i = \pi_i(o_i)}$ means the critic gradient is computed at the action the actor currently outputs.</p>
+<p><strong>Why this works despite non-stationarity:</strong> The critic is <em>centralized</em> — it sees all observations and all actions — so it can learn $Q_i(\mathbf{o}, \mathbf{a})$ directly without needing to model the opponent's policy as part of the environment dynamics. The actor remains <em>decentralized</em>, using only its own observation at execution time.</p>
+<h3 id="experience-replay-for-multi-agent">Experience Replay for Multi-Agent</h3>
+<p>MADDPG uses a <strong>shared replay buffer</strong> $\mathcal{D}$ that stores transitions $(o_i, a_i, r_i, o_i')$ for all agents. Because the critic is centralized, it can learn from off-policy data even when the opponent has changed. This is why MADDPG works for competitive self-play where PPO struggles.</p>
+<p><strong>Critical implementation detail:</strong> In our code (<code>agents/maddpg.py</code>), the critic takes concatenated observations and actions: <code>obs_all = torch.cat([obs_p, obs_e], dim=-1)</code> and <code>actions_all = torch.cat([actions_p, actions_e], dim=-1)</code>. The critic outputs a single scalar $Q$-value for the joint state-action pair.</p>
+<hr />
+<h2 id="26-twin-critics-and-overestimation-bias">2.6 Twin Critics and Overestimation Bias</h2>
+<p>A subtle but devastating issue in actor-critic methods is <strong>overestimation bias</strong>. When the actor uses the same critic it is training to select actions, it naturally gravitates toward actions where the critic overestimates the $Q$-value. This creates a positive feedback loop:</p>
+<ol>
+<li>Critic overestimates action $a$</li>
+<li>Actor selects $a$ more often</li>
+<li>Critic trains more on $a$, reinforcing the overestimate</li>
+<li>$Q$-values explode → NaN</li>
+</ol>
+<h3 id="the-fix-twin-critics">The Fix: Twin Critics</h3>
+<p>Following <strong>Ackermann et al. (2019)</strong> — cited by G&amp;I 2024 — we implemented <strong>twin (double) critics</strong>:</p>
+<ul>
+<li>Two independent critic networks: $Q_1$ and $Q_2$</li>
+<li>Target $Q$-value: $y = r + \gamma \cdot \min(Q_{1,\text{target}}, Q_{2,\text{target}})$</li>
+<li>Actor loss: $-\min(Q_1(s, \pi(s)), Q_2(s, \pi(s)))$</li>
+</ul>
+<p>Taking the minimum of two independent estimates is a conservative bias correction. If one critic overestimates, the other likely does not, and the minimum prevents the actor from exploiting overestimation.</p>
+<h3 id="additional-stability-fixes-s93">Additional Stability Fixes (S93)</h3>
+<p>Beyond twin critics, we applied several numerical-stability measures:</p>
+<ol>
+<li><strong>Gradient clipping</strong> (<code>max_norm=1.0</code>) to prevent exploding gradients</li>
+<li><strong>Q-clipping</strong> (<code>Q_MIN = -1500.0</code>, <code>Q_MAX = 1500.0</code>) to bound target $Q$-values and prevent the actor loss from exploding</li>
+<li><strong>Disable AMP for BiMDN</strong> — Automatic Mixed Precision (fp16) caused NaN cascades when combined with BiMDN's unbounded scale outputs; vanilla MADDPG tolerates AMP</li>
+</ol>
+<p>These fixes are discussed in detail in the NaN story below.</p>
+<h3 id="the-nan-story-s92s94">The NaN Story (S92–S94)</h3>
+<p>Our G&amp;I reproduction initially used a <strong>single critic</strong> and hit catastrophic NaN losses:</p>
+<table>
+<thead>
+<tr>
+<th>Episode</th>
+<th>Evader Critic Loss</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>15790</td>
+<td>1,956,107,958,353,920 (1.9 quadrillion)</td>
+</tr>
+<tr>
+<td>15798</td>
+<td>2,205,154,589,802,496</td>
+</tr>
+<tr>
+<td>15802</td>
+<td><strong>NaN</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Root cause:</strong> Single-critic MADDPG overestimation bias → positive feedback loop in target $Q$ update.</p>
+<p><strong>Fix (S93):</strong> Implemented twin critics per Ackermann et al. (2019). Result: 20K episodes completed with <strong>zero NaNs</strong>. Max critic loss bounded at 25,819.</p>
+<p><strong>Additional fix (S93):</strong> The actor must also use $\min(Q_1, Q_2)$, not just $Q_1$:</p>
+<pre><code class="language-python"># OLD — actor exploits critic1 overestimation
+actor_loss = -q1_actor.mean()
+
+# NEW — conservative actor update
+actor_loss = -torch.min(q1_actor, q2_actor).mean()
+</code></pre>
+<p>This was a subtle bug discovered in S93: even though target computation used <code>min(target_q1, target_q2)</code>, the actor gradient still exploited whichever critic happened to overestimate more.</p>
+<hr />
+<h2 id="27-ema-opponent-stabilization">2.7 EMA Opponent Stabilization</h2>
+<blockquote>
+<p><strong>Moved to Module 9.</strong> EMA opponent stabilization is covered in depth there, including the half-life derivation, the full sweep across $\tau \in {0.0001, 0.0005, 0.001, 0.005, 0.01}$, and the seed-dependence results (1/5 balanced with LR = 0.0005). See <strong>M9 §9.2</strong>.</p>
+</blockquote>
+<p>Briefly: EMA replaces the rapidly-changing current opponent with a slowly-evolving exponential moving average copy. With $\tau_{\text{EMA}} = 0.001$, the opponent policy changes by roughly 18% per episode — slow enough to dampen oscillations, fast enough to track genuine improvement. It was seed-dependent: only 1 of 5 seeds achieved balanced play.</p>
+<hr />
+<h2 id="28-pop-fsp-population-based-fictitious-self-play">2.8 Pop-FSP: Population-Based Fictitious Self-Play</h2>
+<blockquote>
+<p><strong>Moved to Module 10.</strong> The full Pop-FSP training loop, the ∀/∃ structural asymmetry finding, and the v3–v7 configuration sweep (0/5 balanced) are covered in <strong>M10 §10.3</strong>.</p>
+</blockquote>
+<p>Briefly: Pop-FSP maintains a population of past policies and samples opponents uniformly. Our experiments (v3–v7, 5 configs tested) revealed a fundamental ∀/∃ asymmetry: the pursuer only needs to catch <em>some</em> evader ($\exists$), while the evader must escape <em>all</em> pursuers ($\forall$). In a symmetric game this structurally favors the pursuer.</p>
+<hr />
+<h2 id="29-when-to-use-which-algorithm">2.9 When to Use Which Algorithm</h2>
+<table>
+<thead>
+<tr>
+<th>Algorithm</th>
+<th>Best For</th>
+<th>Our Experience</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>PPO</strong></td>
+<td>Stable single-agent, discrete action spaces</td>
+<td>Phase 1–3; failed in competitive self-play due to on-policy limitation</td>
+</tr>
+<tr>
+<td><strong>SAC</strong></td>
+<td>Sample-efficient continuous control, single-agent</td>
+<td>Better than PPO for self-play, but still collapsed</td>
+</tr>
+<tr>
+<td><strong>MADDPG</strong></td>
+<td>Competitive multi-agent with continuous actions</td>
+<td>G&amp;I reproduction; works but oscillates without stabilization</td>
+</tr>
+<tr>
+<td><strong>MADDPG + EMA</strong></td>
+<td>Competitive multi-agent with oscillation damping</td>
+<td>Seed-dependent (1/5 success with LR=0.0005); promising but not reliable. See M9.</td>
+</tr>
+<tr>
+<td><strong>MADDPG + Pop-FSP</strong></td>
+<td>Game-theoretic training with population diversity</td>
+<td>Eliminated oscillation but caused pursuer-dominant collapse due to ∀/∃ asymmetry. See M10.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="historical-context-what-was-tried-what-failed">Historical Context: What Was Tried, What Failed</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Sessions</th>
+<th>Result</th>
+<th>Root Cause</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PPO (sb3)</td>
+<td>S11–S66</td>
+<td>Stalled at low capture rates</td>
+<td>On-policy, cannot handle non-stationary opponent</td>
+</tr>
+<tr>
+<td>RecurrentPPO (LSTM)</td>
+<td>S68</td>
+<td>Never launched successfully</td>
+<td>LSTM memory does not solve core non-stationarity</td>
+</tr>
+<tr>
+<td>SAC</td>
+<td>S66</td>
+<td>30–40% capture, then collapse</td>
+<td>Better than PPO but insufficient alone</td>
+</tr>
+<tr>
+<td>MADDPG (vanilla)</td>
+<td>S92–S96</td>
+<td>CR=0.550 matches paper, then oscillates</td>
+<td>Intrinsic to competitive dynamics</td>
+</tr>
+<tr>
+<td>MADDPG + EMA</td>
+<td>S97–S99, S104</td>
+<td>1/5 seeds balanced (LR=0.0005)</td>
+<td>Seed-dependent; LR and initialization matter</td>
+</tr>
+<tr>
+<td>MADDPG + Pop-FSP</td>
+<td>S100–S103</td>
+<td>0/5 configs balanced (v3–v7)</td>
+<td>∀/∃ structural asymmetry</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<hr />
+<h2 id="210-summary">2.10 Summary</h2>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>Meaning for PE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Policy gradient theorem</td>
+<td>Foundation for actor-critic; fails in competitive settings due to non-stationarity</td>
+</tr>
+<tr>
+<td>Actor-critic</td>
+<td>Actor maps obs→actions; critic estimates Q-values; separation enables stable learning</td>
+</tr>
+<tr>
+<td>PPO</td>
+<td>Clipped surrogate objective; stable but on-policy — ill-suited for competitive self-play</td>
+</tr>
+<tr>
+<td>SAC</td>
+<td>Off-policy, maximum entropy; better sample efficiency but still collapses</td>
+</tr>
+<tr>
+<td>MADDPG</td>
+<td>Centralized critic + decentralized actors; CTDE sidesteps non-stationarity in critic</td>
+</tr>
+<tr>
+<td>Twin critics</td>
+<td>$\min(Q_1, Q_2)$ prevents overestimation bias; essential for stable MADDPG</td>
+</tr>
+<tr>
+<td>EMA opponent</td>
+<td>See M9 §9.2 — low-pass filter on opponent policy; dampens oscillation but seed-dependent</td>
+</tr>
+<tr>
+<td>Pop-FSP</td>
+<td>See M10 §10.3 — population diversity prevents overfitting; ∀/∃ asymmetry causes systematic collapse</td>
+</tr>
+<tr>
+<td>AMP/fp16</td>
+<td>See M6 §6.4 — ~1.4× speedup but triggers NaN cascade with BiMDN; disable for belief networks</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="self-check">Self-Check</h2>
+<ol>
+<li>
+<p><strong>Why does MADDPG use a centralized critic but decentralized actors?</strong> What problem does this solve, and what limitation does it not address?</p>
+</li>
+<li>
+<p><strong>When would you choose PPO over SAC for a competitive game, and why did we ultimately use neither for our G&amp;I reproduction?</strong> Consider sample efficiency, on-policy vs. off-policy, and the specific requirements of reproducing a published paper.</p>
+</li>
+<li>
+<p><strong>Why did twin critics fix the NaN problem in our G&amp;I reproduction?</strong> Explain the positive feedback loop of overestimation bias and how $\min(Q_1, Q_2)$ breaks it.</p>
+</li>
+</ol>
+<hr />
+<h2 id="papers-to-read">Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> Lowe et al. (2017). "Multi-Agent Actor-Critic for Mixed Cooperative-Competitive Environments." (MADDPG — the algorithm at the core of all our experiments.)</li>
+<li><strong>(ESSENTIAL)</strong> Ackermann et al. (2019). "Reducing Overestimation Bias in Multi-Agent Domains Using Double Centralized Critics." (Twin critics — cited by G&amp;I 2024, implemented in S93.)</li>
+<li><strong>(REFERENCE)</strong> Schulman et al. (2017). "Proximal Policy Optimization Algorithms." (PPO — understand clipped surrogate objective and why it's stable.)</li>
+<li><strong>(REFERENCE)</strong> Haarnoja et al. (2018). "Soft Actor-Critic: Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor." (SAC — maximum entropy, twin critics, automatic temperature tuning.)</li>
+<li><strong>(REFERENCE)</strong> Heinrich &amp; Silver (2016). "Deep Reinforcement Learning from Self-Play in Imperfect-Information Games." (FSP — the theoretical basis for Pop-FSP.)</li>
+<li><strong>(OPTIONAL)</strong> Lillicrap et al. (2015). "Continuous Control with Deep Reinforcement Learning." (DDPG — the precursor to MADDPG.)</li>
+</ul>
+<hr />
+<h2 id="deep-dive-sessions">Deep Dive Sessions</h2>
+<ul>
+<li><strong>S13</strong> (PPO training specifics, Phase 1): Detailed hyperparameter sweeps and environment configurations for early PPO self-play. See worklog for the full parameter grid.</li>
+<li><strong>S41</strong> (AMS-DRL survey): Review of multi-agent deep RL methods that informed our algorithm selection before committing to MADDPG.</li>
+<li><strong>S66</strong> (SAC vs PPO decision): The pivotal session where we switched from PPO to SAC after conclusive evidence that PPO stalls in competitive settings.</li>
+<li><strong>S68</strong> (RecurrentPPO): LSTM policy implementation that was completed but never successfully launched — a cautionary tale about adding complexity without diagnosing the root cause. Six variants tested; all stalled at 0–2% capture rate.</li>
+<li><strong>S92–S94</strong> (G&amp;I reproduction + NaN debugging): The complete story of implementing MADDPG, diagnosing NaN root causes, and fixing them with twin critics. Essential reading for understanding numerical stability in competitive RL.</li>
+<li><strong>S97</strong> (EMA design): Mathematical analysis of EMA half-life, implementation decisions, and the critical fixes that made EMA evaluation possible. See M9 for full results.</li>
+<li><strong>S100–S103</strong> (Pop-FSP and ∀/∃ asymmetry): The full arc from Pop-FSP implementation through v3–v7 configuration sweeps to the structural asymmetry finding. See M10 for full analysis.</li>
+</ul>
+</body>
+</html>

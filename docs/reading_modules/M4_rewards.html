@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>M4_rewards</title>
+<style>
+body { max-width: 800px; margin: 2em auto; padding: 0 1em; font-family: Georgia, serif; line-height: 1.6; color: #222; }
+h1 { border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+h2 { border-bottom: 1px solid #ccc; padding-bottom: 0.2em; margin-top: 1.5em; }
+h3 { margin-top: 1.2em; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+th { background: #f5f5f5; }
+code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+pre { background: #f4f4f4; padding: 1em; overflow-x: auto; border-radius: 4px; }
+blockquote { border-left: 4px solid #ddd; margin: 0; padding-left: 1em; color: #555; }
+.insight { background: #e8f5e9; border-left: 4px solid #4caf50; padding: 1em; margin: 1em 0; }
+.warning { background: #fff3e0; border-left: 4px solid #ff9800; padding: 1em; margin: 1em 0; }
+</style>
+</head>
+<body>
+<h1 id="module-4-reward-engineering">Module 4: Reward Engineering</h1>
+<p><strong>Estimated reading time:</strong> 3–4 hours<br />
+<strong>Prerequisites:</strong> Module 2 (Deep RL for Continuous Multi-Agent Control), Module 3 (Environment Design)<br />
+<strong>Goal:</strong> Understand why reward design is the most tempting and most deceptive lever in competitive self-play. We tried seven distinct reward modifications — terminal scaling, PBRS, collision penalties, survival bonuses, visibility rewards, search staleness, and exploration incentives — and none prevented collapse. This module explains why, and what that tells us about the true nature of the problem.</p>
+<hr />
+<h2 id="41-the-reward-hypothesis">4.1 The Reward Hypothesis</h2>
+<p>At the foundation of reinforcement learning lies the <strong>reward hypothesis</strong>: any goal can be formulated as the maximization of expected cumulative reward. Formally, an agent's objective is:</p>
+<p>$$J(\pi) = \mathbb{E}_{\tau \sim \pi} \left[ \sum_{t=0}^{T} \gamma^t r_t \right]$$</p>
+<p>where \(r_t = R(s_t, a_t, s_{t+1})\) is the scalar reward signal. The hypothesis claims that if we design \(R\) correctly, the agent will learn the behavior we want.</p>
+<p><strong>In competitive self-play, this hypothesis breaks down in a subtle way.</strong> The reward function is not merely a signal to the learner — it is also a signal <em>about</em> the opponent. When the opponent changes its policy, the reward distribution changes, and the agent's learned value function becomes obsolete. This <strong>non-stationarity</strong> means that even a perfectly designed reward cannot guarantee convergence if the learning dynamics are structurally unstable.</p>
+<div class="insight"><strong>Insight:</strong> Reward engineering can shape <em>what</em> an agent learns against a fixed opponent, but it cannot fix <em>how</em> two learning agents interact. The collapse modes we observed (CR → 0 and CR → 1) are dynamical phenomena, not reward-design failures.</div>
+<hr />
+<h2 id="42-the-gi-base-reward-structure">4.2 The G&amp;I Base Reward Structure</h2>
+<p>The Gonultas &amp; Isler 2024 environment uses a <strong>zero-sum dense reward</strong> with three components:</p>
+<p>$$r_p = \lambda_{\text{capture}} \cdot \mathbb{1}[\text{capture}] - \lambda_{\text{time}} - \lambda_{\text{distance}} \cdot d$$</p>
+<p>$$r_e = -r_p$$</p>
+<p>with parameters (from <code>config.yaml</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>\(\lambda_{\text{capture}}\)</td>
+<td>1000</td>
+<td>Terminal bonus for capture (pursuer) or escape (evader)</td>
+</tr>
+<tr>
+<td>\(\lambda_{\text{time}}\)</td>
+<td>1</td>
+<td>Per-step time penalty (discourages stalling)</td>
+</tr>
+<tr>
+<td>\(\lambda_{\text{distance}}\)</td>
+<td>1</td>
+<td>Per-step distance penalty (pursuer wants to minimize \(d\))</td>
+</tr>
+</tbody>
+</table>
+<h3 id="terminal-rewards">Terminal Rewards</h3>
+<p>At episode termination, one of three outcomes occurs:</p>
+<table>
+<thead>
+<tr>
+<th>Outcome</th>
+<th>Pursuer Reward</th>
+<th>Evader Reward</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Capture (\(d \leq 2c = 0.30\) m)</td>
+<td>+1000</td>
+<td>−1000</td>
+</tr>
+<tr>
+<td>Timeout (400 steps, no capture)</td>
+<td>−1000</td>
+<td>+1000</td>
+</tr>
+<tr>
+<td>Escape (evader reaches boundary — not in G&amp;I)</td>
+<td>−1000</td>
+<td>+1000</td>
+</tr>
+</tbody>
+</table>
+<p>The terminal reward magnitude (±1000) was chosen to dominate the per-step penalties over a full episode. With maximum distance \(d_{\max} = 16\sqrt{2} \approx 22.6\) m, the worst-case per-step penalty is −23.6 (time + distance). Over 400 steps, cumulative dense penalty is at most −9440. The terminal ±1000 is roughly 10% of total episode magnitude — early training is dominated by dense penalties, late training by terminal rewards.</p>
+<h3 id="why-zero-sum">Why Zero-Sum?</h3>
+<p>A <strong>zero-sum game</strong> satisfies \(r_p + r_e = 0\) at every step. This is not merely a convenience — it is a game-theoretic statement that the players have exactly opposed interests. In a general-sum game, cooperative equilibria can emerge (both agents benefit from coordination). In zero-sum PE, coordination is impossible: the pursuer's gain is exactly the evader's loss.</p>
+<p><strong>Mathematical implication:</strong> In a zero-sum game, the Nash equilibrium value is unique (von Neumann's minimax theorem). If both agents converge to optimal play, the capture rate should settle at a specific value — for the G&amp;I environment, this is approximately 0.55 (55% capture, 45% escape). Any deviation from this value indicates suboptimal play by at least one agent.</p>
+<div class="warning"><strong>Warning:</strong> Zero-sum rewards do not guarantee zero-sum <em>learning dynamics</em>. Even with perfectly opposed rewards, one agent can learn faster than the other, creating temporary dominance that collapses the opponent's learning signal. This is the core mechanism of self-play collapse.</div>
+<hr />
+<h2 id="43-what-we-tried-terminal-reward-scaling">4.3 What We Tried: Terminal Reward Scaling</h2>
+<p>Our earliest experiments (Phase 1–3, S48) used smaller terminal rewards: ±50 instead of ±1000. The hypothesis was that smaller terminal signals would reduce the "winner-take-all" dynamic and give the losing agent more gradient to recover.</p>
+<h3 id="the-math">The Math</h3>
+<p>Consider the <strong>advantage</strong> of capture versus timeout from the pursuer's perspective:</p>
+<p>$$A_{\text{capture}} = \lambda_{\text{capture}} - (-\lambda_{\text{capture}}) = 2\lambda_{\text{capture}}$$</p>
+<p>With \(\lambda_{\text{capture}} = 50\): \(A_{\text{capture}} = 100\)<br />
+With \(\lambda_{\text{capture}} = 1000\): \(A_{\text{capture}} = 2000\)</p>
+<p>The advantage scales linearly with \(\lambda_{\text{capture}}\). A larger advantage means:</p>
+<ul>
+<li><strong>Pros:</strong> Stronger learning signal for the winning agent; clearer distinction between good and bad outcomes</li>
+<li><strong>Cons:</strong> The losing agent receives a larger negative signal, which can overwhelm its gradient and cause collapse</li>
+</ul>
+<h3 id="results">Results</h3>
+<table>
+<thead>
+<tr>
+<th>\(\lambda_{\text{capture}}\)</th>
+<th>Sessions</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>±50</td>
+<td>S48</td>
+<td>Insufficient signal; agents ignored capture</td>
+</tr>
+<tr>
+<td>±1000</td>
+<td>S92–S96</td>
+<td>Strong signal; capture clearly prioritized</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Key finding:</strong> ±50 was too small — the terminal signal was drowned out by per-step penalties, and agents learned to optimize distance rather than capture. ±1000 provided a clear capture/escape signal. However, neither value prevented collapse. The issue was not the magnitude of the terminal reward but the <strong>asymmetric learning dynamics</strong> that followed any temporary advantage.</p>
+<hr />
+<h2 id="44-what-we-tried-potential-based-reward-shaping-pbrs">4.4 What We Tried: Potential-Based Reward Shaping (PBRS)</h2>
+<p><strong>Potential-Based Reward Shaping (PBRS)</strong> is a principled method for adding auxiliary rewards without changing the optimal policy. Introduced by Ng, Harada &amp; Russell (ICML 1999), PBRS guarantees policy invariance under certain conditions — a rare property in reward engineering.</p>
+<h3 id="the-theory">The Theory</h3>
+<p>Given a potential function \(\Phi: \mathcal{S} \to \mathbb{R}\), the shaped reward is:</p>
+<p>$$F(s, a, s') = \gamma \Phi(s') - \Phi(s)$$</p>
+<p><strong>Theorem (Ng et al., 1999):</strong> For any MDP, adding \(F(s, a, s')\) to the reward preserves the optimal policy. That is, if \(\pi^*\) is optimal for the original reward \(R\), it is also optimal for \(R + F\).</p>
+<p><strong>Extension to multi-agent (Devlin &amp; Kudenko, AAMAS 2012):</strong> PBRS preserves Nash equilibria in multi-agent settings <em>if the potential function is independent of other agents' policies</em>. In competitive self-play, this condition is violated — the opponent's policy affects the state transition, so \(\Phi(s')\) depends on the opponent.</p>
+<h3 id="our-implementation-obstacle-approach-shaping">Our Implementation: Obstacle-Approach Shaping</h3>
+<p>In S44–S45, we implemented PBRS with \(\Phi(s) = -d_{\text{nearest obstacle}}\), giving the evader a reward for approaching obstacles:</p>
+<p>$$r_{\text{PBRS}} = w_{\text{obs}} \cdot \frac{d_{\text{prev}} - d_{\text{curr}}}{d_{\max}}$$</p>
+<p>The intuition: obstacles provide cover for the evader. By rewarding approach to obstacles, we hoped the evader would learn to use them strategically.</p>
+<h3 id="why-it-failed">Why It Failed</h3>
+<p>Run P (S45) was launched with \(w_{\text{obs}} = 10.0\) plus visibility reward, survival bonus, and prep phase. The result: <strong>Level 3+ collapse persisted</strong>. The curriculum raced through L1→L6 in 5 phases, the evader never trained at L3, and the pursuer reached 97% capture rate.</p>
+<p><strong>Root cause:</strong> PBRS shapes behavior <em>against a fixed opponent</em>, but in self-play the opponent is learning. The evader's obstacle-approach gradient was computed against a pursuer that was itself improving. By the time the evader learned to use obstacles, the pursuer had already adapted to counter that strategy. PBRS cannot keep pace with a co-evolving opponent.</p>
+<div class="insight"><strong>Insight:</strong> PBRS preserves policy invariance only when the transition dynamics are stationary. In self-play, the opponent's policy changes continuously, violating this assumption. The "policy invariance" guarantee does not apply.</div>
+<hr />
+<h2 id="45-what-we-tried-collision-and-wall-penalties">4.5 What We Tried: Collision and Wall Penalties</h2>
+<p>In S50–S51, we added physical collision enforcement and reward penalties for obstacle and wall contact. The hypothesis: agents were hugging walls and passing through obstacles, and penalties would discourage these degenerate behaviors.</p>
+<h3 id="implementation">Implementation</h3>
+<p>Two penalty terms were added:</p>
+<ul>
+<li><strong>Obstacle collision penalty:</strong> \(r_{\text{collision}} = -w_{\text{collision}}\) when the agent intersects an obstacle</li>
+<li><strong>Wall collision penalty:</strong> \(r_{\text{wall}} = -w_{\text{wall}}\) when the agent contacts the arena boundary</li>
+</ul>
+<p>Both are <strong>per-agent penalties</strong> (not zero-sum) — they represent a shaping signal rather than part of the game reward. Default values: \(w_{\text{collision}} = w_{\text{wall}} = 0.0\) for backward compatibility.</p>
+<h3 id="literature-calibration">Literature Calibration</h3>
+<p>In S51, we surveyed 20+ papers on collision penalty design. Key findings:</p>
+<table>
+<thead>
+<tr>
+<th>Paradigm</th>
+<th>Penalty Range</th>
+<th>Typical Relative to Goal Reward</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Reward-only</td>
+<td>−0.25 to −50</td>
+<td>0.5×–5× goal reward</td>
+</tr>
+<tr>
+<td>CBF-only</td>
+<td>0 (no penalty)</td>
+<td>Filter enforces safety</td>
+</tr>
+<tr>
+<td>Dual (CBF + reward)</td>
+<td>−0.5 to −5.0</td>
+<td>Smaller penalties suffice</td>
+</tr>
+</tbody>
+</table>
+<p>We chose \(w_{\text{wall}} = w_{\text{collision}} = 0.5\) — approximately 14× the per-step distance reward, but only 0.05% of the terminal capture bonus. Penalties larger than 5.0 risk "freezing" behavior, where agents refuse to move to avoid any collision risk.</p>
+<h3 id="results-1">Results</h3>
+<p>Run U (S51) with \(w_{\text{wall}} = w_{\text{collision}} = 0.5\) completed 30 phases and <strong>collapsed at L2</strong>. The pattern was identical to Runs R, S, and T (no penalties): pursuer spike at S7, evader recovery at S10, then permanent collapse from S11 onward.</p>
+<p><strong>Conclusion:</strong> Collision penalties did not prevent collapse. The evader's failure at curriculum transitions was not caused by collision behavior — it was a <strong>fundamental learning failure</strong> when facing a pursuer trained at a higher curriculum level. See S51's 8 internal root causes and 9 recommended fixes for the full diagnosis.</p>
+<hr />
+<h2 id="46-what-we-tried-survival-bonus">4.6 What We Tried: Survival Bonus</h2>
+<p>A <strong>survival bonus</strong> gives the evader a small positive reward for each step it remains uncaptured. The hypothesis: the evader's learning signal is too sparse (it only gets positive reward on timeout/escape), and a survival bonus would provide dense positive gradient.</p>
+<h3 id="the-math-1">The Math</h3>
+<p>With survival bonus \(w_{\text{surv}}\) per step, the evader's reward becomes:</p>
+<p>$$r_e = \lambda_{\text{capture}} \cdot \mathbb{1}[\text{timeout}] - \lambda_{\text{time}} + \lambda_{\text{distance}} \cdot d + w_{\text{surv}}$$</p>
+<p>The survival bonus is always positive, so the evader receives some reward even when captured. This reduces the variance of the evader's return estimate.</p>
+<h3 id="why-it-failed-1">Why It Failed</h3>
+<p>Survival bonuses were tested in multiple runs (S45, S50–S51). In all cases, the bonus was either:</p>
+<ul>
+<li><strong>Too small:</strong> Drowned out by the −1000 terminal penalty on capture; the evader still collapsed</li>
+<li><strong>Too large:</strong> The evader learned to stall — running in circles near the boundary to accumulate survival reward without attempting meaningful escape</li>
+</ul>
+<p>The fundamental issue: a survival bonus changes the <strong>game being played</strong>. If surviving is rewarded independently of capture, the evader's optimal strategy is not "escape optimally" but "survive as long as possible." This is not the same game, and policies trained with large survival bonuses do not transfer to the true zero-sum objective.</p>
+<hr />
+<h2 id="47-what-we-tried-visibility-reward">4.7 What We Tried: Visibility Reward</h2>
+<p>The <strong>visibility reward</strong> was the single most successful reward modification we tested — and the only one that produced sustained non-zero capture under partial observability.</p>
+<h3 id="the-problem">The Problem</h3>
+<p>Under FOV-limited sensing (90° wedge, 8 m range in our Phase 1–3 framework), the pursuer often loses sight of the evader. When the evader is outside the FOV, the pursuer's observation contains no opponent information (position = 0, velocity = 0, visibility flag = −1). The distance penalty \(-d\) still applies, but \(d\) is large and the gradient is weak.</p>
+<p><strong>Result:</strong> The pursuer receives almost no learning signal when the evader is outside its FOV. It learns to be passive — wandering randomly rather than actively searching.</p>
+<h3 id="the-solution">The Solution</h3>
+<p>We added a <strong>visibility reward</strong> that gives the pursuer a small positive bonus when the evader is visible:</p>
+<p>$$r_{\text{vis}} = w_{\text{vis}} \cdot \mathbb{1}[\text{opponent visible}]$$</p>
+<p>This is a <strong>per-step shaping reward</strong> (not terminal) that provides dense gradient for maintaining line of sight.</p>
+<h3 id="results-sp15-and-sp16">Results: SP15 and SP16</h3>
+<p>In S83 (SP15), we tested visibility reward with \(w_{\text{vis}} = 0.1\) under full partial observability (90° FOV, 8 m range). The results were striking:</p>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th>Avg CR</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No vis reward</td>
+<td>0.10–0.13</td>
+<td>Pursuer passive, no meaningful pursuit</td>
+</tr>
+<tr>
+<td>Vis reward (w=0.1)</td>
+<td>0.57</td>
+<td>Sustained non-zero capture; pursuer actively searches</td>
+</tr>
+<tr>
+<td>Vis reward (w=0.2)</td>
+<td>0.57+</td>
+<td>Stronger signal; SP16g test (see S83)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Decision D20 (S83):</strong> "Vis reward (w=0.1) mandatory under PO." This was the only reward modification that produced a sustained, measurable improvement.</p>
+<h3 id="why-it-worked-here-but-not-elsewhere">Why It Worked Here (But Not Elsewhere)</h3>
+<p>The visibility reward worked because it addressed a <strong>specific sensory deficiency</strong>: the pursuer's FOV is so narrow that it genuinely cannot see the evader most of the time. The reward provided a gradient for a skill (scanning, searching) that the pursuer would not otherwise learn.</p>
+<p>However, the visibility reward <strong>did not prevent collapse</strong>. SP15 still showed no role switches (freeze threshold 0.8 was unreachable), and SP16 with vis reward + lower thresholds continued to oscillate. The visibility reward enabled <em>basic competence</em> but not <em>stable equilibrium</em>.</p>
+<div class="insight"><strong>Insight:</strong> The visibility reward is the exception that proves the rule. It worked because it addressed a genuine missing skill (searching under FOV constraints), not because it fixed the structural dynamics of self-play. All other reward modifications failed because the problem was not a missing skill — it was an unstable learning dynamic.</div>
+<hr />
+<h2 id="48-what-we-tried-search-staleness-reward">4.8 What We Tried: Search Staleness Reward</h2>
+<p>In S71, we implemented a <strong>staleness-based search reward</strong> to encourage the pursuer to explore the arena systematically. The hypothesis: the pursuer was not searching efficiently, and a coverage-based reward would teach systematic patrol.</p>
+<h3 id="implementation-1">Implementation</h3>
+<p>The <code>SearchStalenessTracker</code> class (S71) discretizes the arena into a 10×10 grid and tracks how long since each cell was last observed by the pursuer. The reward is:</p>
+<p>$$r_{\text{search}} = w_{\text{search}} \cdot \mathbb{1}[\text{cell stale}]$$</p>
+<p>where "stale" means the cell has not been observed for more than \(t_{\text{stale}}\) steps. The tracker uses the pursuer's sensing radius + LOS filtering to determine visibility.</p>
+<h3 id="results-2">Results</h3>
+<p><strong>Decision D4 (S71):</strong> "w_search &lt; 0.0003 if at all." At \(w_{\text{search}} = 0.003\), the search reward was approximately 50% of the distance reward magnitude. The pursuer learned to <strong>patrol instead of hunt</strong> — it systematically covered the arena but ignored the evader's actual position.</p>
+<p>SP11g2/h2 (with search reward) achieved 25% capture rate versus SP11e's 60% (without search reward). The search reward actively <strong>harmed</strong> performance by distracting the pursuer from its primary objective.</p>
+<p><strong>Why it failed:</strong> The search reward created a <strong>reward conflict</strong>. The pursuer had two objectives: (1) minimize distance to evader, and (2) visit stale cells. When \(w_{\text{search}}\) was large, objective (2) dominated, and the pursuer optimized coverage rather than capture. Multi-objective reward design is notoriously difficult — without careful calibration, one objective swallows the other.</p>
+<hr />
+<h2 id="49-the-fundamental-lesson">4.9 The Fundamental Lesson</h2>
+<p>After 20+ sessions of reward engineering (S44–S45, S50–S51, S55, S71, S83), we reached a clear conclusion:</p>
+<div class="insight"><strong>Insight:</strong> No single reward modification prevented collapse. The fundamental issue was structural (self-play dynamics), not reward design.</div>
+<p>This conclusion was reached gradually:</p>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>Sessions</th>
+<th>Belief</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1. Reward-centric</td>
+<td>S44–S51</td>
+<td>Collapse is caused by missing reward signal</td>
+<td>PBRS, penalties, survival bonuses all failed</td>
+</tr>
+<tr>
+<td>2. Curriculum-centric</td>
+<td>S55–S64</td>
+<td>Collapse is caused by curriculum transitions</td>
+<td>Micro-phases, adaptive ratios helped briefly but collapsed</td>
+</tr>
+<tr>
+<td>3. Dynamics-centric</td>
+<td>S66–S84</td>
+<td>Collapse is caused by learning dynamics (freeze/unfreeze)</td>
+<td>Freeze/unfreeze, EWC, forced switches all failed</td>
+</tr>
+<tr>
+<td>4. Structural</td>
+<td>S97–S104</td>
+<td>Collapse is intrinsic to competitive self-play</td>
+<td>EMA 1/5, Pop-FSP 0/5, G&amp;I vanilla oscillates</td>
+</tr>
+</tbody>
+</table>
+<p>The progression from "reward problem" to "structural problem" took 60+ sessions. Each stage seemed plausible until the next experiment falsified it. This is the scientific method in action — and it is why we now frame our work as a <strong>systematic study</strong> rather than a method paper.</p>
+<h3 id="why-reward-engineering-is-a-red-herring">Why Reward Engineering Is a Red Herring</h3>
+<p>In competitive self-play, the reward function has two roles:</p>
+<ol>
+<li><strong>Define the game:</strong> What does each agent want?</li>
+<li><strong>Shape learning:</strong> What gradient does each agent follow?</li>
+</ol>
+<p>Role (1) is fixed by the problem statement — the pursuer wants to capture, the evader wants to escape. Role (2) is where reward engineering operates. But in self-play, the gradient is not just a function of the reward — it is a function of the <strong>opponent's policy</strong>. When the opponent changes, the gradient changes, and the agent's value function becomes obsolete.</p>
+<p>No amount of reward shaping can fix this. PBRS assumes stationary dynamics. Collision penalties assume collisions are the problem. Survival bonuses assume sparse rewards are the problem. But the actual problem is that <strong>two learning agents create a non-stationary optimization landscape</strong> that no single reward function can stabilize.</p>
+<hr />
+<h2 id="410-reward-design-for-the-gi-reproduction">4.10 Reward Design for the G&amp;I Reproduction</h2>
+<p>When we switched to the G&amp;I 2024 reproduction (S92), we abandoned all reward modifications and used the paper's original reward structure:</p>
+<ul>
+<li>\(\lambda_{\text{capture}} = 1000\)</li>
+<li>\(\lambda_{\text{time}} = 1\)</li>
+<li>\(\lambda_{\text{distance}} = 1\)</li>
+<li>No visibility reward</li>
+<li>No search staleness</li>
+<li>No collision penalties</li>
+<li>No survival bonus</li>
+</ul>
+<p><strong>Why this worked:</strong> The G&amp;I environment's dense distance reward \(-d\) provides sufficient gradient without visibility shaping. The pursuer's FOV (120°) is wider than our Phase 1–3 config (90°), so the "lost opponent" problem is less severe. The 16×16 m arena and 400-step episode give agents enough time to recover from temporary disengagement.</p>
+<p><strong>The G&amp;I reward is not magic — it is calibrated.</strong> The 120° FOV (vs 90°), 6 m range (vs 8 m), and 16×16 m arena (vs 10×10 m) all reduce the severity of the partial observability problem. The reward does not need to compensate for sensory deficiency because the sensing is less deficient.</p>
+<hr />
+<h2 id="411-summary">4.11 Summary</h2>
+<table>
+<thead>
+<tr>
+<th>Reward Modification</th>
+<th>Sessions</th>
+<th>Hypothesis</th>
+<th>Result</th>
+<th>Root Cause of Failure</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Terminal scaling (±50 → ±1000)</td>
+<td>S48, S55</td>
+<td>Stronger signal prevents collapse</td>
+<td>±50 too weak; ±1000 better but still collapses</td>
+<td>Magnitude does not fix asymmetric dynamics</td>
+</tr>
+<tr>
+<td>PBRS (obstacle approach)</td>
+<td>S44–S45</td>
+<td>Evader needs incentive to use obstacles</td>
+<td>Level 3+ collapse persists</td>
+<td>PBRS assumes stationary opponent</td>
+</tr>
+<tr>
+<td>Collision/wall penalties</td>
+<td>S50–S51</td>
+<td>Penalties discourage degenerate behavior</td>
+<td>Same L2 collapse pattern</td>
+<td>Collisions were not the root cause</td>
+</tr>
+<tr>
+<td>Survival bonus</td>
+<td>S45, S50</td>
+<td>Dense positive signal for evader</td>
+<td>Evader stalls or still collapses</td>
+<td>Changes the game being played</td>
+</tr>
+<tr>
+<td>Visibility reward</td>
+<td>S83</td>
+<td>Pursuer needs incentive to search</td>
+<td><strong>0.57 CR sustained (only success)</strong></td>
+<td>Addressed genuine missing skill under narrow FOV</td>
+</tr>
+<tr>
+<td>Search staleness</td>
+<td>S71</td>
+<td>Coverage-based exploration</td>
+<td>Pursuer patrols instead of hunts</td>
+<td>Reward conflict: coverage vs capture</td>
+</tr>
+<tr>
+<td>G&amp;I base reward</td>
+<td>S92–S96</td>
+<td>Paper's design is sufficient</td>
+<td>CR=0.550 matches paper</td>
+<td>Calibrated sensing reduces need for shaping</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="self-check">Self-Check</h2>
+<ol>
+<li>
+<p><strong>PBRS preserves optimal policy under stationary dynamics. Why does this guarantee fail in competitive self-play?</strong> What assumption of the Ng et al. (1999) theorem is violated, and what does Devlin &amp; Kudenko (2012) say about the multi-agent case?</p>
+</li>
+<li>
+<p><strong>The visibility reward (w=0.1) was the only reward modification that produced sustained improvement. Why did it work when all others failed?</strong> What specific deficiency did it address, and why was that deficiency less severe in the G&amp;I environment (120° FOV, 6 m range) than in our Phase 1–3 framework (90° FOV, 8 m range)?</p>
+</li>
+<li>
+<p><strong>Suppose you add a survival bonus of +10 per step to the evader. Derive the evader's optimal strategy under this modified reward.</strong> Does it align with escaping capture? What happens to the competitive ratio if the pursuer continues to optimize for capture while the evader optimizes for survival?</p>
+</li>
+<li>
+<p><strong>Why did the search staleness reward (w_search=0.003) cause the pursuer to patrol instead of hunt?</strong> Use the concept of reward conflict to explain why two objectives (minimize distance and maximize coverage) cannot be naively combined.</p>
+</li>
+</ol>
+<hr />
+<h2 id="papers-to-read">Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> Ng, Harada &amp; Russell (1999). "Policy Invariance Under Reward Transformations: Theory and Application to Reward Shaping." ICML. The foundational PBRS paper. Read Sections 1–3 for the theorem and its assumptions.</li>
+<li><strong>(ESSENTIAL)</strong> Devlin &amp; Kudenko (2012). "Theoretical Considerations of Potential-Based Reward Shaping for Multi-Agent Systems." AAMAS. Extends PBRS to multi-agent; explains why policy invariance fails when the potential depends on other agents.</li>
+<li><strong>(REFERENCE)</strong> Yang et al. (2025). "CBF-RL: A Dual Framework for Safe Reinforcement Learning." (N17 in our collection.) Ablation showing dual CBF+reward (99.0%) outperforms reward-only (91.9%) and filter-only (98.8% → 38.7% without runtime filter).</li>
+<li><strong>(REFERENCE)</strong> Wiewiora (2003). "Potential-Based Shaping and Q-Value Initialization are Equivalent." JAIR. Shows PBRS is equivalent to Q-value initialization — useful intuition for why PBRS cannot fix non-stationary dynamics.</li>
+<li><strong>(OPTIONAL)</strong> Baker et al. (2020). "Emergent Tool Use from Multi-Agent Autocurricula." ICLR (OpenAI Hide-and-Seek). Pure visibility reward works but needs billions of steps. Compare to our much smaller budget.</li>
+</ul>
+<hr />
+<h2 id="deep-dive-sessions">Deep Dive Sessions</h2>
+<ul>
+<li><strong>S44</strong> (PBRS research): Full literature review of PBRS for multi-agent settings. Research report at <code>docs/research_pbrs_obstacle_seeking.md</code> covers 5 papers, sensory feasibility analysis, and arena size considerations.</li>
+<li><strong>S45</strong> (PBRS implementation): Implementation of PBRS with 17 new tests. Run P results showing collapse persists despite PBRS. Critical NaN bug fix (inf − inf) with finite-distance guards.</li>
+<li><strong>S50</strong> (collision enforcement): Physical obstacle collision resolution and <code>w_collision</code> penalty. 13 new tests. Key decision: hard projection (not soft penalty only) for physical realism.</li>
+<li><strong>S51</strong> (wall penalties + L2 collapse diagnosis): <code>w_wall</code> implementation, comprehensive literature review (20+ papers, 5 new downloads N16–N20), and the pivotal 8-root-cause diagnosis of evader L2 collapse. Full report at <code>docs/research_evader_l2_collapse.md</code>.</li>
+<li><strong>S71</strong> (search staleness reward): <code>SearchStalenessTracker</code> implementation with 10×10 grid. Decision D4: w_search &lt; 0.0003. SP11g2/h2 at 25% vs SP11e at 60% — search reward actively harmed performance.</li>
+<li><strong>S83</strong> (visibility reward + SP15/SP16 analysis): The only reward modification that worked. Decision D20: vis reward mandatory under PO. SP15 analysis showing 0.57 CR with vis reward vs 0.10 without. Force-switch feature and SP16 launch.</li>
+<li><strong>S55</strong> (micro-phase rapid alternation): Not a reward modification, but the structural redesign that replaced reward-centric thinking. micro_phase_steps=2048, opponent pool integration, and the shift from "fix the reward" to "fix the dynamics."</li>
+</ul>
+</body>
+</html>

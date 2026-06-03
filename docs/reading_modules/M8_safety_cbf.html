@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Module 8: Safety via CBF</title>
+<style>
+body{max-width:800px;margin:2em auto;padding:0 1em;font-family:Georgia,serif;line-height:1.6;color:#222}
+h1{border-bottom:2px solid #333;padding-bottom:.3em}
+h2{border-bottom:1px solid #ccc;padding-bottom:.2em;margin-top:1.5em}
+h3{margin-top:1.2em}
+table{border-collapse:collapse;width:100%;margin:1em 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f5f5f5}
+code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-family:monospace}
+pre{background:#f4f4f4;padding:1em;overflow-x:auto;border-radius:4px}
+blockquote{border-left:4px solid #ddd;margin:0;padding-left:1em;color:#555}
+.insight{background:#d1ecf1;border-left:4px solid #17a2b8;padding:1em;margin:1em 0}
+.warning{background:#fff3cd;border-left:4px solid #ffc107;padding:1em;margin:1em 0}
+</style></head><body>
+
+<h1>Module 8: Safety via Control Barrier Functions</h1>
+<p><strong>Estimated reading time:</strong> 4–5 hours | <strong>Prerequisites:</strong> Module 3 (Environment Design), Module 2 (RL Foundations)</p>
+<p><strong>Goal:</strong> Understand CBFs, why we chose post-hoc filtering, and what our safety experiments revealed.</p>
+
+<hr>
+
+<h2>8.1 Control Barrier Functions: The Core Idea</h2>
+<p>A <strong>Control Barrier Function (CBF)</strong> is a function h(x) that defines a safe set C = {x | h(x) ≥ 0}. If the control input satisfies a simple inequality, the system is guaranteed to stay in C forever.</p>
+
+<h3>Formal Definition</h3>
+<p>A function h: ℝⁿ → ℝ is a CBF for the system ẋ = f(x) + g(x)u if there exists an extended class-K function α such that:</p>
+<p>$$\sup_{u \in U} [L_f h(x) + L_g h(x) \cdot u + \alpha(h(x))] \geq 0 \quad \forall x \in C$$</p>
+
+<p>where <strong>L_f h</strong> and <strong>L_g h</strong> are Lie derivatives.</p>
+
+<div class="insight"><strong>Intuition:</strong> The CBF condition says: "at every state, there exists a control input that either increases h (moves deeper into safety) or at least doesn't decrease h too fast." If this holds, the system can never leave the safe set.</div>
+
+<h2>8.2 The Quadratic Program (QP) Formulation</h2>
+<p>The CBF condition can be enforced via a Quadratic Program that minimally modifies a nominal control input u_nom:</p>
+
+<p>$$\min_u \quad \|u - u_{\text{nom}}\|^2$$</p>
+<p>subject to: $$L_f h(x) + L_g h(x) \cdot u + \alpha(h(x)) \geq 0$$</p>
+
+<p>This finds the <strong>safest control closest to the nominal control</strong>. If the nominal control is already safe, the QP returns it unchanged. If not, it finds the minimal modification that restores safety.</p>
+
+<h2>8.3 VCP-CBF: Velocity-Constraint-Preserving</h2>
+<p>Standard CBFs assume simple dynamics. For <strong>car-like (bicycle model)</strong> dynamics, we need the <strong>Velocity-Constraint-Preserving CBF (VCP-CBF)</strong>:</p>
+
+<ul>
+<li>The bicycle model has nonholonomic constraints (cannot slide sideways)</li>
+<li>The VCP-CBF preserves these constraints in the QP formulation</li>
+<li>Ensures the filtered control is <strong>feasible</strong> for the actual robot</li>
+</ul>
+
+<h2>8.4 Safety Filtering vs End-to-End Safe RL</h2>
+<p>There are two paradigms for combining safety with RL:</p>
+
+<table>
+<tr><th>Paradigm</th><th>Approach</th><th>Pros</th><th>Cons</th></tr>
+<tr><td>Post-hoc filter</td><td>Train RL normally, apply CBF to output</td><td>Simple, modular, preserves RL optimization</td><td>Safety is after-the-fact; may alter policy behavior</td></tr>
+<tr><td>End-to-end</td><td>Embed safety constraint in loss/reward</td><td>Policy inherently respects constraints</td><td>Hard to optimize; constraint may dominate reward</td></tr>
+</table>
+
+<h3>Our Decision: Post-Hoc Filter (S32)</h3>
+<p>After extensive analysis (S16–S32), we chose the <strong>post-hoc filter</strong> approach:</p>
+<ol>
+<li>Train the RL policy without safety constraints</li>
+<li>At deployment, run the CBF QP to filter unsafe actions</li>
+<li>Log when filtering occurs for analysis</li>
+</ol>
+
+<div class="insight"><strong>Key insight:</strong> The post-hoc filter lets the RL policy optimize purely for task performance. Safety is guaranteed at runtime by the QP. This separation of concerns is cleaner than trying to bake safety into the reward function.</div>
+
+<h2>8.5 3-Tier Infeasibility Handling (S23)</h2>
+<p>What if the QP has no feasible solution? We implemented a 3-tier fallback:</p>
+
+<table>
+<tr><th>Tier</th><th>Trigger</th><th>Action</th></tr>
+<tr><td>1</td><td>QP feasible</td><td>Use CBF-filtered control</td></tr>
+<tr><td>2</td><td>QP infeasible, backup available</td><td>Use backup controller (e.g., stop)</td></tr>
+<tr><td>3</td><td>All controls infeasible</td><td>Emergency stop + log anomaly</td></tr>
+</table>
+
+<h2>8.6 What Our Safety Experiments Revealed</h2>
+<p>Despite significant investment (Phase 2, S16–S32), safety became a <strong>secondary contribution</strong> in the final paper:</p>
+
+<table>
+<tr><th>Finding</th><th>Implication</th></tr>
+<tr><td>CBF filter works but rarely triggers in open arena</td><td>Safety is less critical when obstacles are sparse</td></tr>
+<tr><td>End-to-end BarrierNet failed to converge (S28)</td><td>Differentiable QP layer too unstable for self-play</li></tr>
+<tr><td>Self-play collapse is the dominant failure mode, not safety violations</td><td>Paper focus shifted from safety to stabilization</td></tr>
+</table>
+
+<h2>8.7 Summary</h2>
+<table>
+<tr><th>Concept</th><th>Meaning</th></tr>
+<tr><td>CBF h(x)</td><td>Defines safe set C = {x | h(x) ≥ 0}</td></tr>
+<tr><td>QP filter</td><td>Minimally modifies control to ensure safety</td></tr>
+<tr><td>VCP-CBF</td><td>Preserves bicycle model constraints</td></tr>
+<tr><td>Post-hoc filter</td><td>Apply CBF after RL output; chosen over end-to-end</td></tr>
+<tr><td>3-tier infeasibility</td><td>Backup controller for when QP has no solution</td></tr>
+</table>
+
+<h2>Self-Check</h2>
+<ol>
+<li><strong>What does the CBF condition guarantee?</strong> If h(x₀) > 0 and the CBF condition holds, what can you say about h(x(t)) for all future t?</li>
+<li><strong>Why did we choose post-hoc filtering over end-to-end safe RL?</strong> What went wrong with BarrierNet?</li>
+<li><strong>When would the QP be infeasible?</strong> What does Tier 2 do in that case?</li>
+<li><strong>Why did safety become a secondary contribution in the final paper?</strong></li>
+</ol>
+
+<h2>Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> Paper 03 (CBF survey, 2024): Comprehensive CBF survey.</li>
+<li><strong>(REFERENCE)</strong> Paper 05 (CBF RL safety filtering, 2025): Post-hoc filtering in RL.</li>
+<li><strong>(REFERENCE)</strong> Paper 28 (LBAC, ICRA 2023): CLBF-based safe RL.</li>
+<li><strong>(OPTIONAL)</strong> Ames et al. (2019), "Control Barrier Functions": The original CBF paper.</li>
+</ul>
+
+<h2>Deep Dive Sessions</h2>
+<ul>
+<li><strong>S16</strong> <strong>(REFERENCE)</strong> VCP-CBF validation: d=0.1, weighted QP, 35 tests, all 4 criteria pass.</li>
+<li><strong>S21</strong> <strong>(REFERENCE)</strong> CBF-Beta integration: SafeRolloutBuffer, CBFBoundsComputer.</li>
+<li><strong>S23</strong> <strong>(ESSENTIAL)</strong> 3-tier infeasibility: Backup control, hierarchical relaxation, SVM classifier.</li>
+<li><strong>S28</strong> <strong>(REFERENCE)</strong> BarrierNet attempt: Differentiable QP layer with PPO.</li>
+<li><strong>S32</strong> <strong>(ESSENTIAL)</strong> Post-hoc filter decision: Decision report recommending post-hoc over end-to-end.</li>
+</ul>
+
+</body></html>

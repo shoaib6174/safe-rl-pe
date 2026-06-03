@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Module 12: G&I Reproduction</title>
+<style>
+body{max-width:800px;margin:2em auto;padding:0 1em;font-family:Georgia,serif;line-height:1.6;color:#222}
+h1{border-bottom:2px solid #333;padding-bottom:.3em}
+h2{border-bottom:1px solid #ccc;padding-bottom:.2em;margin-top:1.5em}
+h3{margin-top:1.2em}
+table{border-collapse:collapse;width:100%;margin:1em 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f5f5f5}
+code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-family:monospace}
+pre{background:#f4f4f4;padding:1em;overflow-x:auto;border-radius:4px}
+blockquote{border-left:4px solid #ddd;margin:0;padding-left:1em;color:#555}
+.insight{background:#d1ecf1;border-left:4px solid #17a2b8;padding:1em;margin:1em 0}
+.warning{background:#fff3cd;border-left:4px solid #ffc107;padding:1em;margin:1em 0}
+</style></head><body>
+
+<h1>Module 12: Gonultas & Isler 2024 Reproduction</h1>
+<p><strong>Estimated reading time:</strong> 3–4 hours | <strong>Prerequisites:</strong> Module 2 (RL), Module 7 (Partial Obs)</p>
+<p><strong>Goal:</strong> Understand what G&I claimed, how we reproduced it, the 5 critical fixes, and what the reproduction taught us.</p>
+
+<hr>
+
+<h2>12.1 What G&I 2024 Claims</h2>
+<p>Gonultas & Isler (2024) presents a multi-agent deep RL approach to pursuit-evasion with partial observability:</p>
+
+<table>
+<tr><th>Claim</th><th>Evidence in Paper</th></tr>
+<tr><td>Self-play achieves CR = 0.55</td><td>Figure 3, vanilla MADDPG</td></tr>
+<tr><td>BiMDN improves over vanilla</td><td>Figure 3, BiMDN vs vanilla comparison</td></tr>
+<tr><td>Curriculum is necessary</td><td>Ablation: no curriculum → no convergence</td></tr>
+<tr><td>Partial observability is the key challenge</td><td>Full obs baselines outperform PO</td></tr>
+</table>
+
+<h2>12.2 Our Reproduction Approach</h2>
+<p>We implemented all 12 components from scratch:</p>
+<ol>
+<li>Environment (16×16m, bicycle model, FOV sensing)</li>
+<li>MADDPG agent with twin critics</li>
+<li>BiMDN belief network</li>
+<li>Curriculum annealing</li>
+<li>Checkpointing and evaluation</li>
+<li>Vectorized environments</li>
+<li>Training loop with opponent switching</li>
+<li>Evaluation framework</li>
+<li>Logging and metrics</li>
+<li>Hyperparameter configs</li>
+<li>Launch scripts</li>
+<li>Test suite</li>
+</ol>
+
+<h2>12.3 The 5 Critical Fixes (S95)</h2>
+
+<table>
+<tr><th>#</th><th>Bug</th><th>Effect</th><th>Fix</th></tr>
+<tr><td>1</td><td>Actor observation bug</td><td>Actor saw wrong opponent state</td><td>Corrected obs indexing in actor forward pass</td></tr>
+<tr><td>2</td><td>BiMDN warm-up missing</td><td>BiMDN outputs garbage before buffer fills</td><td>Added 10K-step warm-up period</td></tr>
+<tr><td>3</td><td>BiMDN architecture mismatch</td><td>Hidden dims didn't match paper</td><td>Corrected to [128, 128] with proper LSTM</td></tr>
+<tr><td>4</td><td>Tournament eval incorrect</td><td>Evaluated against wrong opponent set</td><td>Fixed tournament pairing logic</td></tr>
+<tr><td>5</td><td>Seed-specific paths</td><td>Results overwrote each other</td><td>Added seed to output paths</td></tr>
+</table>
+
+<h2>12.4 The NaN Story (S92–S94)</h2>
+<p>BiMDN training initially produced NaN losses within 100–500 episodes:</p>
+
+<ol>
+<li><strong>Symptom:</strong> BiMDN losses → NaN</li>
+<li><strong>Root cause 1:</strong> Scale mismatch — BiMDN outputs unbounded scale parameters</li>
+<li><strong>Root cause 2:</strong> AMP interaction — fp16 underflow with small gradients</li>
+<li><strong>Root cause 3:</strong> Single critic — Q-value overestimation → explosion</li>
+<li><strong>Fix:</strong> Twin critics + gradient clipping + disable AMP for BiMDN + wheelbase correction</li>
+</ol>
+
+<div class="insight"><strong>Insight:</strong> The NaN was not a simple bug — it revealed that BiMDN's scale outputs are fundamentally unstable with fp16. The fix is both numerical (twin critics, clipping) and architectural (correct wheelbase).</div>
+
+<h2>12.5 Verification Results (S96)</h2>
+
+<table>
+<tr><th>Metric</th><th>Paper</th><th>Our Repro</th><th>Match?</th></tr>
+<tr><td>Self-play CR</td><td>0.550</td><td>0.550</td><td>✅</td></tr>
+<tr><td>vs Random CR</td><td>~0.95</td><td>0.936</td><td>✅ Near</td></tr>
+<tr><td>BiMDN improvement</td><td>Yes</td><td>Yes (early)</td><td>✅</td></tr>
+</table>
+
+<h2>12.6 What We Learned</h2>
+<ol>
+<li><strong>The paper is reproducible but fragile.</strong> 5 critical bugs in our initial implementation, all subtle.</li>
+<li><strong>Oscillatory dynamics are intrinsic.</strong> Not a bug in our code — the game is genuinely hard.</li>
+<li><strong>BiMDN is sensitive.</strong> Requires warm-up, correct architecture, and careful numerics.</li>
+<li><strong>Self-play CR = 0.55 is not a Nash.</strong> It's an oscillatory point, not a stable equilibrium.</li>
+</ol>
+
+<h2>12.7 Summary</h2>
+<table>
+<tr><th>Concept</th><th>Meaning</th></tr>
+<tr><td>G&I claims</td><td>Self-play CR=0.55, BiMDN helps, curriculum necessary</td></tr>
+<tr><td>5 fixes</td><td>Actor obs, BiMDN warm-up, BiMDN arch, tournament eval, seed paths</td></tr>
+<tr><td>NaN causes</td><td>Scale mismatch + AMP + single critic</td></tr>
+<tr><td>Verification</td><td>Self-play CR matches, vs-random near match</td></tr>
+<tr><td>Key lesson</td><td>Reproducible but fragile; oscillation is intrinsic</td></tr>
+</table>
+
+<h2>Self-Check</h2>
+<ol>
+<li><strong>Why is BiMDN warm-up necessary?</strong> What happens if you use BiMDN outputs before 10K steps?</li>
+<li><strong>Which of the 5 fixes was most critical?</strong> Why?</li>
+<li><strong>What does "fragile" mean in this context?</strong> How is G&I reproducible but still fragile?</li>
+<li><strong>Why is CR = 0.55 not a Nash equilibrium?</strong></li>
+</ol>
+
+<h2>Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> Gonultas & Isler 2024: Full paper.</li>
+<li><strong>(REFERENCE)</strong> Ackermann et al. (2019): Twin critics (DDPG/TD3).</li>
+</ul>
+
+<h2>Deep Dive Sessions</h2>
+<ul>
+<li><strong>S92</strong> <strong>(REFERENCE)</strong> Full implementation: 12 components.</li>
+<li><strong>S93</strong> <strong>(ESSENTIAL)</strong> NaN diagnosis: 3 root causes, twin critics fix.</li>
+<li><strong>S94</strong> <strong>(OPTIONAL)</strong> Vectorized envs: 8 parallel envs.</li>
+<li><strong>S95</strong> <strong>(ESSENTIAL)</strong> 5 fixes + launch: Critical bug fixes.</li>
+<li><strong>S96</strong> <strong>(ESSENTIAL)</strong> Verification: Self-play CR=0.550 matches paper.</li>
+</ul>
+
+</body></html>

@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Module 6: Curriculum & Infrastructure</title>
+<style>
+body{max-width:800px;margin:2em auto;padding:0 1em;font-family:Georgia,serif;line-height:1.6;color:#222}
+h1{border-bottom:2px solid #333;padding-bottom:.3em}
+h2{border-bottom:1px solid #ccc;padding-bottom:.2em;margin-top:1.5em}
+h3{margin-top:1.2em}
+table{border-collapse:collapse;width:100%;margin:1em 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f5f5f5}
+code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-family:monospace}
+pre{background:#f4f4f4;padding:1em;overflow-x:auto;border-radius:4px}
+blockquote{border-left:4px solid #ddd;margin:0;padding-left:1em;color:#555}
+.insight{background:#d1ecf1;border-left:4px solid #17a2b8;padding:1em;margin:1em 0}
+.warning{background:#fff3cd;border-left:4px solid #ffc107;padding:1em;margin:1em 0}
+</style></head><body>
+
+<h1>Module 6: Curriculum and Training Infrastructure</h1>
+<p><strong>Estimated reading time:</strong> 2–3 hours | <strong>Prerequisites:</strong> Module 2 (RL Foundations), Module 3 (Environment Design)</p>
+<p><strong>Goal:</strong> Understand the training infrastructure — curriculum, checkpointing, evaluation, and health monitoring — that enables systematic experimentation.</p>
+
+<hr>
+
+<h2>6.1 Curriculum Learning for Pursuit-Evasion</h2>
+<p><strong>Curriculum learning</strong> trains on progressively harder tasks. In PE, this means gradually increasing the evader's capabilities so the pursuer faces stronger opponents over time.</p>
+
+<h3>Why Curriculum?</h3>
+<p>Without curriculum, a naive pursuer faces a fully-capable evader from episode 1 and never experiences success. The reward signal is entirely negative — no learning occurs. Curriculum ensures:</p>
+<ol>
+<li><strong>Bootstrapping:</strong> Early episodes are easy enough for the pursuer to occasionally capture</li>
+<li><strong>Progressive difficulty:</strong> The evader gets stronger as the pursuer improves</li>
+<li><strong>Stable learning:</strong> Neither side is catastrophically overmatched at any point</li>
+</ol>
+
+<h3>Our Curriculum Design (G&I Reproduction)</h3>
+<table>
+<tr><th>Parameter</th><th>Start</th><th>End</th><th>Duration</th></tr>
+<tr><td>Evader v_max</td><td>0.0 m/s</td><td>1.5 m/s</td><td>First 30% of episodes (t_end_ratio = 0.3)</td></tr>
+<tr><td>Evader FOV</td><td>360° (omnidirectional)</td><td>120° (2π/3)</td><td>Same annealing window</td></tr>
+</table>
+
+<p>The evader starts completely stationary (v_max = 0) with perfect sensing. The pursuer learns basic capture against a trivial opponent. Over the first 30% of training, the evader gains speed and loses omnidirectional vision.</p>
+
+<h3>Our Phase 1–3 Curriculum (Earlier Work)</h3>
+<p>Our original framework (S11–S84) used a more complex 4-level curriculum:</p>
+<table>
+<tr><th>Level</th><th>Description</th><th>Gate</th></tr>
+<tr><td>L1</td><td>Evader stationary or near-stationary</td><td>CR > 0.6</td></tr>
+<tr><td>L2</td><td>Evader slow, limited sensing</td><td>CR > 0.5</td></tr>
+<tr><td>L3</td><td>Evader medium speed, partial obs</td><td>CR > 0.45</td></tr>
+<tr><td>L4</td><td>Full capability</td><td>—</td></tr>
+</table>
+
+<div class="warning"><strong>Finding:</strong> The L3–L4 transition was where most runs collapsed. The gates were too permissive (CR > 0.45), allowing advancement before true competence. This led to 20+ sessions of debugging (S40–S52).</div>
+
+<h2>6.2 Checkpointing and Persistence</h2>
+<p>Checkpointing is essential for:</p>
+<ul>
+<li><strong>Resuming:</strong> Recover from crashes without losing progress</li>
+<li><strong>Evaluation:</strong> Test historical checkpoints against new opponents</li>
+<li><strong>Rollback:</strong> Restore best-performing policies when collapse is detected</li>
+</ul>
+
+<h3>Checkpoint Frequency</h3>
+<p>In the G&I reproduction, checkpoints are saved every <strong>250 episodes</strong>. For a 5000-episode run, this produces 20 checkpoints.</p>
+
+<h3>Checkpoint Sweep Evaluation</h3>
+<p>A <strong>checkpoint sweep</strong> evaluates all saved checkpoints to understand the training trajectory:</p>
+<ol>
+<li>For each checkpoint, run 100 evaluation episodes</li>
+<li>Test against 3 opponent types: random, greedy, self-play</li>
+<li>Record capture rate for each</li>
+<li>Compute robustness = min(CR_random, CR_greedy, CR_selfplay)</li>
+</ol>
+
+<p>This produces a trajectory like:</p>
+<table>
+<tr><th>Episode</th><th>CR_random</th><th>CR_greedy</th><th>CR_selfplay</th><th>Robustness</th></tr>
+<tr><td>250</td><td>0.10</td><td>0.02</td><td>0.01</td><td>0.01</td></tr>
+<tr><td>1000</td><td>0.23</td><td>0.11</td><td>0.06</td><td>0.06</td></tr>
+<tr><td>2500</td><td>0.65</td><td>0.99</td><td>0.35</td><td>0.35</td></tr>
+<tr><td>5000</td><td>0.79</td><td>0.99</td><td>0.70</td><td>0.70</td></tr>
+</table>
+
+<div class="insight"><strong>Insight:</strong> The checkpoint sweep reveals the true trajectory. A single final evaluation can be misleading — a policy might have peaked at episode 2500 and regressed by 5000. Only the sweep shows this.</div>
+
+<h2>6.3 Vectorized Environments</h2>
+<p><strong>Vectorized environments</strong> run multiple independent environment instances in parallel, collecting experience batches.</p>
+
+<h3>Why Vectorize?</h3>
+<ul>
+<li><strong>Speed:</strong> Parallel rollouts amortize overhead</li>
+<li><strong>Diversity:</strong> Different random seeds per env → more diverse experience</li>
+<li><strong>Batch size:</strong> Larger batches stabilize gradient estimates</li>
+</ul>
+
+<h3>Our Configuration</h3>
+<table>
+<tr><th>Parameter</th><th>Value</th></tr>
+<tr><td>Parallel envs</td><td>2 (G&I reproduction, MADDPG)</td></tr>
+<tr><td>Batch size</td><td>1024</td></tr>
+<tr><td>Replay buffer</td><td>100,000 transitions</td></tr>
+</table>
+
+<p>Earlier experiments (S94) implemented 8 parallel environments for faster training, but the G&I reproduction uses 2 for stability.</p>
+
+<h2>6.4 Automatic Mixed Precision (AMP)</h2>
+<p><strong>AMP</strong> uses fp16 (16-bit floating point) for forward/backward passes and fp32 (32-bit) for critical operations. This speeds up training and reduces memory.</p>
+
+<h3>The NaN Problem</h3>
+<p>AMP initially caused <strong>NaN losses</strong> in our BiMDN experiments (S92–S93). Root causes:</p>
+<ol>
+<li><strong>Scale mismatch:</strong> BiMDN outputs unbounded scale parameters that overflow in fp16</li>
+<li><strong>Gradient underflow:</strong> Small gradients become zero in fp16</li>
+<li><strong>Single critic:</strong> Q-value overestimation → explosion</li>
+</ol>
+
+<h3>The Fix</h3>
+<table>
+<tr><th>Fix</th><th>Session</th><th>Effect</th></tr>
+<tr><td>Twin critics (Ackermann 2019)</td><td>S93</td><td>min(Q1, Q2) prevents overestimation</td></tr>
+<tr><td>Gradient clipping</td><td>S93</td><td>Bounds gradient magnitude</td></tr>
+<tr><td>Disable AMP for BiMDN</td><td>S93</td><td>Force fp32 for belief network</td></tr>
+<tr><td>Wheelbase correction (0.15→0.30)</td><td>S93</td><td>Prevents unrealistic dynamics</td></tr>
+</table>
+
+<div class="insight"><strong>Insight:</strong> NaN is not just a "numerical bug" — it indicates the algorithm is exploring a region of policy space where the value estimates are unreliable. The fix is both numerical (twin critics, clipping) and structural (correct dynamics).</div>
+
+<h2>6.5 Health Monitoring</h2>
+<p>We implemented automated health monitoring to detect collapse early:</p>
+
+<h3>Metrics Tracked</h3>
+<table>
+<tr><th>Metric</th><th>Purpose</th><th>Alert Threshold</th></tr>
+<tr><td>Competitive Ratio (CR)</td><td>Overall balance</td><td>CR > 0.8 or CR < 0.2 for 5+ checkpoints</td></tr>
+<tr><td>Capture Rate vs Random</td><td>Basic competence</td><td>CR_random < 0.1 for 3+ checkpoints</td></tr>
+<tr><td>Capture Rate vs Greedy</td><td>Advanced competence</td><td>CR_greedy < 0.1 for 3+ checkpoints</td></tr>
+<tr><td>Loss magnitude</td><td>Training stability</td><td>Loss > 1000 or NaN</td></tr>
+<tr><td>Gradient norm</td><td>Exploding gradients</td><td>Norm > 100</td></tr>
+</table>
+
+<h3>Actions on Alert</h3>
+<ol>
+<li><strong>Log:</strong> Record the anomaly with full state</li>
+<li><strong>Snapshot:</strong> Save current checkpoint for post-hoc analysis</li>
+<li><strong>Continue:</strong> Most alerts are transient — don't overreact</li>
+<li><strong>Kill (rare):</strong> Only if NaN persists after 10 checkpoints</li>
+</ol>
+
+<h2>6.6 Summary</h2>
+<table>
+<tr><th>Component</th><th>Purpose</th><th>Key Parameters</th></tr>
+<tr><td>Curriculum</td><td>Progressive difficulty</td><td>t_end_ratio = 0.3, v_max annealing, FOV annealing</td></tr>
+<tr><td>Checkpointing</td><td>Persistence & evaluation</td><td>Every 250 episodes, 100 eval episodes per checkpoint</td></tr>
+<tr><td>Vectorized envs</td><td>Speed & diversity</td><td>2 parallel envs, batch size 1024</td></tr>
+<tr><td>AMP</td><td>Speed & memory</td><td>fp16 with twin critics, gradient clipping</td></tr>
+<tr><td>Health monitoring</td><td>Early collapse detection</td><td>CR thresholds, loss/gradient bounds</td></tr>
+</table>
+
+<h2>Self-Check</h2>
+<ol>
+<li><strong>Why does curriculum learning help in PE?</strong> What happens if the pursuer trains against a fully-capable evader from episode 1?</li>
+<li><strong>What does a checkpoint sweep reveal that a single final evaluation cannot?</strong></li>
+<li><strong>Why did AMP cause NaN losses specifically with BiMDN?</strong> Why didn't it affect the actor or standard critic?</li>
+<li><strong>What metric would you monitor to detect evader-dominant collapse as early as possible?</strong></li>
+</ol>
+
+<h2>Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> Bengio et al. (2009), "Curriculum Learning": The original curriculum learning paper.</li>
+<li><strong>(REFERENCE)</strong> G&I 2024, Section III: Curriculum design for PE.</li>
+<li><strong>(OPTIONAL)</strong> NVIDIA AMP documentation: Technical details of mixed precision training.</li>
+</ul>
+
+<h2>Deep Dive Sessions</h2>
+<ul>
+<li><strong>S42</strong> <strong>(REFERENCE)</strong> Curriculum implementation: 4-level progressive difficulty with gates.</li>
+<li><strong>S50–S52</strong> <strong>(ESSENTIAL)</strong> Curriculum collapse analysis: Why L3+ transitions failed.</li>
+<li><strong>S93</strong> <strong>(ESSENTIAL)</strong> NaN diagnosis: Scale mismatch, AMP, twin critics fix.</li>
+<li><strong>S94</strong> <strong>(REFERENCE)</strong> Vectorized environments: 8 parallel envs implementation.</li>
+</ul>
+
+</body></html>

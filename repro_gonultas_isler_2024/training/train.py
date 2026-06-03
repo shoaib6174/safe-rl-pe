@@ -55,17 +55,25 @@ def train(config_path: str = "config.yaml"):
 
     use_compile = config.get("use_compile", False)
 
-    # Agents
+    # Agents — asymmetric parameters (backward compatible: fallback to symmetric values)
+    mcfg = config["maddpg"]
+    pursuer_actor_lr = mcfg.get("pursuer_actor_lr", mcfg["actor_lr"])
+    pursuer_critic_lr = mcfg.get("pursuer_critic_lr", mcfg["critic_lr"])
+    pursuer_hidden_dim = mcfg.get("pursuer_hidden_dim", mcfg["hidden_dim"])
+    evader_actor_lr = mcfg.get("evader_actor_lr", mcfg["actor_lr"])
+    evader_critic_lr = mcfg.get("evader_critic_lr", mcfg["critic_lr"])
+    evader_hidden_dim = mcfg.get("evader_hidden_dim", mcfg["hidden_dim"])
+
     pursuer = MADDPGAgent(
         obs_dim=obs_dim,
         action_dim=action_dim,
         total_obs_dim=total_obs_dim,
         total_action_dim=total_action_dim,
-        actor_lr=config["maddpg"]["actor_lr"],
-        critic_lr=config["maddpg"]["critic_lr"],
-        gamma=config["maddpg"]["gamma"],
-        tau=config["maddpg"]["tau"],
-        hidden_dim=config["maddpg"]["hidden_dim"],
+        actor_lr=pursuer_actor_lr,
+        critic_lr=pursuer_critic_lr,
+        gamma=mcfg["gamma"],
+        tau=mcfg["tau"],
+        hidden_dim=pursuer_hidden_dim,
         device=device,
         use_amp=use_amp,
         use_compile=use_compile,
@@ -75,11 +83,11 @@ def train(config_path: str = "config.yaml"):
         action_dim=action_dim,
         total_obs_dim=total_obs_dim,
         total_action_dim=total_action_dim,
-        actor_lr=config["maddpg"]["actor_lr"],
-        critic_lr=config["maddpg"]["critic_lr"],
-        gamma=config["maddpg"]["gamma"],
-        tau=config["maddpg"]["tau"],
-        hidden_dim=config["maddpg"]["hidden_dim"],
+        actor_lr=evader_actor_lr,
+        critic_lr=evader_critic_lr,
+        gamma=mcfg["gamma"],
+        tau=mcfg["tau"],
+        hidden_dim=evader_hidden_dim,
         device=device,
         use_amp=use_amp,
         use_compile=use_compile,
@@ -104,8 +112,13 @@ def train(config_path: str = "config.yaml"):
     # Pop-FSP (Population-Based Fictitious Self-Play)
     use_pop_fsp = config["maddpg"].get("use_pop_fsp", False)
     pop_size = config["maddpg"].get("pop_size", 8)
+    pop_evader_size = config["maddpg"].get("pop_evader_size", pop_size)
     pop_add_freq = config["maddpg"].get("pop_add_freq", 250)
     pop_warmup = config["maddpg"].get("pop_warmup", 500)
+    pop_recency_lambda = config["maddpg"].get("pop_recency_lambda", 0.0)
+    pop_mixing_start = config["maddpg"].get("pop_mixing_start", pop_warmup)
+    pop_mixing_end = config["maddpg"].get("pop_mixing_end", pop_warmup)
+    pop_mixing_max = config["maddpg"].get("pop_mixing_max", 1.0)
 
     # Mutual exclusivity: EMA and Pop-FSP cannot both be active
     if use_ema and use_pop_fsp:
@@ -121,7 +134,7 @@ def train(config_path: str = "config.yaml"):
             device=device,
         )
         evader_pop = PopulationManager(
-            max_size=pop_size,
+            max_size=pop_evader_size,
             obs_dim=obs_dim,
             action_dim=action_dim,
             hidden_dim=config["maddpg"]["hidden_dim"],
@@ -156,6 +169,7 @@ def train(config_path: str = "config.yaml"):
     frame_skip = config["maddpg"]["frame_skip"]
     bimdn_update_freq = config["bimdn"]["belief_update_freq"]
     checkpoint_freq = config["eval"]["checkpoint_freq"]
+    evader_train_steps = config["maddpg"].get("evader_train_steps", 1)
 
     # Vectorized env runner
     runner = VectorizedEnvRunner(
@@ -195,7 +209,10 @@ def train(config_path: str = "config.yaml"):
     last_a_loss_e = 0.0
 
     if use_pop_fsp:
-        ema_status = f"Pop-FSP (K={pop_size}, add_freq={pop_add_freq}, warmup={pop_warmup})"
+        recency_str = f", recency_lambda={pop_recency_lambda}" if pop_recency_lambda > 0 else ""
+        mixing_str = f", mixing={pop_mixing_start}-{pop_mixing_end}(max={pop_mixing_max})" if pop_mixing_start != pop_mixing_end else ""
+        ema_status = (f"Pop-FSP (Kp={pop_size}, Ke={pop_evader_size}, add_freq={pop_add_freq}, "
+                      f"warmup={pop_warmup}{recency_str}{mixing_str})")
     elif use_ema:
         ema_status = f"EMA=ON (tau={ema_tau})"
     else:
@@ -240,24 +257,44 @@ def train(config_path: str = "config.yaml"):
             for _ in range(n_updates):
                 batch = replay_buffer.sample(batch_size)
                 if use_pop_fsp:
-                    # Pop-FSP: sample random opponent from population
-                    # During warmup, fall back to current opponent
-                    if completed_episodes >= pop_warmup and len(evader_pop) > 0:
-                        opp_e_actor = evader_pop.sample()
+                    # Pop-FSP v2/v3: gradual mixing + recency-biased sampling
+                    # Compute mixing ratio: fraction of updates that use population
+                    # Capped at pop_mixing_max so agents always see some current opponent
+                    if completed_episodes < pop_mixing_start:
+                        mix_ratio = 0.0
+                    elif completed_episodes >= pop_mixing_end:
+                        mix_ratio = pop_mixing_max
+                    else:
+                        mix_ratio = pop_mixing_max * (completed_episodes - pop_mixing_start) / max(1, pop_mixing_end - pop_mixing_start)
+
+                    # Sample opponent for pursuer update (needs evader actor)
+                    if len(evader_pop) > 0 and np.random.random() < mix_ratio:
+                        if pop_recency_lambda > 0:
+                            opp_e_actor = evader_pop.sample_recency(completed_episodes, pop_recency_lambda)
+                        else:
+                            opp_e_actor = evader_pop.sample()
                     else:
                         opp_e_actor = evader.actor
-                    if completed_episodes >= pop_warmup and len(pursuer_pop) > 0:
-                        opp_p_actor = pursuer_pop.sample()
+
+                    # Sample opponent for evader update (needs pursuer actor)
+                    if len(pursuer_pop) > 0 and np.random.random() < mix_ratio:
+                        if pop_recency_lambda > 0:
+                            opp_p_actor = pursuer_pop.sample_recency(completed_episodes, pop_recency_lambda)
+                        else:
+                            opp_p_actor = pursuer_pop.sample()
                     else:
                         opp_p_actor = pursuer.actor
+
                     c_loss_p, a_loss_p = pursuer.update(batch, opp_e_actor, agent_id="pursuer")
                     c_loss_e, a_loss_e = evader.update(batch, opp_p_actor, agent_id="evader")
                 elif use_ema:
                     c_loss_p, a_loss_p = pursuer.update(batch, ema_evader, agent_id="pursuer")
-                    c_loss_e, a_loss_e = evader.update(batch, ema_pursuer, agent_id="evader")
+                    for _ in range(evader_train_steps):
+                        c_loss_e, a_loss_e = evader.update(batch, ema_pursuer, agent_id="evader")
                 else:
                     c_loss_p, a_loss_p = pursuer.update(batch, evader.actor, agent_id="pursuer")
-                    c_loss_e, a_loss_e = evader.update(batch, pursuer.actor, agent_id="evader")
+                    for _ in range(evader_train_steps):
+                        c_loss_e, a_loss_e = evader.update(batch, pursuer.actor, agent_id="evader")
                 pursuer.update_targets()
                 evader.update_targets()
             # Update EMA networks after all gradient updates
@@ -292,8 +329,8 @@ def train(config_path: str = "config.yaml"):
             and len(completed_eps) > 0
             and completed_episodes > last_pop_add_ep
             and completed_episodes % pop_add_freq == 0):
-            pursuer_pop.add(pursuer.actor.state_dict())
-            evader_pop.add(evader.actor.state_dict())
+            pursuer_pop.add(pursuer.actor.state_dict(), episode=completed_episodes)
+            evader_pop.add(evader.actor.state_dict(), episode=completed_episodes)
             last_pop_add_ep = completed_episodes
             print(f"  [Pop-FSP] Added checkpoint at episode {completed_episodes}. "
                   f"Pursuer pop={len(pursuer_pop)}, Evader pop={len(evader_pop)}")

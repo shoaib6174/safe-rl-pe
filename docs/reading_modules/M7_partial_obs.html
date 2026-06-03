@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Module 7: Partial Observability</title>
+<style>
+body{max-width:800px;margin:2em auto;padding:0 1em;font-family:Georgia,serif;line-height:1.6;color:#222}
+h1{border-bottom:2px solid #333;padding-bottom:.3em}
+h2{border-bottom:1px solid #ccc;padding-bottom:.2em;margin-top:1.5em}
+h3{margin-top:1.2em}
+table{border-collapse:collapse;width:100%;margin:1em 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f5f5f5}
+code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-family:monospace}
+pre{background:#f4f4f4;padding:1em;overflow-x:auto;border-radius:4px}
+blockquote{border-left:4px solid #ddd;margin:0;padding-left:1em;color:#555}
+.insight{background:#d1ecf1;border-left:4px solid #17a2b8;padding:1em;margin:1em 0}
+.warning{background:#fff3cd;border-left:4px solid #ffc107;padding:1em;margin:1em 0}
+</style></head><body>
+
+<h1>Module 7: Partial Observability</h1>
+<p><strong>Estimated reading time:</strong> 4–5 hours | <strong>Prerequisites:</strong> Module 3 (Environment Design)</p>
+<p><strong>Goal:</strong> Understand why partial observability makes PE harder, how belief states help, and what masking modes we tried.</p>
+
+<hr>
+
+<h2>7.1 From MDP to POMDP</h2>
+<p>A <strong>Markov Decision Process (MDP)</strong> assumes the agent observes the full state <strong>s</strong> at every timestep. A <strong>Partially Observable MDP (POMDP)</strong> relaxes this: the agent only observes <strong>o ~ Ω(o | s)</strong>, where Ω is the observation distribution.</p>
+
+<h3>Why POMDPs Are Harder</h3>
+<p>In an MDP, the optimal policy is a function of the current state: π*(s). In a POMDP, the agent must maintain a <strong>belief</strong> b(s) — a distribution over possible states — and act on that belief: π*(b).</p>
+
+<p>The belief update (Bayes filter) is:</p>
+<p>$$b_{t+1}(s') = \eta \cdot \Omega(o_{t+1} | s') \sum_s T(s' | s, a) \cdot b_t(s)$$</p>
+<p>where <strong>T</strong> is the transition model, <strong>Ω</strong> is the observation model, and <strong>η</strong> is a normalizing constant.</p>
+
+<div class="insight"><strong>Insight:</strong> Computing the exact belief update requires knowing the transition and observation models. In deep RL, we don't have these models — so we must either (1) learn them, (2) approximate the belief, or (3) use memory (RNN/LSTM) to implicitly track history.</div>
+
+<h2>7.2 Sensing Models in Our Work</h2>
+<p>We experimented with multiple sensing models across the project:</p>
+
+<table>
+<tr><th>Model</th><th>Mechanism</th><th>Sessions</th><th>Result</th></tr>
+<tr><td>Radius</td><td>Visible if within r meters</td><td>S61</td><td>Functional but unrealistic</td></tr>
+<tr><td>LOS (Line-of-Sight)</td><td>Blocked by obstacles</td><td>S61–S62</td><td>Too restrictive</td></tr>
+<tr><td>FOV (Field of View)</td><td>Triangular wedge of vision</td><td>S76–S81</td><td>Best — directional, realistic</td></tr>
+<tr><td>Combined</td><td>Radius + LOS together</td><td>S61–S63</td><td>Viable but complex</td></tr>
+</table>
+
+<h3>The G&I Sensing Model</h3>
+<p>The G&I 2024 environment uses:</p>
+<ul>
+<li><strong>Pursuer:</strong> FOV 120° (2π/3 rad), range 6m</li>
+<li><strong>Evader:</strong> Omnidirectional (2π rad), range 1000m (effectively infinite)</li>
+</ul>
+
+<p>This asymmetry is intentional: the evader has better situational awareness, which partially compensates for its lower speed.</p>
+
+<h2>7.3 Belief States</h2>
+<p>When an agent cannot directly observe the opponent's position, it must <strong>infer</strong> it from history. We explored two approaches:</p>
+
+<h3>7.3.1 Particle Filters (S90)</h3>
+<p>A <strong>particle filter</strong> represents the belief as a set of weighted samples (particles):</p>
+<p>$$b(s) \approx \sum_{i=1}^{N} w_i \cdot \delta(s - s_i)$$</p>
+
+<p>Each particle is a hypothesis about the opponent's state. The filter:</p>
+<ol>
+<li><strong>Predicts:</strong> Propagate particles forward using dynamics</li>
+<li><strong>Updates:</strong> Reweight by observation likelihood</li>
+<li><strong>Resamples:</strong> Replace low-weight particles with high-weight copies</li>
+</ol>
+
+<p>We implemented a <strong>BeliefTracker</strong> with 200 particles (S90). The tracker output a belief vector that was concatenated with the observation.</p>
+
+<h3>7.3.2 BiMDN (G&I 2024)</h3>
+<p>The <strong>Bidirectional Mixture Density Network (BiMDN)</strong> is a learned belief representation:</p>
+<ul>
+<li>An <strong>LSTM encoder</strong> processes the agent's observation history</li>
+<li>The encoder outputs parameters of a <strong>Gaussian mixture</strong></li>
+<li>The mixture represents the belief over opponent state</li>
+</ul>
+
+<p>The BiMDN is trained jointly with the policy using the <strong>negative log-likelihood</strong> of the true opponent state:</p>
+<p>$$L_{\text{BiMDN}} = -\log p(s_{\text{opp}} | \text{history})$$</p>
+
+<div class="warning"><strong>Critical implementation detail:</strong> The BiMDN needs a <strong>warm-up period</strong> (10,000 steps in G&I config) before its outputs are reliable. During warm-up, the agent uses ground-truth opponent positions. This warm-up was initially missing in our reproduction and caused poor performance (S95 fix #2).</div>
+
+<h2>7.4 Our Belief-State Self-Play Experiment</h2>
+<p>In S90, we integrated the BeliefTracker into the training loop:</p>
+<ol>
+<li>Evader maintains a particle-filter belief over pursuer state</li>
+<li>Belief is concatenated with observation</li>
+<li>Policy network takes (obs + belief) as input</li>
+</ol>
+
+<h3>Result: BELIEF_s200 (S91)</h3>
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Peak CR</td><td>0.48</td></tr>
+<tr><td>Final CR</td><td>0.10</td></tr>
+<tr><td>Outcome</td><td>Collapse — evader-dominant</td></tr>
+</table>
+
+<p>The belief tracker worked but did not prevent collapse. The key finding: <strong>drift is structural, not curriculum-induced</strong>. Even with perfect belief, the competitive dynamics still push toward collapse.</p>
+
+<h2>7.5 Masking Curriculum (S75)</h2>
+<p>Inspired by <strong>PO-GRL</strong> (Partial Observation curriculum learning), we tried annealing the observation difficulty:</p>
+<ol>
+<li><strong>Start:</strong> Full observability (omnidirectional, infinite range)</li>
+<li><strong>Anneal:</strong> Gradually reduce FOV angle and range</li>
+<li><strong>End:</strong> Final FOV (120°, 6m for pursuer)</li>
+</ol>
+
+<p>Result: +10–15 percentage points improvement before the run was killed by a disk-full restart (S75).</p>
+
+<h2>7.6 Summary</h2>
+<table>
+<tr><th>Concept</th><th>Meaning</th></tr>
+<tr><td>POMDP</td><td>Agent observes o, not full state s</td></tr>
+<tr><td>Belief state b(s)</td><td>Distribution over possible states</td></tr>
+<tr><td>Particle filter</td><td>Monte Carlo belief representation</td></tr>
+<tr><td>BiMDN</td><td>Learned belief via LSTM + Gaussian mixture</td></tr>
+<tr><td>FOV sensing</td><td>Directional vision — most realistic model</td></tr>
+<tr><td>Masking curriculum</td><td>Anneal from full to partial obs</td></tr>
+</table>
+
+<h2>Self-Check</h2>
+<ol>
+<li><strong>Why does partial observability make PE harder for the pursuer?</strong> What information is missing, and how does the evader exploit this?</li>
+<li><strong>What is the difference between a particle filter and BiMDN?</strong> When would you prefer one over the other?</li>
+<li><strong>Why did belief-state self-play (BELIEF_s200) collapse despite having "perfect" opponent tracking?</strong></li>
+<li><strong>Why does the BiMDN need a warm-up period?</strong> What happens if you use its outputs before warm-up?</li>
+</ol>
+
+<h2>Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> G&I 2024, Section III: BiMDN architecture and belief-state formulation.</li>
+<li><strong>(ESSENTIAL)</strong> Kaelbling et al. (1998), "Planning and Acting in Partially Observable Stochastic Domains": POMDP fundamentals.</li>
+<li><strong>(REFERENCE)</strong> PO-GRL papers (from S69): Curriculum learning for partial observability.</li>
+<li><strong>(OPTIONAL)</strong> Thrun et al. (2005), "Probabilistic Robotics": Particle filters in detail.</li>
+</ul>
+
+<h2>Deep Dive Sessions</h2>
+<ul>
+<li><strong>S90</strong> <strong>(REFERENCE)</strong> Belief-state implementation: BeliefTracker, particle filter, obs space integration.</li>
+<li><strong>S91</strong> <strong>(ESSENTIAL)</strong> BELIEF_s200 failure: Peak 0.48 → collapse 0.10. Key finding: drift is structural.</li>
+<li><strong>S75</strong> <strong>(OPTIONAL)</strong> Masking curriculum: PO-GRL annealing, +10–15pp improvement.</li>
+<li><strong>S95</strong> <strong>(ESSENTIAL)</strong> BiMDN 5 fixes: Warm-up, architecture, tournament eval, etc.</li>
+</ul>
+
+</body></html>

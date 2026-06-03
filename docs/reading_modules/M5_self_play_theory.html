@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Module 5: Self-Play Theory</title>
+<style>
+body{max-width:800px;margin:2em auto;padding:0 1em;font-family:Georgia,serif;line-height:1.6;color:#222}
+h1{border-bottom:2px solid #333;padding-bottom:.3em}
+h2{border-bottom:1px solid #ccc;padding-bottom:.2em;margin-top:1.5em}
+h3{margin-top:1.2em}
+table{border-collapse:collapse;width:100%;margin:1em 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f5f5f5}
+code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-family:monospace}
+pre{background:#f4f4f4;padding:1em;overflow-x:auto;border-radius:4px}
+blockquote{border-left:4px solid #ddd;margin:0;padding-left:1em;color:#555}
+.insight{background:#d1ecf1;border-left:4px solid #17a2b8;padding:1em;margin:1em 0}
+.warning{background:#fff3cd;border-left:4px solid #ffc107;padding:1em;margin:1em 0}
+</style></head><body>
+
+<h1>Module 5: Self-Play Theory and Competitive Balance</h1>
+<p><strong>Estimated reading time:</strong> 5–6 hours | <strong>Prerequisites:</strong> Module 2 (RL Foundations), Module 3 (Environment Design)</p>
+<p><strong>Goal:</strong> Understand why self-play in competitive games is fundamentally unstable, what collapse looks like, and why maintaining CR≈0.5 is so difficult.</p>
+
+<hr>
+
+<h2>5.1 The Self-Play Paradigm</h2>
+<p>In <strong>self-play</strong>, an agent trains against a copy of itself (or a past version). This is the dominant paradigm for mastering complex games — AlphaGo, AlphaZero, OpenAI Five, and AlphaStar all use variants of self-play.</p>
+
+<p>The core idea is elegant: if you can beat yourself, you keep improving. But this only works if the training process maintains <strong>competitive balance</strong> between the two sides.</p>
+
+<div class="insight"><strong>Insight:</strong> Self-play is not one algorithm but a family. The key design choices are: (1) who trains when, (2) against which opponent, and (3) for how long. Every choice affects stability.</div>
+
+<h2>5.2 Simultaneous vs Alternating Gradient Descent</h2>
+<p>Consider two agents with policies parameterized by $\theta_p$ (pursuer) and $\theta_e$ (evader). Each has a loss function $L_p(\theta_p, \theta_e)$ and $L_e(\theta_p, \theta_e)$.</p>
+
+<h3>SimGD (Simultaneous Gradient Descent)</h3>
+<p>Both agents update at the same time:</p>
+$$\theta_p \leftarrow \theta_p - \alpha \nabla_{\theta_p} L_p(\theta_p, \theta_e)$$
+$$\theta_e \leftarrow \theta_e - \alpha \nabla_{\theta_e} L_e(\theta_p, \theta_e)$$
+
+<p>In a <strong>zero-sum game</strong>, $L_p = -L_e$. The gradient updates push the parameters in opposite directions. This creates a <strong>divergent spiral</strong> — like two people on a merry-go-round both trying to move forward.</p>
+
+<div class="warning"><strong>Key result:</strong> SimGD does not converge in general-sum or zero-sum games with coupled objectives. The dynamics are formally similar to a dynamical system with purely imaginary eigenvalues — oscillatory, not convergent.</div>
+
+<h3>AltGD (Alternating Gradient Descent)</h3>
+<p>One agent updates while the other is frozen:</p>
+<ol>
+<li>Pursuer updates against frozen evader</li>
+<li>Evader updates against frozen pursuer</li>
+<li>Repeat</li>
+</ol>
+
+<p>AltGD is more stable than SimGD because each update sees a stationary opponent. But it is still not guaranteed to converge — the system can still oscillate or collapse.</p>
+
+<h2>5.3 Nash Equilibrium in Policy Space</h2>
+<p>A <strong>Nash equilibrium</strong> in the context of self-play is a pair of policies $(\pi_p^*, \pi_e^*)$ such that:</p>
+
+$$J_p(\pi_p^*, \pi_e^*) \geq J_p(\pi_p, \pi_e^*) \quad \forall \pi_p$$
+$$J_e(\pi_p^*, \pi_e^*) \geq J_e(\pi_p^*, \pi_e) \quad \forall \pi_e$$
+
+<p>In PE, a balanced Nash corresponds to <strong>CR = 0.5</strong> — neither side can improve its win rate by unilaterally changing strategy.</p>
+
+<h3>Why CR = 0.5 Matters</h3>
+<table>
+<tr><th>CR</th><th>Interpretation</th><th>Stability</th></tr>
+<tr><td>0.0</td><td>Evader always escapes (pursuer never learns)</td><td>Collapsed — evader dominant</td></tr>
+<tr><td>0.25</td><td>Pursuer wins 1 in 4 — severely disadvantaged</td><td>Unstable — likely trending toward collapse</td></tr>
+<tr><td>0.5</td><td>Balanced — neither side dominates</td><td>Nash equilibrium (ideal)</td></tr>
+<tr><td>0.75</td><td>Pursuer wins 3 in 4 — evader struggling</td><td>Unstable — likely trending toward collapse</td></tr>
+<tr><td>1.0</td><td>Pursuer always captures (evader never learns)</td><td>Collapsed — pursuer dominant</td></tr>
+</table>
+
+<h2>5.4 Collapse Modes</h2>
+<p>In 104 sessions of experimentation, we observed two distinct collapse modes:</p>
+
+<h3>Pursuer-Dominant Collapse (CR → 1)</h3>
+<p>The pursuer becomes so good at capturing that the evader receives almost exclusively negative rewards. The evader cannot bootstrap — it never experiences successful escape, so it has no gradient signal for what works.</p>
+
+<p><strong>Symptoms:</strong> Pursuer capture rate climbs to 80%+, then 95%+, then 100%. Evader losses plateau at high magnitude. Evader policy becomes effectively random or frozen.</p>
+
+<h3>Evader-Dominant Collapse (CR → 0)</h3>
+<p>The evader becomes so good at escaping that the pursuer rarely captures. The pursuer receives almost no positive reward and cannot learn effective pursuit strategies.</p>
+
+<p><strong>Symptoms:</strong> Pursuer capture rate drops to 5%, then 0%. Evader escape rate approaches 100%. Pursuer policy degenerates (e.g., spins in circles, hugs walls).</p>
+
+<div class="insight"><strong>Insight:</strong> Collapse is <strong>asymmetric</strong>. Once one side dominates, the losing side's reward signal vanishes, making recovery essentially impossible without external intervention (e.g., freezing the dominant side, curriculum, or population methods).</div>
+
+<h2>5.5 Cycling and Non-Transitivity</h2>
+<p>Even without full collapse, self-play can exhibit <strong>cycling</strong>: Policy A beats B, B beats C, but C beats A. This is <strong>non-transitivity</strong> — there is no clear "best" policy.</p>
+
+<p>In PE, cycling manifests as oscillating capture rates:</p>
+<ul>
+<li>Pursuer learns to counter evader's current strategy → CR rises</li>
+<li>Evader adapts to pursuer's new strategy → CR falls</li>
+<li>Pursuer adapts again → CR rises</li>
+<li>...and so on</li>
+</ul>
+
+<p>The amplitude of oscillation indicates instability. Small oscillations (CR = 0.45–0.55) are healthy. Large oscillations (CR = 0.1–0.9) indicate the system is failing to settle.</p>
+
+<h2>5.6 Phase Length: Our Key Discovery</h2>
+<p>In competitive self-play, a critical hyperparameter is <strong>phase length</strong> — how long one agent trains before switching roles.</p>
+
+<h3>What We Tried</h3>
+<table>
+<tr><th>Phase Length</th><th>Configuration</th><th>Result</th></tr>
+<tr><td>500K steps</td><td>Long frozen phases (initial design)</td><td>Collapsed — catastrophic forgetting when switching</td></tr>
+<tr><td>2048 steps</td><td>Rapid micro-phases (S55)</td><td>Better but still collapsed — insufficient learning per phase</td></tr>
+<tr><td>Adaptive</td><td>Loser gets extra phases (S57)</td><td>Insufficient — vanishing reward gradient</td></tr>
+</table>
+
+<h3>The Discovery (S53)</h3>
+<p>After surveying 30+ papers on self-play stabilization, we discovered that <strong>our long frozen phases (500K steps) were fundamentally wrong</strong>. The literature showed:</p>
+<ul>
+<li>Successful self-play systems (AlphaGo, AlphaStar) use rapid alternation (every few thousand steps)</li>
+<li>Long phases cause catastrophic forgetting — when the opponent finally switches, the policy is obsolete</li>
+<li>Phase length should be short enough that both agents evolve together</li>
+</ul>
+
+<div class="warning"><strong>Critical finding:</strong> The phase length mistake cost us ~20 sessions of failed experiments. The root cause was assuming "more training = better learning," which is true for single-agent RL but false for competitive self-play.</div>
+
+<h2>5.7 Other Stabilization Attempts</h2>
+<p>Beyond phase length, we tried many mechanisms to prevent collapse:</p>
+
+<table>
+<tr><th>Mechanism</th><th>Sessions</th><th>Result</th></tr>
+<tr><td>LR dampening</td><td>S57</td><td>Scales LR near equilibrium — did not prevent collapse</td></tr>
+<tr><td>Collapse rollback</td><td>S58</td><td>Restore best checkpoint when SR drops — delays but doesn't prevent</td></tr>
+<tr><td>PFSP-lite</td><td>S58</td><td>Bias pool toward weaker opponents — insufficient alone</td></tr>
+<tr><td>EWC + RND</td><td>S52</td><td>Elastic weight consolidation + random network distillation — did not prevent L2 collapse</td></tr>
+<tr><td>Opponent pool</td><td>S43, S55</td><td>Reservoir sampling for diversity — did not prevent collapse</td></tr>
+</table>
+
+<h2>5.8 From Theory to Our Work</h2>
+<p>The theoretical picture is clear:</p>
+<ol>
+<li>Self-play in zero-sum games is inherently unstable</li>
+<li>SimGD diverges; AltGD is better but not guaranteed to converge</li>
+<li>Long frozen phases cause catastrophic forgetting</li>
+<li>Once collapse begins, recovery is nearly impossible without external intervention</li>
+</ol>
+
+<p>The practical question is: <strong>what actually works?</strong> In Modules 9 and 10, we present our two main attempts — EMA opponent smoothing and Pop-FSP population training — along with their theoretical motivations and empirical results.</p>
+
+<h2>5.9 Summary</h2>
+<table>
+<tr><th>Concept</th><th>Meaning</th></tr>
+<tr><td>SimGD</td><td>Simultaneous gradient descent — diverges in competitive games</td></tr>
+<tr><td>AltGD</td><td>Alternating gradient descent — more stable but still fragile</td></tr>
+<tr><td>Nash equilibrium</td><td>Neither side can improve unilaterally — CR = 0.5</td></tr>
+<tr><td>Pursuer-dominant collapse</td><td>CR → 1, evader cannot bootstrap</td></tr>
+<tr><td>Evader-dominant collapse</td><td>CR → 0, pursuer cannot bootstrap</td></tr>
+<tr><td>Cycling</td><td>Non-transitive policy improvements — CR oscillates</td></tr>
+<tr><td>Phase length</td><td>How long one agent trains before switching — critical hyperparameter</td></tr>
+</table>
+
+<h2>Self-Check</h2>
+<ol>
+<li><strong>Why does SimGD diverge in zero-sum games?</strong> Draw the gradient dynamics for two players with opposite objectives.</li>
+<li><strong>What is the difference between CR→0 collapse and CR→1 collapse?</strong> Which is harder to recover from, and why?</li>
+<li><strong>Why do long frozen phases (500K steps) fail in competitive self-play?</strong> What does the opponent look like after 500K steps of not training?</li>
+<li><strong>If you observe CR oscillating between 0.3 and 0.7, what does this tell you about the underlying dynamics?</strong> Is this better or worse than monotonic collapse to CR=0?</li>
+</ol>
+
+<h2>Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> Paper 04 (Self-play survey, 2024): Comprehensive survey of self-play methods, PSRO, league training, and stabilization techniques.</li>
+<li><strong>(ESSENTIAL)</strong> Heinrich & Silver, "Fictitious Self-Play" (2016): The original FSP algorithm.</li>
+<li><strong>(REFERENCE)</strong> Lanctot et al., "A Unified Game-Theoretic Approach to Multiagent Reinforcement Learning" (PSRO, 2017): Population-based training.</li>
+<li><strong>(REFERENCE)</strong> Vinyals et al., "Grandmaster Level in StarCraft II" (AlphaStar, 2019): League training in practice.</li>
+<li><strong>(OPTIONAL)</strong> Balduzzi et al., "The Mechanics of n-Player Differentiable Games" (2018): Gradient dynamics in games.</li>
+</ul>
+
+<h2>Deep Dive Sessions</h2>
+<ul>
+<li><strong>S53</strong> <strong>(ESSENTIAL)</strong> Self-play stabilization research: 30+ papers reviewed. Key finding: long frozen phases are fundamentally wrong.</li>
+<li><strong>S55</strong> <strong>(ESSENTIAL)</strong> Rapid alternation redesign: Implemented micro-phase rapid alternation (2048 steps), evader speed advantage, rebalanced rewards.</li>
+<li><strong>S57</strong> <strong>(REFERENCE)</strong> Adaptive ratio + LR dampening: Anti-cycling mechanisms attempted and failed.</li>
+<li><strong>S58</strong> <strong>(REFERENCE)</strong> Collapse rollback + PFSP-lite: Safety nets that delay but don't prevent collapse.</li>
+</ul>
+
+</body></html>

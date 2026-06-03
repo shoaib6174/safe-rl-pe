@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Module 13: Failure Archive</title>
+<style>
+body{max-width:800px;margin:2em auto;padding:0 1em;font-family:Georgia,serif;line-height:1.6;color:#222}
+h1{border-bottom:2px solid #333;padding-bottom:.3em}
+h2{border-bottom:1px solid #ccc;padding-bottom:.2em;margin-top:1.5em}
+h3{margin-top:1.2em}
+table{border-collapse:collapse;width:100%;margin:1em 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f5f5f5}
+code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-family:monospace}
+pre{background:#f4f4f4;padding:1em;overflow-x:auto;border-radius:4px}
+blockquote{border-left:4px solid #ddd;margin:0;padding-left:1em;color:#555}
+.insight{background:#d1ecf1;border-left:4px solid #17a2b8;padding:1em;margin:1em 0}
+.warning{background:#fff3cd;border-left:4px solid #ffc107;padding:1em;margin:1em 0}
+</style></head><body>
+
+<h1>Module 13: The Complete Failure Archive</h1>
+<p><strong>Estimated reading time:</strong> 4–5 hours (reference as needed) | <strong>Prerequisites:</strong> All prior modules</p>
+<p><strong>Goal:</strong> Catalog every failed stabilization attempt, understand why each failed, and extract patterns.</p>
+
+<hr>
+
+<h2>13.1 Summary Table</h2>
+<table>
+<tr><th>Category</th><th>Attempts</th><th>Sessions</th><th>Root Cause</th><th>Key Finding</th></tr>
+<tr><td>Curriculum collapse</td><td>Run P–U, Z1–Z2</td><td>S40–S52</td><td>Gates too low, no recovery</td><td>Long frozen phases fundamentally wrong</td></tr>
+<tr><td>Speed/ratio tuning</td><td>S1v2–S1v6b</td><td>S59–S64</td><td>Pure speed strategy</td><td>Equal speed + partial obs is viable but degenerate</td></tr>
+<tr><td>Freeze/unfreeze</td><td>SP7–SP14, SP15–SP18</td><td>S66, S82–S96</td><td>Collapse resumes after unfreeze</td><td>vis_reward=0.2 only sustained help</td></tr>
+<tr><td>Masking curriculum</td><td>SP12_mc, SP12b, SP12c</td><td>S75</td><td>Annealing disrupted by restart</td><td>+10–15pp possible</td></tr>
+<tr><td>FOV variants</td><td>SP13a–SP14b</td><td>S76–S81</td><td>No single config worked</td><td>FOV 90°/8m + asymmetric best</td></tr>
+<tr><td>Adaptive ratio</td><td>RA7b, RA8</td><td>S57</td><td>Vanishing reward gradient</td><td>Insufficient alone</td></tr>
+<tr><td>LR dampening</td><td>RA7b, RA8</td><td>S57</td><td>Scales LR but not gradients</td><td>Did not prevent collapse</td></tr>
+<tr><td>EWC + RND</td><td>S52</td><td>S52</td><td>L2 collapse persists</td><td>Not sufficient</td></tr>
+<tr><td>Exploration rewards</td><td>w_search</td><td>S67, S71</td><td>Agent lacks capacity</td><td>Insufficient representation</td></tr>
+<tr><td>Belief-state</td><td>BELIEF_s200</td><td>S90–S91</td><td>Structural drift</td><td>Drift is intrinsic, not curriculum</td></tr>
+<tr><td>RecurrentPPO</td><td>S68</td><td>S68</td><td>Never launched</td><td>LSTM doesn't solve core issue</td></tr>
+<tr><td>Opponent Pool</td><td>FIFO, reservoir</td><td>S43, S55</td><td>Diversity without balance</td><td>Doesn't address asymmetry</td></tr>
+<tr><td>Pop-FSP</td><td>v1–v7</td><td>S100–S103</td><td>∀/∃ structural asymmetry</td><td><strong>Core theoretical contribution</strong></td></tr>
+</table>
+
+<h2>13.2 Curriculum Collapse (S40–S52)</h2>
+<p>Our original 4-level curriculum seemed logical:</p>
+<ol>
+<li>L1: Easy opponent → learn basics</li>
+<li>L2: Slightly harder → build on basics</li>
+<li>L3: Medium → approach real difficulty</li>
+<li>L4: Full capability → real game</li>
+</ol>
+
+<p><strong>What went wrong:</strong> The L3→L4 transition was catastrophic. The gate (CR > 0.45) was too permissive — agents advanced before they were truly ready. At L4, the opponent was suddenly too strong, and the pursuer's reward signal vanished.</p>
+
+<p><strong>Attempts to fix:</strong></p>
+<ul>
+<li>Raised gates (S48)</li>
+<li>Added regression tests (S48)</li>
+<li>Asymmetric training (S48)</li>
+<li>EWC + RND (S52)</li>
+</ul>
+
+<p><strong>Why nothing worked:</strong> The fundamental issue was phase length, not curriculum design. Long frozen phases (500K steps) meant catastrophic forgetting when switching.</p>
+
+<h2>13.3 Freeze/Unfreeze (SP7–SP18)</h2>
+<p>The freeze/unfreeze strategy was:</p>
+<ol>
+<li>Freeze evader → train pursuer until CR > threshold</li>
+<li>Unfreeze → both train together</li>
+<li>If collapse detected, freeze again</li>
+</ol>
+
+<p><strong>What worked:</strong> Freezing the evader did let the pursuer bootstrap. SP7b reached 42% capture.</p>
+
+<p><strong>What failed:</strong> After unfreezing, collapse resumed within 500K–1M steps. The pursuer had overfitted to the frozen evader and couldn't adapt.</p>
+
+<p><strong>Key finding (S83):</strong> vis_reward (w=0.1) was the only modification that produced sustained non-zero capture (0.57 vs 0.10 baseline). Under 90° FOV, the pursuer gets no gradient signal without explicit reward for maintaining line of sight.</p>
+
+<h2>13.4 Pop-FSP: The Final Attempt</h2>
+<p>After 100+ sessions of other approaches, we tried population methods:</p>
+
+<table>
+<tr><th>Version</th><th>Key Change</th><th>Result</th></tr>
+<tr><td>v1</td><td>Uniform sampling, symmetric pops</td><td>CR = 0.000</td></tr>
+<tr><td>v2</td><td>Recency bias + asymmetric pops</td><td>Still unbalanced</td></tr>
+<tr><td>v3</td><td>Larger arena (19×19)</td><td>CR = 1.000</td></tr>
+<tr><td>v4</td><td>More evader advantage</td><td>Evader-dominant</td></tr>
+<tr><td>v5</td><td>Intermediate settings</td><td>Pursuer-dominant</td></tr>
+<tr><td>v6</td><td>Arena=19, evader=1.65×</td><td>CR ~0.72, oscillating</td></tr>
+<tr><td>v7</td><td>Delayed lock-in</td><td>Still pursuer-dominant</td></tr>
+</table>
+
+<p><strong>The finding:</strong> ∀/∃ structural asymmetry. The pursuer trains ∃-like (one opponent at a time), the evader trains ∀-like (must escape all). This asymmetry cannot be eliminated by game modifications alone.</p>
+
+<h2>13.5 Common Patterns</h2>
+
+<table>
+<tr><th>Pattern</th><th>Description</th><th>Frequency</th></tr>
+<tr><td>Evader hides</td><td>Equal speed + PO → evader stops moving</td><td>S64, BELIEF_s200</td></tr>
+<tr><td>Pursuer spins</td><td>No positive reward → degenerate policy</td><td>Many seeds</td></tr>
+<tr><td>Oscillation</td><td>CR swings 0.3→0.7→0.3</td><td>EMA seed 6, Pop-FSP v6</td></tr>
+<tr><td>NaN</td><td>Loss becomes NaN at ~1000–3000 ep</td><td>EMA s4, GI 20K seeds</td></tr>
+<tr><td>Late regression</td><td>Peak CR, then decline</td><td>S1v4a, S1v4b</td></tr>
+</table>
+
+<h2>13.6 What Actually Worked</h2>
+
+<table>
+<tr><th>Intervention</th><th>Effect</th><th>Sessions</th></tr>
+<tr><td>vis_reward = 0.2</td><td>0.57 CR vs 0.10 baseline</td><td>S83</td></tr>
+<tr><td>EMA (seed 0 only)</td><td>0.698 robustness</td><td>S97–S98</td></tr>
+<tr><td>Masking curriculum</td><td>+10–15pp improvement</td><td>S75</td></tr>
+</table>
+
+<p>None of these prevented collapse reproducibly. They only delayed it or improved transient performance.</p>
+
+<h2>13.7 Summary</h2>
+<table>
+<tr><th>Concept</th><th>Meaning</th></tr>
+<tr><td>13 categories</td><td>Every major approach we tried</td></tr>
+<tr><td>0/13</td><td>None prevented collapse reproducibly</td></tr>
+<tr><td>Core insight</td><td>Collapse is structural, not algorithmic</td></tr>
+<tr><td>Paper implication</td><td>Negative results are central contributions</td></tr>
+</table>
+
+<h2>Self-Check</h2>
+<ol>
+<li><strong>Which failure category consumed the most sessions?</strong> Why?</li>
+<li><strong>What do the late regression and oscillation patterns have in common?</strong></li>
+<li><strong>Why did vis_reward work when exploration rewards didn't?</strong></li>
+<li><strong>What would you try next, given the ∀/∃ finding?</strong></li>
+</ol>
+
+<h2>Deep Dive Sessions</h2>
+<ul>
+<li><strong>S40–S52</strong> <strong>(ESSENTIAL)</strong> Curriculum collapse: The long journey to understanding phase length.</li>
+<li><strong>S66, S82–S96</strong> <strong>(ESSENTIAL)</strong> Freeze/unfreeze: SP7–SP18 full history.</li>
+<li><strong>S100–S103</strong> <strong>(ESSENTIAL)</strong> Pop-FSP: The final attempt and asymmetry finding.</li>
+</ul>
+
+</body></html>

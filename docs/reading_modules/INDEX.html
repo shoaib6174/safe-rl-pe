@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>ICRA 2027 Reading Modules</title>
+<style>
+body{max-width:900px;margin:2em auto;padding:0 1em;font-family:Georgia,serif;line-height:1.6;color:#222}
+h1{border-bottom:2px solid #333;padding-bottom:.3em}
+h2{border-bottom:1px solid #ccc;padding-bottom:.2em;margin-top:1.5em}
+table{border-collapse:collapse;width:100%;margin:1em 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f5f5f5}
+a{color:#0066cc;text-decoration:none}
+a:hover{text-decoration:underline}
+.path{background:#f0f8ff;padding:1em;margin:1em 0;border-left:4px solid #0066cc}
+</style></head><body>
+
+<h1>ICRA 2027 Reading Modules: First-Principles Understanding</h1>
+<p><strong>Purpose:</strong> Before writing the paper, understand every concept, decision, and result from foundational principles.</p>
+<p><strong>Format:</strong> 14 modules progressing from fundamentals to specific contributions. Each module includes concept foundation → mathematical derivation → project-specific application → historical context → paper references → self-check questions.</p>
+
+<h2>All Modules</h2>
+<table>
+<tr><th>#</th><th>Module</th><th>Time</th><th>Prerequisites</th><th>HTML</th></tr>
+<tr><td>1</td><td>Pursuit-Evasion Fundamentals</td><td>3–4h</td><td>None</td><td><a href="M1_pe_fundamentals.html">Open</a></td></tr>
+<tr><td>2</td><td>Deep RL for Multi-Agent Control</td><td>4–5h</td><td>M1</td><td><a href="M2_rl_foundations.html">Open</a></td></tr>
+<tr><td>3</td><td>Environment Design</td><td>2–3h</td><td>M1</td><td><a href="M3_environment.html">Open</a></td></tr>
+<tr><td>4</td><td>Reward Engineering</td><td>3–4h</td><td>M3</td><td><a href="M4_rewards.html">Open</a></td></tr>
+<tr><td>5</td><td>Self-Play Theory</td><td>5–6h</td><td>M2, M3</td><td><a href="M5_self_play_theory.html">Open</a></td></tr>
+<tr><td>6</td><td>Curriculum & Infrastructure</td><td>2–3h</td><td>M2, M3</td><td><a href="M6_curriculum_infra.html">Open</a></td></tr>
+<tr><td>7</td><td>Partial Observability</td><td>4–5h</td><td>M3</td><td><a href="M7_partial_obs.html">Open</a></td></tr>
+<tr><td>8</td><td>Safety via CBF</td><td>4–5h</td><td>M3</td><td><a href="M8_safety_cbf.html">Open</a></td></tr>
+<tr><td>9</td><td>EMA Stabilization</td><td>4–5h</td><td>M5, M6</td><td><a href="M9_ema.html">Open</a></td></tr>
+<tr><td>10</td><td>Pop-FSP & Asymmetry</td><td>5–6h</td><td>M5</td><td><a href="M10_pop_fsp.html">Open</a></td></tr>
+<tr><td>11</td><td>Evaluation & Rigor</td><td>3–4h</td><td>M6, M9</td><td><a href="M11_evaluation.html">Open</a></td></tr>
+<tr><td>12</td><td>G&I Reproduction</td><td>3–4h</td><td>M2, M7</td><td><a href="M12_gi_repro.html">Open</a></td></tr>
+<tr><td>13</td><td>Failure Archive</td><td>4–5h</td><td>All</td><td><a href="M13_failure_archive.html">Open</a></td></tr>
+<tr><td>14</td><td>Paper Narrative</td><td>2–3h</td><td>All</td><td><a href="M14_paper_narrative.html">Open</a></td></tr>
+</table>
+
+<h2>Suggested Reading Paths</h2>
+
+<div class="path">
+<strong>Fast Path (12 hours):</strong> M1 → M5 → M9 → M10 → M14<br>
+Get the story arc first, fill in details later.
+</div>
+
+<div class="path">
+<strong>Full Path (55 hours):</strong> M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M10 → M11 → M12 → M13 → M14<br>
+Complete first-principles understanding.
+</div>
+
+<div class="path">
+<strong>Writing the Intro:</strong> M1, M5, M14<br>
+Problem motivation, self-play theory, paper framing.
+</div>
+
+<div class="path">
+<strong>Writing the Methods:</strong> M3, M4, M6, M9, M10<br>
+Environment, rewards, curriculum, EMA, Pop-FSP.
+</div>
+
+<div class="path">
+<strong>Writing the Results:</strong> M9, M10, M11, M12<br>
+EMA seeds, Pop-FSP configs, G&I repro, robustness.
+</div>
+
+<h2>Quick Reference</h2>
+<table>
+<tr><th>Key Equation</th><th>Location</th><th>Meaning</th></tr>
+<tr><td>θ_EMA ← (1-τ)·θ_EMA + τ·θ</td><td>M9</td><td>EMA update</td></tr>
+<tr><td>Robustness = min(CR_r, CR_g, CR_s)</td><td>M9, M11</td><td>Worst-case performance</td></tr>
+<tr><td>∀/∃ asymmetry</td><td>M10</td><td>Structural finding</td></tr>
+<tr><td>Isaacs equation</td><td>M1</td><td>HJI for differential games</td></tr>
+</table>
+
+<h2>Key Results</h2>
+<table>
+<tr><th>Result</th><th>Value</th><th>Module</th></tr>
+<tr><td>EMA best robustness</td><td>0.698 (seed 0)</td><td>M9</td></tr>
+<tr><td>EMA reproducibility</td><td>1/7 (1/5 with corrected LR)</td><td>M9</td></tr>
+<tr><td>Pop-FSP best result</td><td>CR ~0.72 (v6, oscillating)</td><td>M10</td></tr>
+<tr><td>G&I self-play CR</td><td>0.550 (verified)</td><td>M12</td></tr>
+<tr><td>BR exploitability</td><td>H3 — evader exploitable</td><td>M11</td></tr>
+</table>
+
+<h2>Key Failures</h2>
+<table>
+<tr><th>Failure</th><th>Sessions</th><th>Root Cause</th></tr>
+<tr><td>Curriculum collapse</td><td>S40–S52</td><td>Long frozen phases</td></tr>
+<tr><td>Freeze/unfreeze</td><td>S66, S82–S96</td><td>Collapse resumes after unfreeze</td></tr>
+<tr><td>Belief-state</td><td>S90–S91</td><td>Structural drift</td></tr>
+<tr><td>Pop-FSP v1–v7</td><td>S100–S103</td><td>∀/∃ asymmetry</td></tr>
+</table>
+
+<p><em>Last updated: 2026-06-01</em></p>
+
+</body></html>

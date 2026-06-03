@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Module 14: Paper Narrative</title>
+<style>
+body{max-width:800px;margin:2em auto;padding:0 1em;font-family:Georgia,serif;line-height:1.6;color:#222}
+h1{border-bottom:2px solid #333;padding-bottom:.3em}
+h2{border-bottom:1px solid #ccc;padding-bottom:.2em;margin-top:1.5em}
+h3{margin-top:1.2em}
+table{border-collapse:collapse;width:100%;margin:1em 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f5f5f5}
+code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-family:monospace}
+pre{background:#f4f4f4;padding:1em;overflow-x:auto;border-radius:4px}
+blockquote{border-left:4px solid #ddd;margin:0;padding-left:1em;color:#555}
+.insight{background:#d1ecf1;border-left:4px solid #17a2b8;padding:1em;margin:1em 0}
+.warning{background:#fff3cd;border-left:4px solid #ffc107;padding:1em;margin:1em 0}
+</style></head><body>
+
+<h1>Module 14: The Paper Narrative</h1>
+<p><strong>Estimated reading time:</strong> 2–3 hours | <strong>Prerequisites:</strong> All prior modules</p>
+<p><strong>Goal:</strong> Map all modules to paper sections, understand the "systematic study" framing, and be ready to write.</p>
+
+<hr>
+
+<h2>14.1 The Journey: From Method Paper to Systematic Study</h2>
+<p>When we started (S87), the plan was clear: <strong>"Self-Play Stabilization Under Partial Observability."</strong> A method paper with positive results.</p>
+
+<p>By S104, the data had spoken:</p>
+<ul>
+<li>EMA: 1/7 success (not reproducible)</li>
+<li>Pop-FSP: 0/5 success (structurally impossible)</li>
+<li>G&I repro: Confirmed fragile</li>
+</ul>
+
+<p><strong>The pivot:</strong> A method paper would overclaim. A <strong>systematic study</strong> makes the failures central contributions.</p>
+
+<div class="insight"><strong>Key decision (D40, S104):</strong> "Paper framing: 'systematic study' not 'method paper.' EMA is seed-dependent (1/4 success). A method paper would overclaim. A study paper makes EMA fragility a finding and the Pop-FSP ∀/∃ asymmetry a central theoretical contribution."</div>
+
+<h2>14.2 Title</h2>
+<p><strong>"A Study of Self-Play Stabilization Methods for Competitive Deep RL in PO Pursuit-Evasion"</strong></p>
+
+<p>Why "study":</p>
+<ul>
+<li>We systematically evaluated multiple methods (EMA, Pop-FSP, curriculum, freeze/unfreeze, etc.)</li>
+<li>We report both positive (EMA seed 0) and negative (Pop-FSP, EMA seeds 1-6) results</li>
+<li>We contribute a theoretical finding (∀/∃ asymmetry)</li>
+<li>We verify a baseline (G&I reproduction)</li>
+</ul>
+
+<h2>14.3 Module-to-Section Mapping</h2>
+
+<table>
+<tr><th>Paper Section</th><th>Modules</th><th>Purpose</th></tr>
+<tr><td>Introduction</td><td>M1, M5, M14</td><td>Problem motivation, why PE is hard, what we study</td></tr>
+<tr><td>Related Work</td><td>M2, M5, M7, M8</td><td>RL for PE, self-play methods, PO, safety</td></tr>
+<tr><td>Methods</td><td>M3, M4, M6, M9, M10</td><td>Env, EMA, Pop-FSP, eval metrics</td></tr>
+<tr><td>Results</td><td>M9, M10, M11, M12</td><td>EMA seeds, Pop-FSP configs, G&I repro, robustness</td></tr>
+<tr><td>Discussion</td><td>M13, M14</td><td>What failed and why, future directions</td></tr>
+</table>
+
+<h2>14.4 Key Contributions</h2>
+
+<h3>Contribution 1: EMA Characterization</h3>
+<p><strong>What:</strong> First systematic evaluation of EMA opponent smoothing in competitive PE.</p>
+<p><strong>Finding:</strong> Shows promise (seed 0: 0.698 robustness) but poor reproducibility (1/5 with corrected LR).</p>
+<p><strong>Paper role:</strong> Partial positive result — EMA helps but does not guarantee convergence.</p>
+
+<h3>Contribution 2: ∀/∃ Structural Asymmetry</h3>
+<p><strong>What:</strong> Novel theoretical insight explaining why population methods systematically fail in symmetric competitive games.</p>
+<p><strong>Finding:</strong> The pursuer trains ∃-like (one opponent), the evader trains ∀-like (all opponents). Population diversity delays lock-in but cannot correct the equilibrium.</p>
+<p><strong>Paper role:</strong> Central theoretical contribution — negative result becomes a structural insight.</p>
+
+<h3>Contribution 3: G&I 2024 Verification</h3>
+<p><strong>What:</strong> Independent reproduction with 5 critical fixes and fragility analysis.</p>
+<p><strong>Finding:</strong> Paper result is reproducible but fragile. Oscillatory dynamics are intrinsic.</p>
+<p><strong>Paper role:</strong> Baseline validation — validates the environment and shows the problem is genuinely hard.</p>
+
+<h2>14.5 Answering the Reviewer's Questions</h2>
+
+<h3>"If EMA doesn't work reliably, why include it?"</h3>
+<p>Answer: Because a systematic study <em>must</em> include both positive and negative results. EMA is a partial positive — it shows promise. Its fragility is itself a finding. Excluding it would misrepresent the state of the art.</p>
+
+<h3>"What is the contribution if most methods failed?"</h3>
+<p>Answer: Three contributions: (1) EMA characterization (first systematic eval), (2) ∀/∃ asymmetry (new theory), (3) G&I verification (baseline). The negative results define the boundary of what's possible.</p>
+
+<h3>"Why should I care about Pop-FSP failing?"</h3>
+<p>Answer: The ∀/∃ asymmetry is not specific to Pop-FSP — it applies to any symmetric population method in competitive games. This is a general theoretical insight.</p>
+
+<h2>14.6 Figures and Tables for the Paper</h2>
+
+<table>
+<tr><th>Figure/Table</th><th>Content</th><th>Module</th></tr>
+<tr><td>Fig 1</td><td>Environment schematic (arena, FOV, agents)</td><td>M3</td></tr>
+<tr><td>Fig 2</td><td>EMA robustness trajectory (seed 0 vs seeds 1-6)</td><td>M9</td></tr>
+<tr><td>Fig 3</td><td>Pop-FSP CR trajectories (v3-v7)</td><td>M10</td></tr>
+<tr><td>Fig 4</td><td>∀/∃ asymmetry diagram</td><td>M10</td></tr>
+<tr><td>Table 1</td><td>Hyperparameters (EMA, Pop-FSP, G&I)</td><td>M6</td></tr>
+<tr><td>Table 2</td><td>7-seed EMA results</td><td>M9</td></tr>
+<tr><td>Table 3</td><td>Pop-FSP config history</td><td>M10</td></tr>
+<tr><td>Table 4</td><td>G&I verification results</td><td>M12</td></tr>
+</table>
+
+<h2>14.7 Future Work</h2>
+<ol>
+<li><strong>Architectural asymmetry:</strong> Explicitly asymmetric networks (larger evader, different LR)</li>
+<li><strong>Hierarchical policies:</strong> High-level strategy + low-level control</li>
+<li><strong>Multi-agent population:</strong> Beyond 1v1 — teams and mixed games</li>
+<li><strong>Real-world transfer:</strong> Sim-to-real with the G&I environment</li>
+</ol>
+
+<h2>14.8 Summary</h2>
+<table>
+<tr><th>Concept</th><th>Meaning</th></tr>
+<tr><td>Systematic study</td><td>Both positive and negative results are contributions</td></tr>
+<tr><td>EMA fragility</td><td>1/7 success — not a method, but a finding</td></tr>
+<tr><td>∀/∃ asymmetry</td><td>Central theoretical contribution</td></tr>
+<tr><td>G&I verification</td><td>Baseline validation</td></tr>
+<tr><td>Intellectual honesty</td><td>Gate 1 NO-GO as a feature, not a bug</td></tr>
+</table>
+
+<h2>Self-Check</h2>
+<ol>
+<li><strong>Why is a 1/7 positive result still a contribution in a systematic study framing?</strong></li>
+<li><strong>What would you say to a reviewer who asks "if EMA doesn't work reliably, why include it?"</strong></li>
+<li><strong>Map each module to a specific paragraph in the paper. Which modules have no corresponding paragraph?</strong></li>
+<li><strong>What is the single most important message a reader should take from this paper?</strong></li>
+</ol>
+
+<h2>Decisions Referenced</h2>
+<ul>
+<li><strong>D40 (S104):</strong> Systematic study framing</li>
+<li><strong>D42 (S104):</strong> Gate 1 NO-GO</li>
+<li><strong>D43 (S104):</strong> NaN as intrinsic finding</li>
+</ul>
+
+<h2>Deep Dive Sessions</h2>
+<ul>
+<li><strong>S104</strong> <strong>(ESSENTIAL)</strong> Full project reanalysis + master plan: The pivot to systematic study.</li>
+</ul>
+
+</body></html>

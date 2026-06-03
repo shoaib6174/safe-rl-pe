@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Module 10: Pop-FSP & Asymmetry</title>
+<style>
+body{max-width:800px;margin:2em auto;padding:0 1em;font-family:Georgia,serif;line-height:1.6;color:#222}
+h1{border-bottom:2px solid #333;padding-bottom:.3em}
+h2{border-bottom:1px solid #ccc;padding-bottom:.2em;margin-top:1.5em}
+h3{margin-top:1.2em}
+table{border-collapse:collapse;width:100%;margin:1em 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f5f5f5}
+code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-family:monospace}
+pre{background:#f4f4f4;padding:1em;overflow-x:auto;border-radius:4px}
+blockquote{border-left:4px solid #ddd;margin:0;padding-left:1em;color:#555}
+.insight{background:#d1ecf1;border-left:4px solid #17a2b8;padding:1em;margin:1em 0}
+.warning{background:#fff3cd;border-left:4px solid #ffc107;padding:1em;margin:1em 0}
+</style></head><body>
+
+<h1>Module 10: Pop-FSP and Structural ∀/∃ Asymmetry</h1>
+<p><strong>Estimated reading time:</strong> 5–6 hours | <strong>Prerequisites:</strong> Module 5 (Self-Play Theory), Module 9 (EMA)</p>
+<p><strong>Goal:</strong> Understand Pop-FSP, why every configuration failed, and the ∀/∃ asymmetry finding that explains why.</p>
+
+<hr>
+
+<h2>10.1 Fictitious Self-Play (FSP)</h2>
+<p><strong>Fictitious Self-Play</strong> is a classic game-theoretic algorithm. Instead of training against the current opponent, each agent trains against a <strong>mixture of all past opponent policies</strong>.</p>
+
+<h3>The FSP Algorithm</h3>
+<ol>
+<li>Maintain a <strong>population</strong> of historical opponent policies</li>
+<li>Sample an opponent from the population (uniform or weighted)</li>
+<li>Train best response against that sampled opponent</li>
+<li>Add the new policy to the population</li>
+</ol>
+
+<p>The intuition: by facing diverse opponents, the agent learns robust strategies that generalize.</p>
+
+<h2>10.2 PopulationManager Design</h2>
+<p>We implemented a <strong>PopulationManager</strong> (S100) with the following features:</p>
+
+<table>
+<tr><th>Feature</th><th>Description</th><th>Rationale</th></tr>
+<tr><td>FIFO eviction</td><td>Old policies removed when population is full</td><td>Limit memory, focus on recent strategies</td></tr>
+<tr><td>Uniform sampling</td><td>Each policy sampled with equal probability</td><td>Diverse experience</td></tr>
+<tr><td>Recency bias</td><td>Newer policies sampled more often</td><td>Focus on recent metagame</td></tr>
+<tr><td>Asymmetric populations</td><td>16 evader policies vs 8 pursuer policies</td><td>Compensate for structural disadvantage</td></tr>
+<tr><td>Gradual mixing</td><td>Linearly increase population sampling from 0% to 80%</td><td>Don't overwhelm with diversity too early</td></tr>
+</table>
+
+<h2>10.3 Config History: v1 → v7</h2>
+
+<table>
+<tr><th>Version</th><th>Key Change</th><th>Result</th></tr>
+<tr><td>v1 (S100)</td><td>Baseline: uniform, symmetric pops</td><td>CR = 0.000 (evader-dominant)</td></tr>
+<tr><td>v2 (S101)</td><td>Recency bias + asymmetric pops (16 evader, 8 pursuer)</td><td>Overcorrected — still unbalanced</td></tr>
+<tr><td>v3 (S102)</td><td>Tuned recency, larger arena (19×19)</td><td>CR = 1.000 (pursuer-dominant)</td></tr>
+<tr><td>v4 (S102)</td><td>Even larger evader advantage</td><td>Evader-dominant collapse</td></tr>
+<tr><td>v5 (S102)</td><td>Intermediate settings</td><td>Pursuer-dominant</td></tr>
+<tr><td>v6 (S102)</td><td>Arena=19, evader=1.65×, ratio=1.52×</td><td>CR ~0.72 (pursuer-biased, oscillating)</td></tr>
+<tr><td>v7 (S103)</td><td>Delayed lock-in (slower population mixing)</td><td>Still pursuer-dominant, just delayed</td></tr>
+</table>
+
+<div class="warning"><strong>0/5 configurations achieved competitive balance.</strong> Every attempt either favored the pursuer or the evader.</div>
+
+<h2>10.4 The ∀/∃ Structural Asymmetry Finding</h2>
+
+<p>After 5 failed configurations, we asked: <strong>is the problem in the hyperparameters, or is it fundamental?</strong></p>
+
+<h3>The Formal Argument</h3>
+<p>Consider the <strong>symmetric game</strong> where both agents use identical architectures and training procedures. Define the objectives:</p>
+
+<ul>
+<li><strong>Pursuer:</strong> ∀ opponent policies π_e ∈ Π, maximize capture rate
+<li><strong>Evader:</strong> ∃ opponent policy π_p ∈ Π, escape from capture
+</ul>
+
+<p>Wait — these are not symmetric. Let's be more precise:</p>
+
+<ul>
+<li><strong>Pursuer's training objective:</strong> Given a population of evaders, learn a policy that captures <em>as many as possible</em>. Formally: max_π_p E_{π_e ~ pop}[CR(π_p, π_e)]</li>
+<li><strong>Evader's training objective:</strong> Given a population of pursuers, learn a policy that escapes <em>as many as possible</em>. Formally: max_π_e E_{π_p ~ pop}[1 - CR(π_p, π_e)]</li>
+</ul>
+
+<p>These <em>look</em> symmetric, but the <strong>structure of the game</strong> introduces asymmetry:</p>
+
+<div class="insight"><strong>The ∀/∃ Asymmetry:</strong>
+<ul>
+<li>The <strong>pursuer</strong> needs to be good against <strong>one</strong> opponent at a time (sampled from population). Its objective is ∃-like: "find a strategy that works against this opponent."</li>
+<li>The <strong>evader</strong> needs to be good against <strong>all</strong> pursuers in the population. Its objective is ∀-like: "find a strategy that escapes from ALL of them."</li>
+</ul>
+</div>
+
+<h3>Why ∀ Is Harder Than ∃</h3>
+<p>In machine learning terms:</p>
+<ul>
+<li><strong>∃ (pursuer):</strong> Binary classification — does this strategy beat <em>this</em> opponent? One positive example is enough.</li>
+<li><strong>∀ (evader):</strong> Multi-class coverage — does this strategy escape <em>all</em> opponents? Must handle every opponent type.</li>
+</ul>
+
+<p>The pursuer's learning problem is <strong>easier</strong> because it can specialize against the specific opponent it faces. The evader's problem is <strong>harder</strong> because it must generalize across all pursuer styles.</p>
+
+<h3>Implications</h3>
+<ol>
+<li><strong>Population methods cannot fix this</strong> without explicit architectural asymmetry (e.g., larger evader network, different learning rate, curriculum favoring evader)</li>
+<li><strong>Speed/ratio tuning</strong> only shifts the equilibrium point, not the structural problem</li>
+<li><strong>The asymmetry is intrinsic to symmetric competitive games</strong> where one side must handle all opponent strategies</li>
+</ol>
+
+<h2>10.5 Why v6 Oscillated Instead of Collapsing</h2>
+<p>Pop-FSP v6 (arena=19, evader=1.65×) was interesting: it did not fully collapse. Instead, CR oscillated around 0.72.</p>
+
+<p>Why? The larger arena and evader speed advantage partially compensated for the ∀/∃ asymmetry. The evader had enough room and speed to occasionally escape, preventing total lock-in. But the equilibrium was still biased, not balanced.</p>
+
+<div class="insight"><strong>Insight:</strong> Population diversity <strong>delays</strong> lock-in (~3× longer in v7 vs v6) but <strong>cannot correct the equilibrium point</strong>. The structural asymmetry pushes the system toward pursuer-dominance regardless of diversity.</div>
+
+<h2>10.6 Summary</h2>
+<table>
+<tr><th>Concept</th><th>Meaning</th></tr>
+<tr><td>FSP</td><td>Train against historical mixture of opponents</td></tr>
+<tr><td>PopulationManager</td><td>FIFO pool with uniform/recency sampling</td></tr>
+<tr><td>∀/∃ asymmetry</td><td>Pursuer trains ∃-like (one opponent), evader trains ∀-like (all opponents)</td></tr>
+<tr><td>v6 result</td><td>CR~0.72, oscillating — diversity delays but doesn't fix</td></tr>
+<tr><td>Key finding</td><td>Structural asymmetry requires explicit architectural asymmetry to fix</td></tr>
+</table>
+
+<h2>Self-Check</h2>
+<ol>
+<li><strong>Formalize the pursuer's objective with ∀ and the evader's with ∃.</strong> Why is ∀ structurally easier in symmetric games?</li>
+<li><strong>Why does uniform sampling (v3) produce pursuer-dominant collapse?</strong> Why does recency bias (v4) overcorrect?</li>
+<li><strong>If you could redesign the architecture asymmetrically, what would you change?</strong></li>
+<li><strong>Why does population diversity delay lock-in but not correct the equilibrium?</strong></li>
+</ol>
+
+<h2>Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> Heinrich & Silver (2016), "Fictitious Self-Play": Original FSP algorithm.</li>
+<li><strong>(ESSENTIAL)</strong> Lanctot et al. (2017), "PSRO": Population-based training.</li>
+<li><strong>(REFERENCE)</strong> Balduzzi et al. (2018), "The Mechanics of n-Player Differentiable Games": Gradient dynamics.</li>
+<li><strong>(OPTIONAL)</strong> OpenAI Five / AlphaStar papers: Large-scale population training.</li>
+</ul>
+
+<h2>Deep Dive Sessions</h2>
+<ul>
+<li><strong>S100</strong> <strong>(ESSENTIAL)</strong> Pop-FSP implementation: PopulationManager, FIFO, uniform sampling.</li>
+<li><strong>S101</strong> <strong>(REFERENCE)</strong> v2 balance fix: Recency bias + asymmetric populations.</li>
+<li><strong>S102</strong> <strong>(REFERENCE)</strong> v3-v5 postmortem: Analysis of why each config failed.</li>
+<li><strong>S103</strong> <strong>(ESSENTIAL)</strong> v6/v7 failure + asymmetry finding: The core theoretical contribution.</li>
+</ul>
+
+</body></html>

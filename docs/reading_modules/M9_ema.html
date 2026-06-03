@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Module 9: EMA Stabilization</title>
+<style>
+body{max-width:800px;margin:2em auto;padding:0 1em;font-family:Georgia,serif;line-height:1.6;color:#222}
+h1{border-bottom:2px solid #333;padding-bottom:.3em}
+h2{border-bottom:1px solid #ccc;padding-bottom:.2em;margin-top:1.5em}
+h3{margin-top:1.2em}
+table{border-collapse:collapse;width:100%;margin:1em 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f5f5f5}
+code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-family:monospace}
+pre{background:#f4f4f4;padding:1em;overflow-x:auto;border-radius:4px}
+blockquote{border-left:4px solid #ddd;margin:0;padding-left:1em;color:#555}
+.insight{background:#d1ecf1;border-left:4px solid #17a2b8;padding:1em;margin:1em 0}
+.warning{background:#fff3cd;border-left:4px solid #ffc107;padding:1em;margin:1em 0}
+</style></head><body>
+
+<h1>Module 9: EMA Opponent Stabilization</h1>
+<p><strong>Estimated reading time:</strong> 4–5 hours | <strong>Prerequisites:</strong> Module 5 (Self-Play Theory), Module 6 (Curriculum)</p>
+<p><strong>Goal:</strong> Understand the EMA method, why it was tried, how it works mathematically, and what the 7-seed experiment revealed.</p>
+
+<hr>
+
+<h2>9.1 Motivation: Why EMA?</h2>
+<p>After 20+ sessions of failed stabilization attempts (freeze/unfreeze, adaptive ratio, exploration rewards, LR dampening), we asked: <strong>what if the problem is oscillation, not collapse?</strong></p>
+
+<p>Self-play produces oscillating capture rates because each agent reacts to the opponent's <em>current</em> policy. If we could <strong>smooth the opponent's policy</strong>, the oscillations might dampen naturally.</p>
+
+<div class="insight"><strong>Key insight:</strong> Instead of preventing collapse through complex phase switching, smooth the opponent's policy so the learning landscape changes more gradually. This is the intuition behind <strong>Exponential Moving Average (EMA)</strong> opponent stabilization.</div>
+
+<h2>9.2 Mathematical Foundation</h2>
+<p>The EMA update maintains a smoothed copy of the opponent's parameters:</p>
+<p>$$\theta_{\text{EMA}} \leftarrow (1 - \tau) \cdot \theta_{\text{EMA}} + \tau \cdot \theta_{\text{current}}$$</p>
+
+<h3>Half-Life Derivation</h3>
+<p>After n updates, the weight of the initial value decays as $(1 - \tau)^n$. The <strong>half-life</strong> is the number of updates needed for the weight to decay to 1/2:</p>
+<p>$$(1 - \tau)^{n_{1/2}} = \frac{1}{2}$$</p>
+<p>$$n_{1/2} = \frac{\ln(2)}{\ln(1/(1-\tau))} \approx \frac{\ln(2)}{\tau} \quad \text{(for small } \tau\text{)}$$</p>
+
+<p>For <strong>tau = 0.001</strong>:</p>
+<p>$$n_{1/2} \approx \frac{0.693}{0.001} = 693 \text{ updates}$$</p>
+
+<p>With 200 steps per episode and updates every step, this is approximately <strong>3.5 episodes</strong>.</p>
+
+<div class="insight"><strong>Why tau = 0.001?</strong> Half-life of ~3.5 episodes means the EMA tracks opponent improvement fast enough to stay relevant, but smooths out high-frequency oscillations. Larger tau → faster tracking but less smoothing. Smaller tau → more smoothing but laggy.</div>
+
+<h2>9.3 The EMA Algorithm</h2>
+<ol>
+<li><strong>Maintain EMA copy:</strong> During training, maintain $\theta_{\text{EMA}}$ for each opponent actor</li>
+<li><strong>Update rule:</strong> After each training step, apply the EMA update to the opponent's EMA copy</li>
+<li><strong>Training:</strong> Current agent trains against the EMA opponent (not the current opponent)</li>
+<li><strong>Evaluation:</strong> Compare current policy vs EMA policy vs current opponent</li>
+</ol>
+
+<h3>Evaluation Modes</h3>
+<table>
+<tr><th>Mode</th><th>Description</th><th>Purpose</th></tr>
+<tr><td>CR_selfplay</td><td>Current vs Current</td><td>Raw self-play balance</td></tr>
+<tr><td>CR_ema_selfplay</td><td>Current vs EMA</td><td>How current performs against smoothed opponent</td></tr>
+<tr><td>CR_vs_ema_evader</td><td>Current pursuer vs EMA evader</td><td>Pursuer strength against stable evader</td></tr>
+<tr><td>CR_ema_vs_current</td><td>EMA pursuer vs Current evader</td><td>Evader strength against stable pursuer</td></tr>
+</table>
+
+<h2>9.4 Robustness Metric</h2>
+<p>We define <strong>robustness</strong> as the worst-case capture rate across opponent types:</p>
+<p>$$\text{Robustness} = \min(\text{CR}_{\text{random}}, \text{CR}_{\text{greedy}}, \text{CR}_{\text{selfplay}})$$</p>
+
+<p>This ensures the policy isn't exploiting a weakness in one opponent type.</p>
+
+<h2>9.5 The 7-Seed Experiment</h2>
+
+<h3>Experimental Design</h3>
+<table>
+<tr><th>Seed</th><th>LR</th><th>Episodes</th><th>Status</th></tr>
+<tr><td>0</td><td>0.0001</td><td>5000</td><td>Completed (S98)</td></tr>
+<tr><td>1</td><td>0.0001</td><td>5000</td><td>Completed (S98)</td></tr>
+<tr><td>2</td><td>0.0001</td><td>5000</td><td>Completed (S98)</td></tr>
+<tr><td>3</td><td>0.0005</td><td>5000</td><td>Completed (S99)</td></tr>
+<tr><td>4</td><td>0.0005</td><td>5000</td><td>Completed (S104)</td></tr>
+<tr><td>5</td><td>0.0005</td><td>5000</td><td>Completed (S104)</td></tr>
+<tr><td>6</td><td>0.0005</td><td>5000</td><td>Completed (S104)</td></tr>
+</table>
+
+<h3>Results</h3>
+<table>
+<tr><th>Seed</th><th>Best Robustness</th><th>Episode</th><th>Final Robustness</th><th>Outcome</th></tr>
+<tr><td>0</td><td><strong>0.698</strong></td><td>5000</td><td>0.698</td><td>✅ SUCCESS (outlier)</td></tr>
+<tr><td>1</td><td>~0.05</td><td>—</td><td>~0.00</td><td>❌ Evader collapse + NaN</td></tr>
+<tr><td>2</td><td>0.148</td><td>—</td><td>—</td><td>❌ Low (LR too low)</td></tr>
+<tr><td>3</td><td>0.292</td><td>—</td><td>—</td><td>❌ Evader collapse</td></tr>
+<tr><td>4</td><td>0.110</td><td>500</td><td>0.000</td><td>❌ Early evader collapse</td></tr>
+<tr><td>5</td><td>0.190</td><td>5000</td><td>0.190</td><td>❌ Pursuer-dominant collapse</td></tr>
+<tr><td>6</td><td>0.170</td><td>3500</td><td>0.000</td><td>❌ Mixed then collapse</td></tr>
+</table>
+
+<h3>The LR Discovery (S98)</h3>
+<p>Seeds 0-2 used actor_lr = 0.0001 (from the initial launch script). Seed 2 only achieved robustness = 0.148. We hypothesized the LR was too low.</p>
+
+<p>Seeds 3-6 used actor_lr = 0.0005. Seed 3 improved to 0.292 but still collapsed. Seeds 4-6 all collapsed.</p>
+
+<div class="warning"><strong>Key finding:</strong> EMA helps (seed 0 is genuinely good), but it is not sufficient to guarantee convergence. The success rate is 1/7 (1/5 with corrected LR). This is not reproducible enough for a primary paper contribution.</div>
+
+<h2>9.6 Analysis: Why Did Seed 0 Succeed?</h2>
+<p>We don't know. Possible factors:</p>
+<ol>
+<li><strong>Initialization luck:</strong> Seed 0's initial weights may have landed in a basin conducive to stable co-evolution</li>
+<li><strong>LR interaction:</strong> LR = 0.0001 may have been "just right" for seed 0's landscape</li>
+<li><strong>Curriculum timing:</strong> The annealing schedule may have aligned with seed 0's learning dynamics</li>
+</ol>
+
+<p>What we <em>do</em> know: the other seeds collapsed in different ways (evader-dominant, pursuer-dominant, NaN), suggesting the instability is <strong>fundamental</strong> and EMA only delays it.</p>
+
+<h2>9.7 Summary</h2>
+<table>
+<tr><th>Concept</th><th>Meaning</th></tr>
+<tr><td>EMA update</td><td>θ_EMA ← (1-τ)·θ_EMA + τ·θ_current</td></tr>
+<tr><td>Half-life</td><td>n_1/2 ≈ ln(2)/τ ≈ 693 steps for τ=0.001</td></tr>
+<tr><td>Robustness</td><td>min(CR_random, CR_greedy, CR_selfplay)</td></tr>
+<tr><td>7-seed result</td><td>1/7 success (0.698); 6/7 collapse</td></tr>
+<tr><td>Key finding</td><td>EMA helps but does not guarantee convergence</td></tr>
+</table>
+
+<h2>Self-Check</h2>
+<ol>
+<li><strong>Derive the EMA half-life formula.</strong> Why is tau=0.001 ≈ 3.5 episodes?</li>
+<li><strong>Why does smoothing the opponent policy reduce oscillation?</strong> What assumption does this make about the loss landscape?</li>
+<li><strong>If EMA had 7/7 success, what would that imply about the nature of self-play collapse?</strong></li>
+<li><strong>Why is robustness = min(CR_random, CR_greedy, CR_selfplay) a better metric than just CR_selfplay?</strong></li>
+</ol>
+
+<h2>Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> Polyak (1990), "Averaging of Trajectories": The original averaging idea.</li>
+<li><strong>(REFERENCE)</strong> Tarvainen & Valpola (2017), "Mean Teachers": EMA in semi-supervised learning.</li>
+<li><strong>(OPTIONAL)</strong> Adam optimizer (Kingma & Ba): The momentum mechanism is related to EMA.</li>
+</ul>
+
+<h2>Deep Dive Sessions</h2>
+<ul>
+<li><strong>S97</strong> <strong>(ESSENTIAL)</strong> EMA design: Refactored MADDPG, tau=0.001, evaluation framework.</li>
+<li><strong>S98</strong> <strong>(ESSENTIAL)</strong> Seeds 0-2 analysis: Seed 0 robustness=0.698, seeds 1-2 collapsed, LR=0.0001 too low.</li>
+<li><strong>S99</strong> <strong>(REFERENCE)</strong> Seed 3 monitoring: Relaunched with LR=0.0005, CR oscillated, robustness=0.292.</li>
+<li><strong>S104</strong> <strong>(ESSENTIAL)</strong> Seeds 4-6 + Gate 1 NO-GO: All collapsed, 1/5 reproducibility, proceed to Phase 2B.</li>
+</ul>
+
+</body></html>

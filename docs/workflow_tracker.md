@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-05-22 (S99)
+## Last Updated: 2026-06-03 (S105 complete)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -21,6 +21,8 @@
 | GI reproduction | S96 | ✅ **REPRODUCED** — Self-play CR=0.550 matches paper. |
 | EMA seed 3 completion | S99 | ❌ **FAILED** — Training completed (5000 ep) but best robustness=0.292 (below 0.40 target). Evader-dominant collapse. Seed-dependent; seed 0 outlier at 0.698. |
 | niro-2 stability | S98-S99 | ✅ **RESOLVED** — Rebooted, CUDA driver fixed, Tailscale re-authed. |
+| **Pop-FSP competitive balance** | **S103** | **❌ FAILED** — 0/5 configurations (v3-v7) achieved CR≈0.5. Structural ∀/∃ asymmetry is fundamental. **Pivoted to EMA seeds 4-6 + GI vanilla 20K baseline.** |
+| **A-EMA probe launch** | **S105** | **Pending** — Smoke test passed locally. Must push to GitHub, pull on niro-2, and launch 3 seeds. |
 | Paper body writing | — | Intro/Methods/Results for Framing C; deadline ~September 2026 (ICRA 2027) |
 
 ## Session Index
@@ -127,7 +129,12 @@
 | 97 | 2026-05-18 | **EMA opponent stabilization — Phase 1**: Refactored MADDPG.update() for external opponent actors. Implemented EMA with tau=0.001 (3.5-episode half-life). Added checkpoint persistence, EMA evaluation modes, sweep script with robustness + oscillation metrics. Critical analysis fixed 10 issues. 5K comparison (vanilla vs EMA) launched on niro-2. | [S97](worklogs/2026-05-18_S97.md) |
 | 98 | 2026-05-20 | **EMA 5K analysis — seeds 0-2**: Seed 0 EMA robustness=0.698 (exceeds target). Seed 1 vanilla NaN collapse, EMA evader-dominant. Seed 2 low robustness (0.148) due to actor_lr=0.0001. Key finding: LR=0.0005 needed. Analysis doc written. | [S98](worklogs/2026-05-20_S98.md) |
 | 99 | 2026-05-22 | **EMA seed 3 monitoring + departure**: Relaunched seed 3 with LR=0.0005 after niro-2 reboot/CUDA fix. Training at ep 1573 (29.6%), CR oscillating, losses stable. Persistent monitor active (30-min intervals). User leaving for 2 weeks. | [S99](worklogs/2026-05-22_S99.md) |
-| 100 | 2026-05-23 | **Pop-FSP implementation + first training**: Brainstormed, designed, and implemented actor-only PopulationManager. Integrated into training loop. Fixed 3 bugs (frame_stack=1 slice, hidden_dim missing, duplicate adds). Deployed to niro-2. Launched 500-ep smoke test. | [S100](worklogs/2026-05-23_S100.md) |
+| 100 | 2026-05-23 | **Pop-FSP implementation + first training**: Brainstormed, designed, and implemented actor-only PopulationManager. Integrated into training loop. Fixed 3 bugs (frame_stack=1 slice, hidden_dim missing, duplicate adds). 500-ep baseline completed (CR=0.000, evader-dominant as expected). Pop-FSP 5K run launched and monitoring. | [S100](worklogs/2026-05-23_S100.md) |
+| 101 | 2026-05-24 | **Pop-FSP v2 balance fix**: Diagnosed pursuer-dominant root cause (structural ∀/∃ asymmetry). Implemented recency-biased sampling + asymmetric populations (16 vs 8) + gradual mixing. 12 tests pass. 3-seed training launched on niro-2. | [S101](worklogs/2026-05-24_S101.md) |
+| 102 | 2026-05-24 | **Pop-FSP v3/v4/v5 postmortem + v6 launch prep**: v3 all seeds CR=1.0 (pursuer-dominant). v4 overcorrected to evader-dominant. v5 still pursuer-dominant. v6 (arena=19, evader=1.65, ratio=1.52x) prepared as intermediate sweet spot. | [S102](worklogs/2026-05-24_S102.md) |
+| 103 | 2026-05-25 | **Pop-FSP v6/v7 complete failure + pivot**: 0/5 configs achieved balance. Structural ∀/∃ asymmetry identified. Launched EMA seeds 4-6 + GI vanilla 20K baseline. Wrote asymmetry analysis doc. | [S103](worklogs/2026-05-25_S103.md) |
+| 104 | 2026-05-26 | **Full project reanalysis + ICRA 2027 master plan**: Comprehensive achievement assessment, publication strategy, phased plan with decision gates and contingencies. | [S104](worklogs/2026-05-26_S104.md) |
+| 105 | 2026-06-03 | **A-EMA Probe implementation + launch**: Fixed config, created launch script, smoke test passed (24 ep, 0 NaN). Ready for niro-2. | [S105](worklogs/2026-06-03_S105.md) |
 
 ## Paper Reading Status
 
@@ -203,3 +210,4 @@
 4. **Pathway D**: Hierarchical RL for PE in Structured Indoor Environments
 5. **Pathway E**: PE with Asymmetric Information and Opponent Modeling
 6. **Pathway F** (NEW): HJ Reachability + Deep RL Hybrid for PE (from new papers)
+

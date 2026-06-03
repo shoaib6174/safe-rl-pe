@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>M1_pe_fundamentals</title>
+<style>
+body { max-width: 800px; margin: 2em auto; padding: 0 1em; font-family: Georgia, serif; line-height: 1.6; color: #222; }
+h1 { border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+h2 { border-bottom: 1px solid #ccc; padding-bottom: 0.2em; margin-top: 1.5em; }
+h3 { margin-top: 1.2em; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+th { background: #f5f5f5; }
+code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+pre { background: #f4f4f4; padding: 1em; overflow-x: auto; border-radius: 4px; }
+blockquote { border-left: 4px solid #ddd; margin: 0; padding-left: 1em; color: #555; }
+</style>
+</head>
+<body>
+<h1 id="module-1-pursuit-evasion-as-a-differential-game">Module 1: Pursuit-Evasion as a Differential Game</h1>
+<p><strong>Estimated reading time:</strong> 3–4 hours<br />
+<strong>Prerequisites:</strong> None (this is the foundation)<br />
+<strong>Goal:</strong> Understand why pursuit-evasion is fundamentally hard, what a "solution" means in game-theoretic terms, and how the G\&amp;I 2024 environment instantiates the problem.</p>
+<hr />
+<h2 id="11-what-is-a-pursuit-evasion-game">1.1 What Is a Pursuit-Evasion Game?</h2>
+<p>At its core, a pursuit-evasion (PE) game is a <strong>two-player differential game</strong> played in continuous time (or fine-grained discrete time) over a state space. One player — the <strong>pursuer</strong> — wants to capture the other — the <strong>evader</strong>. The evader wants to avoid capture indefinitely (or escape).</p>
+<p>Formally:<br />
+- State: $\mathbf{x}(t) \in \mathbb{R}^n$ describes the positions, velocities, and orientations of both agents.<br />
+- Pursuer control: $\mathbf{u}_p(t) \in \mathcal{U}_p$<br />
+- Evader control: $\mathbf{u}_e(t) \in \mathcal{U}_e$<br />
+- Dynamics: $\dot{\mathbf{x}} = f(\mathbf{x}, \mathbf{u}_p, \mathbf{u}_e)$</p>
+<p>The game ends when the state enters the <strong>capture set</strong> $\mathcal{C}$ — typically when the distance between pursuer and evader falls below a threshold $d_{\text{capture}}$.</p>
+<p><strong>Why this matters for deep RL:</strong> Unlike single-agent RL where the environment is stationary, in PE the "environment" is an <strong>adaptive opponent</strong> whose policy changes as it learns. This makes the learning dynamics fundamentally non-stationary.</p>
+<hr />
+<h2 id="12-two-player-zero-sum-games">1.2 Two-Player Zero-Sum Games</h2>
+<p>PE is naturally modeled as a <strong>zero-sum game</strong>: the pursuer's gain is the evader's loss. We capture this with a <strong>payoff functional</strong>:</p>
+<p>$$J(\mathbf{u}_p, \mathbf{u}_e) = \int_0^{T} g(\mathbf{x}(t), \mathbf{u}_p(t), \mathbf{u}_e(t)) \, dt + h(\mathbf{x}(T))$$</p>
+<p>where $T$ is the terminal time (capture or timeout). In the simplest formulation:<br />
+- If capture occurs: pursuer wins (+1), evader loses (−1)<br />
+- If timeout occurs: draw (0)</p>
+<p>The pursuer wants to <strong>maximize</strong> $J$; the evader wants to <strong>minimize</strong> it.</p>
+<h3 id="saddle-point-equilibrium">Saddle-Point Equilibrium</h3>
+<p>In a two-player zero-sum game, a <strong>saddle-point equilibrium</strong> (or Nash equilibrium) is a pair of strategies $(\mathbf{u}_p^<em>, \mathbf{u}_e^</em>)$ such that neither player can improve their outcome by unilaterally changing strategy:</p>
+<p>$$J(\mathbf{u}_p^<em>, \mathbf{u}_e) \leq J(\mathbf{u}_p^</em>, \mathbf{u}_e^<em>) \leq J(\mathbf{u}_p, \mathbf{u}_e^</em>) \quad \forall \, \mathbf{u}_p, \mathbf{u}_e$$</p>
+<p><strong>Intuition:</strong> The pursuer's optimal strategy guarantees at least the value $J^<em>$, regardless of what the evader does. The evader's optimal strategy guarantees at most $J^</em>$, regardless of what the pursuer does. If both play optimally, the outcome is $J^*$.</p>
+<p><strong>Why this matters for RL:</strong> Deep RL does not guarantee finding the saddle point. Self-play can oscillate (pursuer improves → evader improves → pursuer adapts → ...) without converging. A capture rate of 0.5 (50% capture, 50% escape) suggests the policies are near a saddle point — neither side can consistently dominate.</p>
+<h3 id="the-value-function">The Value Function</h3>
+<p>In optimal control, the value function $V(\mathbf{x})$ gives the best achievable outcome from state $\mathbf{x}$ assuming both players play optimally. For PE:</p>
+<ul>
+<li>$V(\mathbf{x}) &gt; 0$: pursuer can guarantee capture from $\mathbf{x}$</li>
+<li>$V(\mathbf{x}) &lt; 0$: evader can guarantee escape from $\mathbf{x}$</li>
+<li>$V(\mathbf{x}) = 0$: the boundary — the <strong>barrier</strong></li>
+</ul>
+<p>The set ${\mathbf{x} : V(\mathbf{x}) \geq 0}$ is the <strong>capture set</strong> (or more precisely, the set from which capture is guaranteed). Its boundary is the <strong>barrier surface</strong>.</p>
+<hr />
+<h2 id="13-isaacs-equations-and-the-barrier">1.3 Isaacs' Equations and the Barrier</h2>
+<p>Rufus Isaacs (1965) derived the fundamental PDE for differential games, analogous to the Hamilton-Jacobi-Bellman (HJB) equation for optimal control:</p>
+<p>$$\min_{\mathbf{u}<em>e} \max</em>{\mathbf{u}_p} \left[ \nabla V(\mathbf{x}) \cdot f(\mathbf{x}, \mathbf{u}_p, \mathbf{u}_e) + g(\mathbf{x}, \mathbf{u}_p, \mathbf{u}_e) \right] = 0$$</p>
+<p>This is the <strong>Isaacs equation</strong> (or Hamilton-Jacobi-Isaacs, HJI).</p>
+<h3 id="a-concrete-example">A Concrete Example</h3>
+<p>Consider two players on a line. The pursuer moves with velocity $u_p \in [-1, 1]$, the evader with $u_e \in [-1, 1]$. The state is the distance $x$ between them. The dynamics are:</p>
+<p>$$\dot{x} = u_e - u_p$$</p>
+<p>The evader wants to maximize $x$ (escape); the pursuer wants to minimize it (capture). The value function is simply $V(x) = x$ because:<br />
+- If $x &gt; 0$, the evader moves right ($u_e = 1$), the pursuer moves left ($u_p = -1$), and $\dot{x} = 2$ — escape is guaranteed.<br />
+- If $x = 0$, capture has occurred.</p>
+<p>This toy example shows the structure: the value function captures "who wins from here." The HJI equation generalizes this to complex dynamics.</p>
+<p><strong>The order of min and max matters.</strong> In the equation above, we assume the pursuer can respond to the evader's choice. This is the <strong>closed-loop</strong> formulation. If the order were reversed (max then min), it would represent the <strong>open-loop</strong> case where the evader responds to the pursuer.</p>
+<h3 id="reach-avoid-sets">Reach-Avoid Sets</h3>
+<p>A closely related concept is the <strong>reach-avoid set</strong>: the set of states from which the pursuer can guarantee reaching the capture set while avoiding some forbidden region (e.g., obstacles). In PE without obstacles, the reach-avoid set coincides with the capture set.</p>
+<p><strong>Computationally:</strong> Reach-avoid sets are computed by solving the HJI PDE backward in time from the terminal condition (capture). The zero level set of the solution defines the boundary.</p>
+<h3 id="why-the-barrier-is-hard-to-compute">Why the Barrier Is Hard to Compute</h3>
+<p>For simple dynamics (e.g., both players are single integrators with speed limits), the barrier can be computed analytically. For car-like dynamics with partial observability, the state space is high-dimensional and the HJI PDE becomes intractable. This is why <strong>approximate methods</strong> — including deep RL — are necessary.</p>
+<p><strong>Key insight:</strong> Deep RL does not solve the HJI equation directly. Instead, it learns an approximate policy that implicitly captures some region of the value function.</p>
+<hr />
+<h2 id="14-open-loop-vs-closed-loop-strategies">1.4 Open-Loop vs Closed-Loop Strategies</h2>
+<p>An important distinction in differential games:</p>
+<ul>
+<li><strong>Open-loop:</strong> Each player commits to a trajectory at the start. No feedback from the opponent's actual movements.</li>
+<li><strong>Closed-loop (feedback):</strong> Each player observes the current state and chooses their control based on it. This allows reacting to the opponent.</li>
+</ul>
+<p><strong>Deep RL learns closed-loop policies.</strong> The policy network $\pi(\mathbf{o})$ maps observations to actions, enabling real-time reactions. This is both a strength (adaptability) and a challenge (non-stationarity — if the opponent changes, the policy may become suboptimal).</p>
+<hr />
+<h2 id="15-why-equal-speed-pe-is-fundamentally-hard">1.5 Why Equal-Speed PE Is Fundamentally Hard</h2>
+<p>Consider the simplest case: both players are single integrators with the <strong>same maximum speed</strong> $v_{\max}$, in an <strong>unbounded</strong> domain.</p>
+<p><strong>The evader can always escape.</strong> If the evader simply moves directly away from the pursuer, the distance between them never decreases. The pursuer can at best maintain the distance, never close it. Capture requires either:<br />
+1. The pursuer being faster ($v_p &gt; v_e$), or<br />
+2. A bounded domain where the evader eventually runs out of room.</p>
+<p>In a <strong>bounded domain</strong> (like the 16×16m arena in G\&amp;I 2024), equal speeds make capture possible but far from guaranteed. The evader can use the boundary to create "shadows" — regions the pursuer cannot reach before the evader escapes.</p>
+<h3 id="the-mirroring-argument">The Mirroring Argument</h3>
+<p>Imagine both players on an infinite plane with equal speed. The evader can guarantee non-capture with a simple strategy: move directly away from the pursuer. The distance never decreases.</p>
+<p>In a <strong>bounded arena</strong>, the evader cannot run forever. But the evader can use the boundary to create <strong>shadows</strong> — regions the pursuer cannot reach before the evader escapes. One such strategy is <strong>mirroring</strong>: position yourself so the pursuer is between you and the nearest boundary. Now the pursuer must approach from a disadvantaged angle, giving you more escape routes.</p>
+<p>With <strong>partial observability</strong>, the mirroring strategy becomes even stronger. The pursuer may not know exactly where the evader is, making it harder to cut off escape routes.</p>
+<p><strong>Implication:</strong> If the evader has equal or greater speed, capture requires one of:<br />
+- <strong>Speed advantage</strong> (faster pursuer)<br />
+- <strong>Information advantage</strong> (better sensing)<br />
+- <strong>Maneuverability advantage</strong> (tighter turns)<br />
+- <strong>Boundary exploitation</strong> (trapping the evader in a corner)</p>
+<hr />
+<h2 id="16-the-gi-2024-environment">1.6 The G\&amp;I 2024 Environment</h2>
+<p>So far we have discussed differential games in the abstract. Now let's look at the specific instantiation used in Gonultas \&amp; Isler 2024 — the environment that all our experiments (EMA, Pop-FSP, and the reproduction) use.</p>
+<p>The G\&amp;I environment makes the following design choices:</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Arena</td>
+<td>16×16m square</td>
+<td>Large enough for non-trivial strategies</td>
+</tr>
+<tr>
+<td>Episode length</td>
+<td>400 steps (40s at dt=0.1)</td>
+<td>Long enough for extended chase</td>
+</tr>
+<tr>
+<td>Pursuer dynamics</td>
+<td>Bicycle model, wheelbase 0.30m</td>
+<td>Realistic car-like constraints</td>
+</tr>
+<tr>
+<td>Pursuer v_max</td>
+<td>2.5 m/s</td>
+<td>Faster than evader</td>
+</tr>
+<tr>
+<td>Evader dynamics</td>
+<td>Point mass</td>
+<td>Simpler, more agile</td>
+</tr>
+<tr>
+<td>Evader v_max</td>
+<td>1.5 m/s</td>
+<td>Slower but can change direction instantly</td>
+</tr>
+<tr>
+<td>Capture radius</td>
+<td>0.15m (effective 0.30m)</td>
+<td>Small relative to arena</td>
+</tr>
+<tr>
+<td>Sensing</td>
+<td>FOV 120° / 6m range (pursuer), omnidirectional (evader)</td>
+<td>Partial observability</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Critical observation:</strong> The pursuer is <strong>faster</strong> (2.5 vs 1.5 m/s) but has <strong>more constrained dynamics</strong> (bicycle model vs point mass) and <strong>worse sensing</strong> (120° FOV vs omnidirectional). This creates a nuanced tradeoff, not a trivial pursuer advantage.</p>
+<h3 id="why-this-design-is-interesting">Why This Design Is Interesting</h3>
+<ol>
+<li><strong>Speed asymmetry</strong> means capture is possible in principle, but not guaranteed.</li>
+<li><strong>Sensing asymmetry</strong> (FOV vs omnidirectional) means the evader has information advantage.</li>
+<li><strong>Dynamics asymmetry</strong> (bicycle vs point mass) means the evader is more agile.</li>
+</ol>
+<p>The combination makes the game genuinely competitive. If the pursuer were faster <em>and</em> had better sensing <em>and</em> better dynamics, capture would be trivial. If the evader were faster, escape would be trivial.</p>
+<hr />
+<h2 id="17-our-journey-speed-ratios-and-what-we-learned">1.7 Our Journey: Speed Ratios and What We Learned</h2>
+<p>Our early work (Phase 1–3, S11–S84) used a different environment: 10×10m arena, 200 steps, unicycle dynamics for both agents, <strong>equal top speeds</strong>. We experimented with giving the evader speed advantages (1.05×, 1.1×, 1.2×) based on the literature survey (S54).</p>
+<p><strong>What we found (S59–S64):</strong><br />
+- 1.05× evader advantage: insufficient, pursuer still dominated<br />
+- 1.2× evader advantage: evader could sustain 35–50% escape rate, but strategies were degenerate (pure speed running, no obstacle use)<br />
+- Equal speeds with <strong>partial observability</strong> (combined radius + LOS masking): the evader adopted a "hide and don't move" strategy — detection became nearly equivalent to capture. Information asymmetry alone was insufficient to create rich pursuit dynamics without some speed differential.</p>
+<p><strong>Key lesson:</strong> The G\&amp;I environment's combination of speed, sensing, and dynamics asymmetry is carefully balanced. Changing any one parameter significantly alters the game's character.</p>
+<hr />
+<h2 id="18-from-theory-to-deep-rl">1.8 From Theory to Deep RL</h2>
+<p>The HJI framework assumes:<br />
+1. Perfect knowledge of the state<br />
+2. Optimal play from both sides<br />
+3. Continuous, instantaneous control</p>
+<p>Deep RL relaxes all three:<br />
+1. <strong>Partial observability:</strong> Agents see only FOV-limited observations<br />
+2. <strong>Suboptimal play:</strong> Policies are learned, not computed<br />
+3. <strong>Discrete control:</strong> Actions are taken at 10Hz (dt=0.1s)</p>
+<p>This relaxation makes the problem tractable but introduces new challenges:<br />
+- <strong>Non-stationarity:</strong> As the opponent learns, the "environment" changes<br />
+- <strong>Exploration:</strong> Agents must discover strategies without knowing the value function<br />
+- <strong>Generalization:</strong> Policies must work against diverse opponents, not just one</p>
+<h3 id="from-continuous-to-discrete-the-rl-bridge">From Continuous to Discrete: The RL Bridge</h3>
+<p>The HJI framework assumes continuous time. Deep RL operates in <strong>discrete time</strong> with a fixed step size $\Delta t$ (in G\&amp;I: $\Delta t = 0.1$s). The state evolves as:</p>
+<p>$$\mathbf{x}<em>{t+1} = \mathbf{x}_t + \Delta t \cdot f(\mathbf{x}_t, \mathbf{u}</em>{p,t}, \mathbf{u}_{e,t})$$</p>
+<p>The <strong>reward</strong> at each step is the discrete approximation of the running cost: $r_t = \Delta t \cdot g(\mathbf{x}<em>t, \mathbf{u}</em>{p,t}, \mathbf{u}_{e,t})$. In G\&amp;I, this is:<br />
+- Dense reward: combination of distance penalty, time penalty, and capture bonus<br />
+- Terminal reward: large bonus/penalty at capture or timeout</p>
+<p>The <strong>discount factor</strong> $\gamma$ in RL approximates the continuous-time exponential discounting. With $\gamma = 0.99$ and $\Delta t = 0.1$s, the effective time horizon is roughly $\frac{\Delta t}{1-\gamma} = 10$s, or about 100 steps.</p>
+<p>These challenges are the subject of the remaining modules.</p>
+<hr />
+<h2 id="19-summary">1.9 Summary</h2>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>Meaning for PE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Differential game</td>
+<td>Continuous-time competitive optimization</td>
+</tr>
+<tr>
+<td>Value function $V(\mathbf{x})$</td>
+<td>Best achievable outcome from state $\mathbf{x}$</td>
+</tr>
+<tr>
+<td>Barrier $V(\mathbf{x}) = 0$</td>
+<td>Boundary between capture and escape regions</td>
+</tr>
+<tr>
+<td>Isaacs equation</td>
+<td>PDE for the value function (intractable for complex dynamics)</td>
+</tr>
+<tr>
+<td>Equal-speed difficulty</td>
+<td>Evader can mirror/escape; bounded domain helps pursuer</td>
+</tr>
+<tr>
+<td>G\&amp;I environment</td>
+<td>Speed + sensing + dynamics asymmetry creates balanced game</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="self-check">Self-Check</h2>
+<ol>
+<li>
+<p><strong>Why is equal-speed PE in an unbounded domain trivial for the evader?</strong> Draw the distance dynamics when both move at $v_{\max}$ directly away from each other.</p>
+</li>
+<li>
+<p><strong>What does $V(\mathbf{x}) = 0$ mean physically?</strong> If the state is exactly on the barrier, what happens under optimal play from both sides?</p>
+</li>
+<li>
+<p><strong>Why does the G\&amp;I environment give the evader better sensing (omnidirectional) despite the pursuer being faster?</strong> What would happen if the pursuer had omnidirectional sensing and the evader had FOV?</p>
+</li>
+<li>
+<p><strong>Our Phase 1–3 framework used equal top speeds with partial observability, but the evader adopted a "hide and don't move" strategy. What does this tell you about the role of information asymmetry relative to speed asymmetry?</strong></p>
+</li>
+</ol>
+<hr />
+<h2 id="papers-to-read">Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> Gonultas \&amp; Isler 2024, Section II: Problem formulation and environment description.</li>
+<li><strong>(REFERENCE)</strong> Isaacs, R. (1965). <em>Differential Games</em>. (The original — read Chapter 1 for intuition.)</li>
+<li><strong>(REFERENCE)</strong> Paper 25 (HJ reachability survey, 2024): For understanding how HJI methods relate to RL.</li>
+<li><strong>(OPTIONAL)</strong> Paper 19 (self-play in aircraft PE, 2024): Different domain, same differential game structure.</li>
+</ul>
+<hr />
+<h2 id="deep-dive-sessions">Deep Dive Sessions</h2>
+<ul>
+<li><strong>S54</strong> (PE design choices survey): Comprehensive survey of arena sizes, speed ratios, episode lengths across 15+ papers. Shows G\&amp;I's choices are representative but not universal.</li>
+<li><strong>S64</strong> (speed diagnostics): Detailed analysis of why 1.2× evader advantage produced degenerate strategies.</li>
+</ul>
+</body>
+</html>

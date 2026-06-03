@@ -1,6 +1,12 @@
 from typing import Optional
 import numpy as np
 import torch
+try:
+    from torch.amp import autocast as _autocast_raw, GradScaler
+    def autocast():
+        return _autocast_raw(device_type="cuda")
+except ImportError:
+    from torch.cuda.amp import autocast, GradScaler
 from agents.bimdn import BiMDN
 
 
@@ -15,15 +21,18 @@ class BeliefStateManager:
         downsample: int = 10,
         lr: float = 0.002,
         device: str = "cpu",
+        use_amp: bool = False,
     ):
         self.obs_dim = obs_dim
         self.history_length = history_length
         self.downsample = downsample
         self.sequence_length = history_length // downsample
         self.device = torch.device(device)
+        self.use_amp = use_amp and self.device.type == "cuda"
 
         self.bimdn = BiMDN(obs_dim=obs_dim).to(self.device)
         self.optimizer = torch.optim.Adam(self.bimdn.parameters(), lr=lr)
+        self.scaler = GradScaler() if self.use_amp else None
 
         # Rolling history of raw observations (at sim rate)
         self.history = []
@@ -57,7 +66,11 @@ class BeliefStateManager:
 
         with torch.no_grad():
             seq_t = torch.FloatTensor(sequence).unsqueeze(0).to(self.device)
-            belief = self.bimdn.get_weighted_mean(seq_t)
+            if self.use_amp:
+                with autocast():
+                    belief = self.bimdn.get_weighted_mean(seq_t)
+            else:
+                belief = self.bimdn.get_weighted_mean(seq_t)
             return belief.cpu().numpy()[0]
 
     def store_training_sample(self, target_pos: np.ndarray):
@@ -81,10 +94,18 @@ class BeliefStateManager:
         sequences_t = torch.FloatTensor(sequences).to(self.device)
         targets_t = torch.FloatTensor(targets).to(self.device)
 
-        loss = self.bimdn.compute_nll_loss(sequences_t, targets_t)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+        if self.use_amp:
+            with autocast():
+                loss = self.bimdn.compute_nll_loss(sequences_t, targets_t)
+            self.optimizer.zero_grad()
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            loss = self.bimdn.compute_nll_loss(sequences_t, targets_t)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
 
         return loss.item()
 

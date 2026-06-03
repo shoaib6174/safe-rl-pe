@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Module 11: Evaluation & Rigor</title>
+<style>
+body{max-width:800px;margin:2em auto;padding:0 1em;font-family:Georgia,serif;line-height:1.6;color:#222}
+h1{border-bottom:2px solid #333;padding-bottom:.3em}
+h2{border-bottom:1px solid #ccc;padding-bottom:.2em;margin-top:1.5em}
+h3{margin-top:1.2em}
+table{border-collapse:collapse;width:100%;margin:1em 0}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#f5f5f5}
+code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-family:monospace}
+pre{background:#f4f4f4;padding:1em;overflow-x:auto;border-radius:4px}
+blockquote{border-left:4px solid #ddd;margin:0;padding-left:1em;color:#555}
+.insight{background:#d1ecf1;border-left:4px solid #17a2b8;padding:1em;margin:1em 0}
+.warning{background:#fff3cd;border-left:4px solid #ffc107;padding:1em;margin:1em 0}
+</style></head><body>
+
+<h1>Module 11: Evaluation and Experimental Rigor</h1>
+<p><strong>Estimated reading time:</strong> 3–4 hours | <strong>Prerequisites:</strong> Module 6 (Curriculum), Module 9 (EMA)</p>
+<p><strong>Goal:</strong> Understand our evaluation metrics, the checkpoint sweep methodology, and the BR exploitability analysis framework.</p>
+
+<hr>
+
+<h2>11.1 Capture Rate (CR)</h2>
+<p>The simplest metric: <strong>what fraction of episodes end in capture?</strong></p>
+<p>$$\text{CR} = \frac{\text{episodes with capture}}{\text{total episodes}}$$</p>
+
+<h3>Variants</h3>
+<table>
+<tr><th>Variant</th><th>Definition</th><th>When to Use</th></tr>
+<tr><td>CR_random</td><td>CR vs random opponent</td><td>Tests basic competence</td></tr>
+<tr><td>CR_greedy</td><td>CR vs greedy opponent</td><td>Tests against simple but effective heuristic</td></tr>
+<tr><td>CR_selfplay</td><td>CR vs itself</td><td>Tests self-play balance</td></tr>
+<tr><td>CR_ema</td><td>CR vs EMA opponent</td><td>Tests against smoothed opponent</td></tr>
+</table>
+
+<h2>11.2 Competitive Ratio</h2>
+<p>The <strong>competitive ratio</strong> normalizes capture rate to [0, 1]:</p>
+<p>$$\text{CR} = \frac{\text{CR}_{\text{pursuer}}}{\text{CR}_{\text{pursuer}} + \text{CR}_{\text{evader}}}$$</p>
+
+<p>Note: CR_pursuer + CR_evader may exceed 1 because both can capture/escape in different episodes. In practice, we compute CR as the pursuer's capture rate alone when the evader is the opponent.</p>
+
+<h2>11.3 Robustness</h2>
+<p><strong>Robustness</strong> is our primary metric for policy quality:</p>
+<p>$$\text{Robustness} = \min(\text{CR}_{\text{random}}, \text{CR}_{\text{greedy}}, \text{CR}_{\text{selfplay}})$$</p>
+
+<div class="insight"><strong>Why min?</strong> A policy that achieves 90% vs random but 10% vs greedy is exploiting random's weakness. The minimum ensures the policy is strong against <em>all</em> opponent types, not just one.</div>
+
+<h2>11.4 Oscillation Amplitude</h2>
+<p>We measure the standard deviation of CR over the last 20 checkpoints:</p>
+<p>$$\text{Oscillation} = \sigma(\text{CR}_{t-19}, \text{CR}_{t-18}, \ldots, \text{CR}_t)$$</p>
+
+<p>High oscillation (>0.2) indicates instability. Low oscillation (<0.05) suggests the system has settled.</p>
+
+<h2>11.5 Checkpoint Sweep Methodology</h2>
+<p>A <strong>checkpoint sweep</strong> evaluates all saved checkpoints to understand the training trajectory:</p>
+
+<ol>
+<li>For each checkpoint (every 250 episodes), load the policy</li>
+<li>Run 100 evaluation episodes against 3 opponent types (random, greedy, self-play)</li>
+<li>Record CR for each opponent type</li>
+<li>Compute robustness = min(CR_random, CR_greedy, CR_selfplay)</li>
+</ol>
+
+<p>For a 5000-episode run with checkpoints every 250 episodes: <strong>20 checkpoints × 100 episodes × 3 opponents = 6000 evaluation episodes</strong>.</p>
+
+<h2>11.6 BR SAC Exploitability Analysis</h2>
+<p>To test whether a claimed "Nash equilibrium" is actually stable, we train a <strong>best-response (BR)</strong> agent against the frozen checkpoint:</p>
+
+<ol>
+<li>Freeze the policy at checkpoint M2550 (claimed NE point)</li>
+<li>Train a fresh SAC agent as pursuer against frozen evader</li>
+<li>Train a fresh SAC agent as evader against frozen pursuer</li>
+<li>Compare BR performance vs baseline performance</li>
+</ol>
+
+<h3>Hypotheses</h3>
+<table>
+<tr><th>Hypothesis</th><th>Condition</th><th>Interpretation</th></tr>
+<tr><td>H1</td><td>Both BRs fail to improve</td><td>Genuine Nash equilibrium</td></tr>
+<tr><td>H2</td><td>One BR improves, other doesn't</td><td>Partial equilibrium — one side exploitable</td></tr>
+<tr><td>H3</td><td>Both BRs improve significantly</td><td>Neither side is at equilibrium</td></tr>
+</table>
+
+<h3>Result (S88)</h3>
+<p>For SP17b seeds 48 and 49 at M2550:</p>
+<table>
+<tr><th>Seed</th><th>BR Pursuer CR</th><th>BR Evader CR</th><th>Verdict</th></tr>
+<tr><td>48</td><td>≤ 0.115 (no improvement)</td><td>0.41–0.52 (gap +0.08–0.10)</td><td>H3 — evader exploitable</td></tr>
+<tr><td>49</td><td>≤ 0.115 (no improvement)</td><td>0.41–0.52 (gap +0.08–0.10)</td><td>H3 — evader exploitable</td></tr>
+</table>
+
+<div class="warning"><strong>Conclusion:</strong> Both seeds showed H3 — the evader was exploitable. The "equilibrium" was not a true Nash. This finding led to the paper's reframing as a "systematic study" rather than a method claiming convergence.</div>
+
+<h2>11.7 Tournament Evaluation</h2>
+<p>For population methods, we use <strong>round-robin tournament evaluation</strong>:</p>
+<ul>
+<li>Each population member plays against every other member</li>
+<li>Record win/loss matrix</li>
+<li>Compute Elo ratings or similar</li>
+</ul>
+
+<h2>11.8 Summary</h2>
+<table>
+<tr><th>Metric</th><th>Formula</th><th>Purpose</th></tr>
+<tr><td>Capture Rate</td><td>episodes with capture / total</td><td>Basic performance</td></tr>
+<tr><td>Robustness</td><td>min(CR_random, CR_greedy, CR_selfplay)</td><td>Worst-case performance</td></tr>
+<tr><td>Oscillation</td><td>std of CR over last 20 checkpoints</td><td>Stability indicator</td></tr>
+<tr><td>BR gap</td><td>BR performance − baseline performance</td><td>Exploitability measure</td></tr>
+</table>
+
+<h2>Self-Check</h2>
+<ol>
+<li><strong>Why is robustness = min(...) better than average?</strong> What does a policy with high average but low min reveal?</li>
+<li><strong>What does H3 (both sides exploitable) imply about the training process?</strong> Is the curriculum helping or hurting?</li>
+<li><strong>Why do we evaluate against 3 opponent types?</strong> What would we miss if we only used self-play?</li>
+<li><strong>How many evaluation episodes does a full checkpoint sweep require for a 5000-episode run?</strong></li>
+</ol>
+
+<h2>Papers to Read</h2>
+<ul>
+<li><strong>(ESSENTIAL)</strong> Lanctot et al. (2017), PSRO: Exploitability metrics in population training.</li>
+<li><strong>(REFERENCE)</strong> Bowling et al. (2015): Nash equilibrium approximation in large games.</li>
+</ul>
+
+<h2>Deep Dive Sessions</h2>
+<ul>
+<li><strong>S97</strong> <strong>(ESSENTIAL)</strong> Evaluation framework design: Robustness metric, oscillation amplitude.</li>
+<li><strong>S88</strong> <strong>(ESSENTIAL)</strong> BR exploitability analysis: H3 verdict, gap +0.08–0.10.</li>
+</ul>
+
+</body></html>

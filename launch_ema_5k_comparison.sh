@@ -24,6 +24,7 @@ with open('$RUN_DIR/$BASE_CONFIG') as f:
     cfg = yaml.safe_load(f)
 cfg['seed'] = ${SEED}
 cfg['maddpg']['episodes'] = 5000
+cfg['maddpg']['actor_lr'] = 0.0001
 
 cfg['maddpg']['ema_tau'] = 0.0
 cfg['output_dir'] = 'results_ema_comparison/vanilla_5k_s${SEED}'

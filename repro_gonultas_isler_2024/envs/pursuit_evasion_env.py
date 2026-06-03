@@ -32,6 +32,7 @@ class PursuitEvasionEnv:
         self.lambda_capture = 1000
         self.lambda_time = 1
         self.lambda_distance = 1
+        self.w_vis = 0.0 if config is None else config.get("maddpg", {}).get("w_vis", 0.0)
 
         # Sensors
         self.pursuer_sensor = WedgeSensor(2.094, 6.0)
@@ -123,6 +124,14 @@ class PursuitEvasionEnv:
             done = True
         else:
             r_p = -(self.lambda_time + self.lambda_distance * dist)
+
+        # Add vis_reward for pursuer if evader is in FOV (only during episode, not at terminal)
+        if self.w_vis > 0.0 and not done:
+            pursuer_pos = self.pursuer_state[:2]
+            pursuer_yaw = self.pursuer_state[4]
+            evader_pos = self.evader_state[:2]
+            if self.pursuer_sensor.is_visible(pursuer_pos, pursuer_yaw, evader_pos):
+                r_p += self.w_vis
 
         r_e = -r_p
         obs_p, obs_e = self._get_observations()

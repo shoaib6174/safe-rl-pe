@@ -183,7 +183,7 @@ class MADDPGAgent:
                 target_q = rewards + self.gamma * (1 - dones) * torch.min(target_q1, target_q2)
 
             # Clip target Q to prevent unbounded growth that causes FP16 overflow
-            Q_MIN = -500.0
+            Q_MIN = -1500.0
             Q_MAX = 1500.0
             target_q = torch.clamp(target_q, min=Q_MIN, max=Q_MAX)
 
@@ -237,6 +237,9 @@ class MADDPGAgent:
 
         # Actor update uses min of both critics (conservative estimate)
         own_obs = obs_p if agent_id == "pursuer" else obs_e
+        # Clip actor Q-values to prevent runaway exploitation of critic extrapolation
+        Q_MIN = -1500.0
+        Q_MAX = 1500.0
 
         if self.use_amp:
             with autocast():
@@ -245,8 +248,8 @@ class MADDPGAgent:
                     new_actions_all = torch.cat([new_actions, actions_e.detach()], dim=-1)
                 else:
                     new_actions_all = torch.cat([actions_p.detach(), new_actions], dim=-1)
-                q1_actor = self.critic(obs_all, new_actions_all)
-                q2_actor = self.critic2(obs_all, new_actions_all)
+                q1_actor = torch.clamp(self.critic(obs_all, new_actions_all), min=Q_MIN, max=Q_MAX)
+                q2_actor = torch.clamp(self.critic2(obs_all, new_actions_all), min=Q_MIN, max=Q_MAX)
                 actor_loss = -torch.min(q1_actor, q2_actor).mean()
             self.actor_optimizer.zero_grad()
             self.actor_scaler.scale(actor_loss).backward()
@@ -262,8 +265,8 @@ class MADDPGAgent:
                 new_actions_all = torch.cat([new_actions, actions_e.detach()], dim=-1)
             else:
                 new_actions_all = torch.cat([actions_p.detach(), new_actions], dim=-1)
-            q1_actor = self.critic(obs_all, new_actions_all)
-            q2_actor = self.critic2(obs_all, new_actions_all)
+            q1_actor = torch.clamp(self.critic(obs_all, new_actions_all), min=Q_MIN, max=Q_MAX)
+            q2_actor = torch.clamp(self.critic2(obs_all, new_actions_all), min=Q_MIN, max=Q_MAX)
             actor_loss = -torch.min(q1_actor, q2_actor).mean()
             if torch.isnan(actor_loss) or torch.isinf(actor_loss):
                 self._clear_adam_state(self.actor_optimizer, self.actor.parameters())

@@ -8,6 +8,7 @@
 cd ~/Codes/safe-rl-pe/repro_gonultas_isler_2024
 
 PYTHON="/home/niro-2/Codes/safe-rl-pe/.venv/bin/python"
+export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
 SEED=${1:-1}
 OUTPUT="results_belief_noamp/GI_v3_belief_noamp_s${SEED}"
