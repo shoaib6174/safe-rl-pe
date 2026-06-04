@@ -16,6 +16,8 @@ class Curriculum:
         self.evader_vmax_end = evader_vmax_end
 
     def _progress(self, episode: int) -> float:
+        if self.t_end <= 0:
+            return 1.0
         return min(1.0, episode / self.t_end)
 
     def get_fov(self, episode: int) -> float:
