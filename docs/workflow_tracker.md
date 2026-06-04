@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-06-06 (S105 results compiled, all 3 seeds complete, NO-GO)
+## Last Updated: 2026-06-04 (S106 — Transfer Learning launched on niro-2, 3 seeds running)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -135,6 +135,7 @@
 | 103 | 2026-05-25 | **Pop-FSP v6/v7 complete failure + pivot**: 0/5 configs achieved balance. Structural ∀/∃ asymmetry identified. Launched EMA seeds 4-6 + GI vanilla 20K baseline. Wrote asymmetry analysis doc. | [S103](worklogs/2026-05-25_S103.md) |
 | 104 | 2026-05-26 | **Full project reanalysis + ICRA 2027 master plan**: Comprehensive achievement assessment, publication strategy, phased plan with decision gates and contingencies. | [S104](worklogs/2026-05-26_S104.md) |
 | 105 | 2026-06-03 | **A-EMA Probe implementation + results**: Fixed config, launched 3 seeds on niro-2, all complete. Seed 0 best robustness=0.060. **NO-GO** — 0/3 seeds pass. Checkpoint sweeps running for seeds 1, 2. | [S105](worklogs/2026-06-03_S105.md) |
+| 106 | 2026-06-04 | **Transfer Learning launch**: Assessed plan execution (0% done), committed code, deployed to niro-2, launched 3 seeds × 7000ep. Fixed Python buffering (`python -u`). Pretrain phase active. | [S106](worklogs/2026-06-04_S106.md) |
 
 ## Paper Reading Status
 

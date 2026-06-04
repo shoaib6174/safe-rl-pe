@@ -148,6 +148,8 @@ def train(config_path: str = "config.yaml"):
     # Transfer learning: pre-train pursuer against greedy evader
     pretrain_episodes = config["maddpg"].get("pretrain_episodes", 0)
     use_pretrain = pretrain_episodes > 0
+    mixing_episodes = config["maddpg"].get("mixing_episodes", 0)
+    use_mixing = use_pretrain and mixing_episodes > 0
     if use_pretrain:
         greedy_evader = GreedyActor(
             arena_size=config.get("arena_size", 16.0),
@@ -160,7 +162,10 @@ def train(config_path: str = "config.yaml"):
         greedy_evader.eval()
         for param in greedy_evader.parameters():
             param.requires_grad = False
-        print(f"[Transfer] Pre-training pursuer for {pretrain_episodes} episodes vs greedy evader")
+        if use_mixing:
+            print(f"[Transfer] Pre-training pursuer for {pretrain_episodes} episodes vs greedy evader, then {mixing_episodes}-episode mixing")
+        else:
+            print(f"[Transfer] Pre-training pursuer for {pretrain_episodes} episodes vs greedy evader")
     else:
         greedy_evader = None
 
@@ -249,13 +254,26 @@ def train(config_path: str = "config.yaml"):
         # Select actions (batched for efficiency)
         actions_p = pursuer.select_actions_batch(stacked_p, noise_sigma)
 
-        # During pre-train, evader uses greedy policy (not learning)
+        # Determine phase: pretrain / mixing / self-play
         in_pretrain = use_pretrain and completed_episodes < pretrain_episodes
+        in_mixing = use_mixing and pretrain_episodes <= completed_episodes < pretrain_episodes + mixing_episodes
         if in_pretrain:
+            # Pre-train: evader uses greedy policy (not learning)
             with torch.no_grad():
                 stacked_e_arr = np.stack(stacked_e, axis=0)
                 stacked_e_t = torch.from_numpy(stacked_e_arr).float().to(device)
                 actions_e = greedy_evader(stacked_e_t).cpu().numpy()
+        elif in_mixing:
+            # Mixing: gradually transition from greedy to learned evader
+            mix_ratio = (completed_episodes - pretrain_episodes) / mixing_episodes
+            with torch.no_grad():
+                stacked_e_arr = np.stack(stacked_e, axis=0)
+                stacked_e_t = torch.from_numpy(stacked_e_arr).float().to(device)
+                actions_e_greedy = greedy_evader(stacked_e_t).cpu().numpy()
+            actions_e_learned = evader.select_actions_batch(stacked_e, noise_sigma)
+            # Per-env stochastic choice
+            use_learned = np.random.random(len(stacked_e)) < mix_ratio
+            actions_e = np.where(use_learned[:, None], actions_e_learned, actions_e_greedy)
         else:
             actions_e = evader.select_actions_batch(stacked_e, noise_sigma)
 
@@ -358,6 +376,26 @@ def train(config_path: str = "config.yaml"):
             pre_cross = completed_episodes - len(completed_eps) < pretrain_episodes
             if pre_cross:
                 print(f"\n[Transfer] Pre-train complete ({pretrain_episodes} ep). Starting self-play.\n")
+                # CRITICAL FIX: Re-initialize EMA networks from current actors.
+                # During pretrain, EMA is frozen and ema_evader is a deepcopy of the
+                # random-uninitialized evader.actor. Using it for target Q in self-play
+                # causes immediate Q-explosion. Re-initialize to current actors.
+                if use_ema:
+                    ema_pursuer = deepcopy(pursuer.actor)
+                    ema_evader = deepcopy(evader.actor)
+                    ema_pursuer.eval()
+                    ema_evader.eval()
+                    for param in ema_pursuer.parameters():
+                        param.requires_grad = False
+                    for param in ema_evader.parameters():
+                        param.requires_grad = False
+                    print(f"[Transfer] EMA networks re-initialized from current actors.\n")
+            # Detect mixing -> pure self-play transition
+            if use_mixing:
+                mix_cross = (completed_episodes - len(completed_eps) < pretrain_episodes + mixing_episodes
+                             and completed_episodes >= pretrain_episodes + mixing_episodes)
+                if mix_cross:
+                    print(f"\n[Transfer] Mixing complete ({mixing_episodes} ep). Pure self-play with EMA.\n")
 
         # Update curriculum when episodes complete
         if len(completed_eps) > 0:

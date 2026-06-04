@@ -47,6 +47,7 @@ maddpg:
 
   # Transfer learning: pre-train pursuer vs greedy evader
   pretrain_episodes: 2000
+  mixing_episodes: 1000      # gradual transition: greedy -> learned evader
   pretrain_opponent: "greedy"
 
   # Pursuer (symmetric baseline)
