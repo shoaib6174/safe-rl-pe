@@ -265,3 +265,7 @@ class VectorizedEnvRunner:
         for env in self.envs:
             env.pursuer_sensor.fov_angle = fov
             env.evader_v_max = evader_vmax
+            # In symmetric mode, pursuer also uses same sensor and speed
+            if env.symmetric:
+                env.evader_sensor.fov_angle = fov
+                env.pursuer_v_max = evader_vmax

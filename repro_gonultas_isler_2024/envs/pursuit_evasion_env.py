@@ -11,32 +11,62 @@ class PursuitEvasionEnv:
         self.capture_radius = 0.15
         self.dt = 0.1
 
-        # Pursuer params
-        self.L = 0.30 if config is None else config.get("pursuer", {}).get("wheelbase", 0.30)
-        self.pursuer_v_max = 2.5
-        self.pursuer_v_min = -1.0
-        self.delta_max = 0.34
-        self.delta_min = -0.34
-        self.accel_max = 2.0
-        self.accel_min = -2.0
-        self.steer_rate_max = 3.2
-        self.steer_rate_min = -3.2
+        # Symmetric mode: both agents use point-mass dynamics with identical params
+        self.symmetric = False if config is None else config.get("symmetric", False)
 
-        # Evader params
-        self.evader_v_max = 1.5
-        self.evader_v_min = -1.5
-        self.evader_accel_max = 9.81
-        self.evader_accel_min = -9.81
+        if self.symmetric:
+            # Shared params for symmetric point-mass
+            v_max = 1.5 if config is None else config.get("agent", {}).get("v_max", 1.5)
+            v_min = -1.5 if config is None else config.get("agent", {}).get("v_min", -1.5)
+            accel_max = 9.81 if config is None else config.get("agent", {}).get("accel_max", 9.81)
+            accel_min = -9.81 if config is None else config.get("agent", {}).get("accel_min", -9.81)
+
+            self.pursuer_v_max = v_max
+            self.pursuer_v_min = v_min
+            self.accel_max = accel_max
+            self.accel_min = accel_min
+            self.L = None  # No wheelbase in symmetric mode
+            self.delta_max = None
+            self.delta_min = None
+            self.steer_rate_max = None
+            self.steer_rate_min = None
+
+            self.evader_v_max = v_max
+            self.evader_v_min = v_min
+            self.evader_accel_max = accel_max
+            self.evader_accel_min = accel_min
+
+            fov_angle = 2.094 if config is None else config.get("agent", {}).get("fov_angle", 2.094)
+            fov_range = 6.0 if config is None else config.get("agent", {}).get("fov_range", 6.0)
+            self.pursuer_sensor = WedgeSensor(fov_angle, fov_range)
+            self.evader_sensor = WedgeSensor(fov_angle, fov_range)
+        else:
+            # Pursuer params (bicycle model)
+            self.L = 0.30 if config is None else config.get("pursuer", {}).get("wheelbase", 0.30)
+            self.pursuer_v_max = 2.5
+            self.pursuer_v_min = -1.0
+            self.delta_max = 0.34
+            self.delta_min = -0.34
+            self.accel_max = 2.0
+            self.accel_min = -2.0
+            self.steer_rate_max = 3.2
+            self.steer_rate_min = -3.2
+
+            # Evader params (point-mass)
+            self.evader_v_max = 1.5
+            self.evader_v_min = -1.5
+            self.evader_accel_max = 9.81
+            self.evader_accel_min = -9.81
+
+            # Sensors (asymmetric)
+            self.pursuer_sensor = WedgeSensor(2.094, 6.0)
+            self.evader_sensor = WedgeSensor(6.283, 1000.0)
 
         # Reward params
         self.lambda_capture = 1000
         self.lambda_time = 1
         self.lambda_distance = 1
         self.w_vis = 0.0 if config is None else config.get("maddpg", {}).get("w_vis", 0.0)
-
-        # Sensors
-        self.pursuer_sensor = WedgeSensor(2.094, 6.0)
-        self.evader_sensor = WedgeSensor(6.283, 1000.0)
 
         self.pursuer_state = None
         self.evader_state = None
@@ -58,15 +88,25 @@ class PursuitEvasionEnv:
             if np.hypot(px - ex, py - ey) >= min_dist:
                 break
 
-        # Pursuer: [x, y, delta, v, psi]
-        v_p = self.np_random.uniform(self.pursuer_v_min, self.pursuer_v_max)
-        psi_p = self.np_random.uniform(-np.pi, np.pi)
-        self.pursuer_state = np.array([px, py, 0.0, v_p, psi_p], dtype=np.float32)
+        if self.symmetric:
+            # Both agents: [x, y, vx, vy]
+            vx_p = self.np_random.uniform(self.pursuer_v_min, self.pursuer_v_max)
+            vy_p = self.np_random.uniform(self.pursuer_v_min, self.pursuer_v_max)
+            self.pursuer_state = np.array([px, py, vx_p, vy_p], dtype=np.float32)
 
-        # Evader: [x, y, vx, vy]
-        vx_e = self.np_random.uniform(self.evader_v_min, self.evader_v_max)
-        vy_e = self.np_random.uniform(self.evader_v_min, self.evader_v_max)
-        self.evader_state = np.array([ex, ey, vx_e, vy_e], dtype=np.float32)
+            vx_e = self.np_random.uniform(self.evader_v_min, self.evader_v_max)
+            vy_e = self.np_random.uniform(self.evader_v_min, self.evader_v_max)
+            self.evader_state = np.array([ex, ey, vx_e, vy_e], dtype=np.float32)
+        else:
+            # Pursuer: [x, y, delta, v, psi]
+            v_p = self.np_random.uniform(self.pursuer_v_min, self.pursuer_v_max)
+            psi_p = self.np_random.uniform(-np.pi, np.pi)
+            self.pursuer_state = np.array([px, py, 0.0, v_p, psi_p], dtype=np.float32)
+
+            # Evader: [x, y, vx, vy]
+            vx_e = self.np_random.uniform(self.evader_v_min, self.evader_v_max)
+            vy_e = self.np_random.uniform(self.evader_v_min, self.evader_v_max)
+            self.evader_state = np.array([ex, ey, vx_e, vy_e], dtype=np.float32)
 
         self.step_count = 0
         return self._get_observations()
@@ -76,28 +116,51 @@ class PursuitEvasionEnv:
         action_p: np.ndarray,
         action_e: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, float, float, bool]:
-        # Scale actions from [-1, 1] to actual bounds
-        u_delta = np.clip(action_p[0], -1.0, 1.0) * self.steer_rate_max
-        u_v = np.clip(action_p[1], -1.0, 1.0) * self.accel_max
-        u_x = np.clip(action_e[0], -1.0, 1.0) * self.evader_accel_max
-        u_y = np.clip(action_e[1], -1.0, 1.0) * self.evader_accel_max
+        if self.symmetric:
+            # Symmetric point-mass: both actions are [ax, ay]
+            u_px = np.clip(action_p[0], -1.0, 1.0) * self.accel_max
+            u_py = np.clip(action_p[1], -1.0, 1.0) * self.accel_max
+            u_ex = np.clip(action_e[0], -1.0, 1.0) * self.evader_accel_max
+            u_ey = np.clip(action_e[1], -1.0, 1.0) * self.evader_accel_max
 
-        # Pursuer dynamics (Euler integration)
-        x, y, delta, v, psi = self.pursuer_state
-        delta = np.clip(delta + u_delta * self.dt, self.delta_min, self.delta_max)
-        v = np.clip(v + u_v * self.dt, self.pursuer_v_min, self.pursuer_v_max)
-        psi = psi + (v / self.L) * np.tan(delta) * self.dt
-        x = x + v * np.cos(psi) * self.dt
-        y = y + v * np.sin(psi) * self.dt
-        self.pursuer_state = np.array([x, y, delta, v, psi], dtype=np.float32)
+            # Pursuer dynamics (point-mass)
+            x, y, vx, vy = self.pursuer_state
+            vx = np.clip(vx + u_px * self.dt, self.pursuer_v_min, self.pursuer_v_max)
+            vy = np.clip(vy + u_py * self.dt, self.pursuer_v_min, self.pursuer_v_max)
+            x = x + vx * self.dt
+            y = y + vy * self.dt
+            self.pursuer_state = np.array([x, y, vx, vy], dtype=np.float32)
 
-        # Evader dynamics
-        ex, ey, evx, evy = self.evader_state
-        evx = np.clip(evx + u_x * self.dt, self.evader_v_min, self.evader_v_max)
-        evy = np.clip(evy + u_y * self.dt, self.evader_v_min, self.evader_v_max)
-        ex = ex + evx * self.dt
-        ey = ey + evy * self.dt
-        self.evader_state = np.array([ex, ey, evx, evy], dtype=np.float32)
+            # Evader dynamics (point-mass)
+            ex, ey, evx, evy = self.evader_state
+            evx = np.clip(evx + u_ex * self.dt, self.evader_v_min, self.evader_v_max)
+            evy = np.clip(evy + u_ey * self.dt, self.evader_v_min, self.evader_v_max)
+            ex = ex + evx * self.dt
+            ey = ey + evy * self.dt
+            self.evader_state = np.array([ex, ey, evx, evy], dtype=np.float32)
+        else:
+            # Asymmetric: pursuer bicycle, evader point-mass
+            u_delta = np.clip(action_p[0], -1.0, 1.0) * self.steer_rate_max
+            u_v = np.clip(action_p[1], -1.0, 1.0) * self.accel_max
+            u_x = np.clip(action_e[0], -1.0, 1.0) * self.evader_accel_max
+            u_y = np.clip(action_e[1], -1.0, 1.0) * self.evader_accel_max
+
+            # Pursuer dynamics (Euler integration, bicycle model)
+            x, y, delta, v, psi = self.pursuer_state
+            delta = np.clip(delta + u_delta * self.dt, self.delta_min, self.delta_max)
+            v = np.clip(v + u_v * self.dt, self.pursuer_v_min, self.pursuer_v_max)
+            psi = psi + (v / self.L) * np.tan(delta) * self.dt
+            x = x + v * np.cos(psi) * self.dt
+            y = y + v * np.sin(psi) * self.dt
+            self.pursuer_state = np.array([x, y, delta, v, psi], dtype=np.float32)
+
+            # Evader dynamics
+            ex, ey, evx, evy = self.evader_state
+            evx = np.clip(evx + u_x * self.dt, self.evader_v_min, self.evader_v_max)
+            evy = np.clip(evy + u_y * self.dt, self.evader_v_min, self.evader_v_max)
+            ex = ex + evx * self.dt
+            ey = ey + evy * self.dt
+            self.evader_state = np.array([ex, ey, evx, evy], dtype=np.float32)
 
         # Clip positions to arena
         half = self.arena_size / 2
@@ -128,8 +191,13 @@ class PursuitEvasionEnv:
         # Add vis_reward for pursuer if evader is in FOV (only during episode, not at terminal)
         if self.w_vis > 0.0 and not done:
             pursuer_pos = self.pursuer_state[:2]
-            pursuer_yaw = self.pursuer_state[4]
             evader_pos = self.evader_state[:2]
+            if self.symmetric:
+                # Symmetric: both agents have meaningful yaw from velocity
+                pursuer_v = self.pursuer_state[2:4]
+                pursuer_yaw = np.arctan2(pursuer_v[1], pursuer_v[0])
+            else:
+                pursuer_yaw = self.pursuer_state[4]
             if self.pursuer_sensor.is_visible(pursuer_pos, pursuer_yaw, evader_pos):
                 r_p += self.w_vis
 
@@ -156,25 +224,36 @@ class PursuitEvasionEnv:
         own_state: np.ndarray,
         opp_state: np.ndarray,
     ) -> np.ndarray:
-        if is_pursuer:
-            own_pos = own_state[:2]
-            own_v = np.array([
-                own_state[3] * np.cos(own_state[4]),
-                own_state[3] * np.sin(own_state[4]),
-            ])
-            agent_yaw = own_state[4]
-            sensor = self.pursuer_sensor
-        else:
+        if self.symmetric:
+            # Both agents: [x, y, vx, vy]
             own_pos = own_state[:2]
             own_v = own_state[2:4]
-            agent_yaw = 0.0  # evader yaw irrelevant for omnidirectional
-            sensor = self.evader_sensor
+            # Heading from velocity (meaningful for both in symmetric mode)
+            agent_yaw = np.arctan2(own_v[1], own_v[0])
+            sensor = self.pursuer_sensor if is_pursuer else self.evader_sensor
+        else:
+            if is_pursuer:
+                own_pos = own_state[:2]
+                own_v = np.array([
+                    own_state[3] * np.cos(own_state[4]),
+                    own_state[3] * np.sin(own_state[4]),
+                ])
+                agent_yaw = own_state[4]
+                sensor = self.pursuer_sensor
+            else:
+                own_pos = own_state[:2]
+                own_v = own_state[2:4]
+                agent_yaw = 0.0  # evader yaw irrelevant for omnidirectional
+                sensor = self.evader_sensor
 
         opp_pos = opp_state[:2]
-        opp_v = np.array([
-            opp_state[3] * np.cos(opp_state[4]) if opp_state.shape[0] == 5 else opp_state[2],
-            opp_state[3] * np.sin(opp_state[4]) if opp_state.shape[0] == 5 else opp_state[3],
-        ])
+        if self.symmetric:
+            opp_v = opp_state[2:4]
+        else:
+            opp_v = np.array([
+                opp_state[3] * np.cos(opp_state[4]) if opp_state.shape[0] == 5 else opp_state[2],
+                opp_state[3] * np.sin(opp_state[4]) if opp_state.shape[0] == 5 else opp_state[3],
+            ])
 
         visible = sensor.is_visible(own_pos, agent_yaw, opp_pos)
         I = 1.0 if visible else -1.0
@@ -212,22 +291,33 @@ class PursuitEvasionEnv:
         norm[1] = norm[1] / half
 
         # Own velocities
-        if is_pursuer:
-            norm[2] = (norm[2] - 0.75) / 1.75  # pursuer v in [-1, 2.5]
-            norm[3] = (norm[3] - 0.75) / 1.75
+        if self.symmetric:
+            # Both agents same normalization
+            v_range = max(abs(self.pursuer_v_max), abs(self.pursuer_v_min))
+            norm[2] = norm[2] / v_range
+            norm[3] = norm[3] / v_range
         else:
-            norm[2] = norm[2] / 1.5
-            norm[3] = norm[3] / 1.5
+            if is_pursuer:
+                norm[2] = (norm[2] - 0.75) / 1.75  # pursuer v in [-1, 2.5]
+                norm[3] = (norm[3] - 0.75) / 1.75
+            else:
+                norm[2] = norm[2] / 1.5
+                norm[3] = norm[3] / 1.5
 
         # Opponent state (already 0 if not visible)
         norm[4] = norm[4] / half
         norm[5] = norm[5] / half
-        if is_pursuer:
-            norm[6] = (norm[6] - 0.75) / 1.75
-            norm[7] = (norm[7] - 0.75) / 1.75
+        if self.symmetric:
+            v_range = max(abs(self.pursuer_v_max), abs(self.pursuer_v_min))
+            norm[6] = norm[6] / v_range
+            norm[7] = norm[7] / v_range
         else:
-            norm[6] = norm[6] / 1.5
-            norm[7] = norm[7] / 1.5
+            if is_pursuer:
+                norm[6] = (norm[6] - 0.75) / 1.75
+                norm[7] = (norm[7] - 0.75) / 1.75
+            else:
+                norm[6] = norm[6] / 1.5
+                norm[7] = norm[7] / 1.5
 
         # I is already +/- 1
         # t_norm is already in [0, 1]
