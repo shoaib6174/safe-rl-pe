@@ -7,6 +7,7 @@ from pathlib import Path
 
 from envs.pursuit_evasion_env import PursuitEvasionEnv
 from agents.maddpg import MADDPGAgent
+from agents.greedy_actor import GreedyActor
 from training.replay_buffer import ReplayBuffer
 from training.curriculum import Curriculum
 from training.belief_manager import BeliefStateManager
@@ -144,6 +145,25 @@ def train(config_path: str = "config.yaml"):
         pursuer_pop = None
         evader_pop = None
 
+    # Transfer learning: pre-train pursuer against greedy evader
+    pretrain_episodes = config["maddpg"].get("pretrain_episodes", 0)
+    use_pretrain = pretrain_episodes > 0
+    if use_pretrain:
+        greedy_evader = GreedyActor(
+            arena_size=config.get("arena_size", 16.0),
+            is_pursuer=False,
+            frame_stack=frame_stack,
+            obs_dim=raw_obs_dim + belief_dim,
+            action_dim=action_dim,
+            device=device,
+        )
+        greedy_evader.eval()
+        for param in greedy_evader.parameters():
+            param.requires_grad = False
+        print(f"[Transfer] Pre-training pursuer for {pretrain_episodes} episodes vs greedy evader")
+    else:
+        greedy_evader = None
+
     # Replay buffer (on GPU to eliminate CPU->GPU transfer on every sample)
     replay_buffer = ReplayBuffer(
         capacity=config["maddpg"]["replay_buffer_size"],
@@ -228,7 +248,16 @@ def train(config_path: str = "config.yaml"):
 
         # Select actions (batched for efficiency)
         actions_p = pursuer.select_actions_batch(stacked_p, noise_sigma)
-        actions_e = evader.select_actions_batch(stacked_e, noise_sigma)
+
+        # During pre-train, evader uses greedy policy (not learning)
+        in_pretrain = use_pretrain and completed_episodes < pretrain_episodes
+        if in_pretrain:
+            with torch.no_grad():
+                stacked_e_arr = np.stack(stacked_e, axis=0)
+                stacked_e_t = torch.from_numpy(stacked_e_arr).float().to(device)
+                actions_e = greedy_evader(stacked_e_t).cpu().numpy()
+        else:
+            actions_e = evader.select_actions_batch(stacked_e, noise_sigma)
 
         # Step all envs
         transitions, completed_eps, bimdn_info = runner.step(
@@ -256,7 +285,11 @@ def train(config_path: str = "config.yaml"):
             n_updates = n_envs * update_freq
             for _ in range(n_updates):
                 batch = replay_buffer.sample(batch_size)
-                if use_pop_fsp:
+                if in_pretrain:
+                    # Pre-train: only pursuer learns, evader is fixed greedy
+                    c_loss_p, a_loss_p = pursuer.update(batch, greedy_evader, agent_id="pursuer")
+                    c_loss_e, a_loss_e = 0.0, 0.0
+                elif use_pop_fsp:
                     # Pop-FSP v2/v3: gradual mixing + recency-biased sampling
                     # Compute mixing ratio: fraction of updates that use population
                     # Capped at pop_mixing_max so agents always see some current opponent
@@ -296,9 +329,10 @@ def train(config_path: str = "config.yaml"):
                     for _ in range(evader_train_steps):
                         c_loss_e, a_loss_e = evader.update(batch, pursuer.actor, agent_id="evader")
                 pursuer.update_targets()
-                evader.update_targets()
-            # Update EMA networks after all gradient updates
-            if use_ema:
+                if not in_pretrain:
+                    evader.update_targets()
+            # Update EMA networks after all gradient updates (only during self-play)
+            if use_ema and not in_pretrain:
                 with torch.no_grad():
                     for ema_param, param in zip(ema_evader.parameters(), evader.actor.parameters()):
                         ema_param.data.mul_(1 - ema_tau).add_(param.data, alpha=ema_tau)
@@ -317,6 +351,13 @@ def train(config_path: str = "config.yaml"):
             agg_rewards_p.append(ep_data["pursuer_reward"])
             agg_rewards_e.append(ep_data["evader_reward"])
             agg_captures.append(1.0 if ep_data["captured"] else 0.0)
+
+        # Detect pre-train -> self-play transition
+        if use_pretrain and completed_episodes >= pretrain_episodes:
+            # Check if we JUST crossed the boundary
+            pre_cross = completed_episodes - len(completed_eps) < pretrain_episodes
+            if pre_cross:
+                print(f"\n[Transfer] Pre-train complete ({pretrain_episodes} ep). Starting self-play.\n")
 
         # Update curriculum when episodes complete
         if len(completed_eps) > 0:
