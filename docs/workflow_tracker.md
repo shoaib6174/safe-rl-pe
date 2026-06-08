@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-06-08 (S108 — **2/9 seeds balanced** (22%). Seeds 2 + 3 both show CR≈0.5 across all eval modes. niro-2 rebooted; all results recovered.)
+## Last Updated: 2026-06-08 (S109 — PBT launched 3 seeds on niro-2. Shared policy diagnosed: critic scale imbalance causes shared actor to follow well-trained dominant critic, amplifying lock-in.)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -28,6 +28,8 @@
 | **Symmetric Point-Mass seeds 0-2** | **S106** | **✅ COMPLETE** — Seed 2 shows balanced cycling (37% CR=0, 36% CR=1, 26% CR=0.5). First genuine competitive cycling in project. Seeds 0/1 collapsed. |
 | **Symmetric Point-Mass seeds 3-8** | **S107-S108** | **✅ COMPLETE** — All 9 seeds done. **2/9 balanced (22%): seeds 2 + 3.** 5/9 pursuer lock-in, 1/9 evader lock-in, 1/9 pursuer-biased. |
 | **Symmetric evaluation** | **S108** | **✅ COMPLETE** — All 9 seeds evaluated. Seeds 2,3: CR≈0.5 all modes. **2/9 balanced (22%).** |
+| **Shared Policy** | **S108-S109** | **❌ FAILED** — 0/3 seeds balanced. Root cause: separate critics have different value scales; shared actor follows well-trained dominant critic. |
+| **PBT experiment** | **S109** | **🔄 IN PROGRESS** — 3 seeds launched on niro-2. First tournament at ~1000 episodes. |
 | Paper body writing | — | Intro/Methods/Results for Framing C; deadline ~September 2026 (ICRA 2027) |
 
 ## Session Index
@@ -143,6 +145,7 @@
 | 106 | 2026-06-04 | **Transfer Learning diagnosis + Symmetric experiment**: Found root cause (random EMA at transition), implemented EMA re-init + mixing. v2 complete: 0/3 balanced. Theoretical analysis of why self-play fails. Launched symmetric point-mass experiment based on Nash equilibrium theory. | [S106](worklogs/2026-06-04_S106.md) |
 | 107 | 2026-06-05 | **Symmetric results + new seeds**: Seeds 0-2 complete. Seed 2 shows balanced cycling! Eval running. Launched seeds 3-5 for reproducibility. | [S107](worklogs/2026-06-05_S107.md) |
 | 108 | 2026-06-08 | **niro-2 recovery + full eval** — All 9 seeds complete. **2/9 balanced (seeds 2, 3).** niro-2 rebooted, results recovered. Evals copied locally. | [S108](worklogs/2026-06-08_S108.md) |
+| 109 | 2026-06-08 | **PBT implementation + launch** — Diagnosed shared policy failure (critic scale imbalance). Implemented PBT with population of 5, tournament + weakest replacement. Launched 3 seeds on niro-2. | [S109](worklogs/2026-06-08_S109.md) |
 
 ## Paper Reading Status
 
