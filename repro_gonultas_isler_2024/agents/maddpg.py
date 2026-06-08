@@ -11,16 +11,24 @@ except ImportError:
 
 
 class ActorNetwork(nn.Module):
-    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 128):
+    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 128, role_dim: int = 0):
         super().__init__()
-        self.fc1 = nn.Linear(obs_dim, hidden_dim)
+        self.role_dim = role_dim
+        input_dim = obs_dim + role_dim
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, action_dim)
         self.relu = nn.ReLU()
         self.tanh = nn.Tanh()
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        x = self.relu(self.fc1(obs))
+    def forward(self, obs: torch.Tensor, role: torch.Tensor | None = None) -> torch.Tensor:
+        if self.role_dim > 0:
+            if role is None:
+                raise ValueError("role tensor required when role_dim > 0")
+            x = torch.cat([obs, role], dim=-1)
+        else:
+            x = obs
+        x = self.relu(self.fc1(x))
         x = self.relu(self.fc2(x))
         return self.tanh(self.fc3(x))
 
