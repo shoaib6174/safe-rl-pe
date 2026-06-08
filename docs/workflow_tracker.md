@@ -1,5 +1,5 @@
 # Pursuit-Evasion Research Workflow Tracker
-## Last Updated: 2026-06-04 (S106 — Transfer Learning launched on niro-2, 3 seeds running)
+## Last Updated: 2026-06-08 (S108 — **2/9 seeds balanced** (22%). Seeds 2 + 3 both show CR≈0.5 across all eval modes. niro-2 rebooted; all results recovered.)
 
 ## Research Topic
 **1v1 Pursuit-Evasion Games using Mobile Ground Robots with Deep RL**
@@ -23,6 +23,11 @@
 | niro-2 stability | S98-S99 | ✅ **RESOLVED** — Rebooted, CUDA driver fixed, Tailscale re-authed. |
 | **Pop-FSP competitive balance** | **S103** | **❌ FAILED** — 0/5 configurations (v3-v7) achieved CR≈0.5. Structural ∀/∃ asymmetry is fundamental. **Pivoted to EMA seeds 4-6 + GI vanilla 20K baseline.** |
 | **A-EMA probe** | **S105** | **❌ NO-GO** — Seed 0 best robustness=0.060 (mean=0.026). Seeds 1, 2 collapsed. 0/3 with robustness > 0.40. Asymmetric LR alone fails. |
+| **Transfer Learning v1** | **S106** | **❌ FAILED** — Immediate collapse at ep 2000. Root cause: EMA evader random at transition (deepcopy of never-trained actor). |
+| **Transfer Learning v2** | **S106** | **❌ COMPLETE** — 0/3 seeds balanced. Seed 0: CR=1.0 (pursuer-dominant). Seeds 1,2: CR=0.0 (evader-dominant). Mixing + EMA re-init insufficient. |
+| **Symmetric Point-Mass seeds 0-2** | **S106** | **✅ COMPLETE** — Seed 2 shows balanced cycling (37% CR=0, 36% CR=1, 26% CR=0.5). First genuine competitive cycling in project. Seeds 0/1 collapsed. |
+| **Symmetric Point-Mass seeds 3-8** | **S107-S108** | **✅ COMPLETE** — All 9 seeds done. **2/9 balanced (22%): seeds 2 + 3.** 5/9 pursuer lock-in, 1/9 evader lock-in, 1/9 pursuer-biased. |
+| **Symmetric evaluation** | **S108** | **✅ COMPLETE** — All 9 seeds evaluated. Seeds 2,3: CR≈0.5 all modes. **2/9 balanced (22%).** |
 | Paper body writing | — | Intro/Methods/Results for Framing C; deadline ~September 2026 (ICRA 2027) |
 
 ## Session Index
@@ -135,7 +140,9 @@
 | 103 | 2026-05-25 | **Pop-FSP v6/v7 complete failure + pivot**: 0/5 configs achieved balance. Structural ∀/∃ asymmetry identified. Launched EMA seeds 4-6 + GI vanilla 20K baseline. Wrote asymmetry analysis doc. | [S103](worklogs/2026-05-25_S103.md) |
 | 104 | 2026-05-26 | **Full project reanalysis + ICRA 2027 master plan**: Comprehensive achievement assessment, publication strategy, phased plan with decision gates and contingencies. | [S104](worklogs/2026-05-26_S104.md) |
 | 105 | 2026-06-03 | **A-EMA Probe implementation + results**: Fixed config, launched 3 seeds on niro-2, all complete. Seed 0 best robustness=0.060. **NO-GO** — 0/3 seeds pass. Checkpoint sweeps running for seeds 1, 2. | [S105](worklogs/2026-06-03_S105.md) |
-| 106 | 2026-06-04 | **Transfer Learning launch**: Assessed plan execution (0% done), committed code, deployed to niro-2, launched 3 seeds × 7000ep. Fixed Python buffering (`python -u`). Pretrain phase active. | [S106](worklogs/2026-06-04_S106.md) |
+| 106 | 2026-06-04 | **Transfer Learning diagnosis + Symmetric experiment**: Found root cause (random EMA at transition), implemented EMA re-init + mixing. v2 complete: 0/3 balanced. Theoretical analysis of why self-play fails. Launched symmetric point-mass experiment based on Nash equilibrium theory. | [S106](worklogs/2026-06-04_S106.md) |
+| 107 | 2026-06-05 | **Symmetric results + new seeds**: Seeds 0-2 complete. Seed 2 shows balanced cycling! Eval running. Launched seeds 3-5 for reproducibility. | [S107](worklogs/2026-06-05_S107.md) |
+| 108 | 2026-06-08 | **niro-2 recovery + full eval** — All 9 seeds complete. **2/9 balanced (seeds 2, 3).** niro-2 rebooted, results recovered. Evals copied locally. | [S108](worklogs/2026-06-08_S108.md) |
 
 ## Paper Reading Status
 
