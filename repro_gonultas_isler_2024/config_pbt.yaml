@@ -28,9 +28,9 @@ use_amp: true
 use_compile: false
 
 maddpg:
-  episodes: 10000
-  parallel_envs: 2
-  replay_buffer_size: 100000
+  episodes: 20000
+  parallel_envs: 4
+  replay_buffer_size: 500000
   batch_size: 1024
 
   actor_lr: 0.0005
@@ -75,7 +75,7 @@ eval:
 # PBT-specific hyperparameters
 pbt:
   population_size: 5          # Number of agents in population
-  replacement_freq: 1000      # Evaluate + replace every N episodes
+  replacement_freq: 500       # Evaluate + replace every N episodes
   tournament_games: 10        # Games per matchup in tournament
   mutation_std: 0.01          # Gaussian noise std for weight mutation
 

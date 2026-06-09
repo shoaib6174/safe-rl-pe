@@ -130,10 +130,14 @@ class PBTTrainer:
 
     def evaluate_tournament(
         self, env_config: dict, n_games: int = 10
-    ) -> np.ndarray:
+    ) -> dict:
         """Round-robin: each agent plays each other as pursuer.
 
-        Returns win rate per agent (as pursuer).
+        Returns dict with:
+          - 'pursuer_wr': win rate per agent as pursuer
+          - 'evader_wr': escape rate per agent as evader
+          - 'balance_score': -|pursuer_wr - 0.5| - |evader_wr - 0.5|
+                           (higher = more balanced)
         """
         self.win_matrix.fill(0)
         self.games_matrix.fill(0)
@@ -172,26 +176,47 @@ class PBTTrainer:
                 self.win_matrix[i, j] = wins_i
                 self.games_matrix[i, j] = n_games
 
-        win_rates = np.zeros(self.population_size)
+        # Pursuer skill: how often agent i captures as pursuer
+        pursuer_wr = np.zeros(self.population_size)
         for i in range(self.population_size):
             total = self.games_matrix[i, :].sum()
             if total > 0:
-                win_rates[i] = self.win_matrix[i, :].sum() / total
-        return win_rates
+                pursuer_wr[i] = self.win_matrix[i, :].sum() / total
+
+        # Evader skill: how often agent i ESCAPES as evader
+        # (1 - fraction of times opponents capture when i is evader)
+        evader_wr = np.zeros(self.population_size)
+        for i in range(self.population_size):
+            total = self.games_matrix[:, i].sum()
+            if total > 0:
+                captures_vs_i = self.win_matrix[:, i].sum()
+                evader_wr[i] = 1.0 - (captures_vs_i / total)
+
+        # Balance score: higher = closer to balanced in BOTH roles
+        balance_score = (
+            -np.abs(pursuer_wr - 0.5)
+            - np.abs(evader_wr - 0.5)
+        )
+
+        return {
+            'pursuer_wr': pursuer_wr,
+            'evader_wr': evader_wr,
+            'balance_score': balance_score,
+        }
 
     def replace_least_balanced(
-        self, win_rates: np.ndarray, mutation_std: float = 0.01
+        self, tournament_results: dict, mutation_std: float = 0.01
     ) -> tuple:
         """Replace least-balanced agent with mutated copy of most-balanced.
 
-        "Best" = win_rate closest to 0.5 (most competitive/balanced).
-        "Worst" = win_rate furthest from 0.5 (most dominant or weakest).
+        "Best" = highest balance_score (most balanced in BOTH roles).
+        "Worst" = lowest balance_score (most dominant or weakest).
 
         Returns (worst_idx, best_idx, did_replace).
         """
-        distance_from_balance = np.abs(win_rates - 0.5)
-        worst = int(np.argmax(distance_from_balance))
-        best = int(np.argmin(distance_from_balance))
+        balance_score = tournament_results['balance_score']
+        worst = int(np.argmin(balance_score))
+        best = int(np.argmax(balance_score))
 
         if worst == best:
             return worst, best, False
@@ -441,23 +466,31 @@ def train(config_path: str = "config.yaml", seed: int | None = None):
             for i, agent in enumerate(pbt.population):
                 torch.save(agent.actor.state_dict(), cp_dir / f"agent_{i}_actor.pt")
 
-        # PBT replacement: evaluate tournament and replace weakest
+        # PBT replacement: evaluate tournament and replace least balanced
         if completed_episodes // replacement_freq > last_replacement_ep // replacement_freq:
             last_replacement_ep = (completed_episodes // replacement_freq) * replacement_freq
             print(f"\n--- PBT Tournament at episode {completed_episodes} ---")
-            win_rates = pbt.evaluate_tournament(config, n_games=tournament_games)
+            results = pbt.evaluate_tournament(config, n_games=tournament_games)
+            pwr = results['pursuer_wr']
+            ewr = results['evader_wr']
+            bscore = results['balance_score']
 
-            for i, wr in enumerate(win_rates):
-                print(f"  Agent {i}: win_rate={wr:.3f}")
-                logger.log_scalar(f"pbt/win_rate_agent_{i}", wr, completed_episodes)
+            for i in range(pbt.population_size):
+                print(
+                    f"  Agent {i}: P_WR={pwr[i]:.3f} E_WR={ewr[i]:.3f} "
+                    f"Balance={bscore[i]:.3f}"
+                )
+                logger.log_scalar(f"pbt/pursuer_wr_agent_{i}", pwr[i], completed_episodes)
+                logger.log_scalar(f"pbt/evader_wr_agent_{i}", ewr[i], completed_episodes)
+                logger.log_scalar(f"pbt/balance_score_agent_{i}", bscore[i], completed_episodes)
 
-            worst, best, replaced = pbt.replace_least_balanced(win_rates, mutation_std)
+            worst, best, replaced = pbt.replace_least_balanced(results, mutation_std)
             if replaced:
                 print(
-                    f"  REPLACED: Agent {worst} (WR={win_rates[worst]:.3f}, "
-                    f"|Δ|={abs(win_rates[worst]-0.5):.3f}) "
-                    f"<- Agent {best} (WR={win_rates[best]:.3f}, "
-                    f"|Δ|={abs(win_rates[best]-0.5):.3f}) + noise"
+                    f"  REPLACED: Agent {worst} (P_WR={pwr[worst]:.3f}, "
+                    f"E_WR={ewr[worst]:.3f}, Bal={bscore[worst]:.3f}) "
+                    f"<- Agent {best} (P_WR={pwr[best]:.3f}, "
+                    f"E_WR={ewr[best]:.3f}, Bal={bscore[best]:.3f}) + noise"
                 )
                 logger.log_scalar("pbt/replaced_agent", worst, completed_episodes)
                 logger.log_scalar("pbt/replacement_source", best, completed_episodes)
