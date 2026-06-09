@@ -179,21 +179,25 @@ class PBTTrainer:
                 win_rates[i] = self.win_matrix[i, :].sum() / total
         return win_rates
 
-    def replace_weakest(
+    def replace_least_balanced(
         self, win_rates: np.ndarray, mutation_std: float = 0.01
     ) -> tuple:
-        """Replace weakest agent with mutated copy of strongest.
+        """Replace least-balanced agent with mutated copy of most-balanced.
 
-        Returns (weakest_idx, strongest_idx, did_replace).
+        "Best" = win_rate closest to 0.5 (most competitive/balanced).
+        "Worst" = win_rate furthest from 0.5 (most dominant or weakest).
+
+        Returns (worst_idx, best_idx, did_replace).
         """
-        weakest = int(np.argmin(win_rates))
-        strongest = int(np.argmax(win_rates))
+        distance_from_balance = np.abs(win_rates - 0.5)
+        worst = int(np.argmax(distance_from_balance))
+        best = int(np.argmin(distance_from_balance))
 
-        if weakest == strongest:
-            return weakest, strongest, False
+        if worst == best:
+            return worst, best, False
 
-        weak_agent = self.population[weakest]
-        strong_agent = self.population[strongest]
+        weak_agent = self.population[worst]
+        strong_agent = self.population[best]
 
         # Copy actor weights + mutation noise
         with torch.no_grad():
@@ -241,7 +245,7 @@ class PBTTrainer:
             weak_agent.critic_e2.state_dict()
         )
 
-        return weakest, strongest, True
+        return worst, best, True
 
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -447,16 +451,18 @@ def train(config_path: str = "config.yaml", seed: int | None = None):
                 print(f"  Agent {i}: win_rate={wr:.3f}")
                 logger.log_scalar(f"pbt/win_rate_agent_{i}", wr, completed_episodes)
 
-            weakest, strongest, replaced = pbt.replace_weakest(win_rates, mutation_std)
+            worst, best, replaced = pbt.replace_least_balanced(win_rates, mutation_std)
             if replaced:
                 print(
-                    f"  REPLACED: Agent {weakest} (WR={win_rates[weakest]:.3f}) "
-                    f"<- Agent {strongest} (WR={win_rates[strongest]:.3f}) + noise"
+                    f"  REPLACED: Agent {worst} (WR={win_rates[worst]:.3f}, "
+                    f"|Δ|={abs(win_rates[worst]-0.5):.3f}) "
+                    f"<- Agent {best} (WR={win_rates[best]:.3f}, "
+                    f"|Δ|={abs(win_rates[best]-0.5):.3f}) + noise"
                 )
-                logger.log_scalar("pbt/replaced_agent", weakest, completed_episodes)
-                logger.log_scalar("pbt/replacement_source", strongest, completed_episodes)
+                logger.log_scalar("pbt/replaced_agent", worst, completed_episodes)
+                logger.log_scalar("pbt/replacement_source", best, completed_episodes)
             else:
-                print("  No replacement (single best agent)")
+                print("  No replacement (single most-balanced agent)")
             print("---")
 
     # Final checkpoint
