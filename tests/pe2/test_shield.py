@@ -293,6 +293,58 @@ class TestCBFShieldFilter:
         assert u[0] == pytest.approx(0.05)
         assert u[0] <= 0.5
 
+    def test_relaxed_tier_through_filter_reports_infeasible(self):
+        # The reviewer's probe. State x = 0.05 heading +x with an obstacle at
+        # the origin, radius 0.3 -> r_eff = 0.45, q = (0.15, 0), dist 0.15:
+        #   h        = 0.15^2 - 0.45^2 = 0.0225 - 0.2025 = -0.18 m^2
+        #   clearance = 0.15 - 0.45                      = -0.30 m
+        # The obstacle row demands v < 0, so the exact program is infeasible
+        # and the boundary-only program is not (walls are 4.7 m away), which
+        # is the RELAXED tier. It returns the nominal unmodified.
+        shield = CBFShield(CFG)
+        u, info = shield.filter(
+            (1.0, 0.0),
+            np.array([0.05, 0.0, 0.0]),
+            [{"x": 0.0, "y": 0.0, "radius": 0.3}],
+        )
+        assert info["method"] == "relaxed"
+        assert info["feasible"] is False
+        assert info["stalled"] is False
+        assert info["immobile"] is False
+        assert np.allclose(u, [1.0, 0.0])
+        assert info["min_h_obstacle"] == pytest.approx(-0.18)
+        assert info["min_h_boundary"] == pytest.approx(4.7)
+        assert info["min_clearance"] == pytest.approx(-0.30)
+        # An intervention-free step that is among the LEAST safe: on the
+        # relaxed tier the obstacle row is simply dropped.
+        assert info["intervention"] is False
+
+    def test_relaxed_tier_info_is_classified_by_the_accumulator(self):
+        # Cross-module contract for a non-exact tier: the real info dict from
+        # the probe above must land as infeasible-but-not-backup.
+        shield = CBFShield(CFG)
+        _, info = shield.filter(
+            (1.0, 0.0),
+            np.array([0.05, 0.0, 0.0]),
+            [{"x": 0.0, "y": 0.0, "radius": 0.3}],
+        )
+        m = ShieldMetrics()
+        m.record(info, violation=False)
+        s = m.summary()
+        assert s["n_infeasible"] == 1
+        assert s["n_backup"] == 0
+        assert s["infeasibility_rate"] == pytest.approx(1.0)
+        assert s["backup_rate"] == 0.0
+        assert s["tier_histogram"] == {
+            "exact": 0,
+            "relaxed": 1,
+            "backup": 0,
+            "none": 0,
+        }
+        # The least-safe step of the episode logs no intervention at all.
+        assert s["intervention_rate"] == 0.0
+        assert s["min_clearance_floor"] == pytest.approx(-0.30)
+
     def test_equal_clearance_wall_and_obstacle_report_equal_clearance(self):
         # The mixed-unit trap: 0.02 m of clearance from a wall and 0.02 m from
         # a radius-1.0 obstacle must report the SAME min_clearance, while min_h
@@ -494,6 +546,72 @@ class TestShieldMetrics:
             "backup": 1,
             "none": 0,
         }
+
+    def test_integer_counts_hand_computed(self):
+        # 5 steps:
+        #   1 exact,   intervention
+        #   2 exact,   no intervention
+        #   3 relaxed, intervention
+        #   4 backup,  intervention
+        #   5 exact,   no intervention, stalled + immobile
+        # -> interventions 3, infeasible 2, backup 1, stalled 1, immobile 1.
+        m = ShieldMetrics()
+        m.record(_info(method="exact", intervention=True), violation=False)
+        m.record(_info(method="exact"), violation=False)
+        m.record(_info(method="relaxed", intervention=True), violation=False)
+        m.record(_info(method="backup", intervention=True), violation=False)
+        m.record(_info(method="exact", stalled=True), violation=False)
+        s = m.summary()
+        assert s["n_interventions"] == 3
+        assert s["n_infeasible"] == 2
+        assert s["n_backup"] == 1
+        assert s["n_stalled"] == 1
+        assert s["n_immobile"] == 1
+        # The counts and the rates must agree, being the same numbers.
+        assert s["n_interventions"] / s["n_steps"] == pytest.approx(
+            s["intervention_rate"]
+        )
+        assert s["n_infeasible"] / s["n_steps"] == pytest.approx(
+            s["infeasibility_rate"]
+        )
+
+    def test_unknown_method_is_refused(self):
+        # A fourth tier that only half-registered would vanish from the
+        # histogram while still counting toward the infeasibility rate.
+        m = ShieldMetrics()
+        with pytest.raises(ValueError, match="TIERS"):
+            m.record(_info(method="feasible-with-margin"), violation=False)
+
+    def test_tier_histogram_sums_to_step_count_across_real_tiers(self):
+        # Three real filter calls, one per QP tier, fed through the
+        # accumulator: the histogram must account for every step.
+        shield = CBFShield(CFG)
+        states = [
+            ((1.0, 0.0), np.array([0.0, 0.0, 0.0]), [], "exact"),
+            (
+                (1.0, 0.0),
+                np.array([0.05, 0.0, 0.0]),
+                [{"x": 0.0, "y": 0.0, "radius": 0.3}],
+                "relaxed",
+            ),
+            ((1.0, 0.0), np.array([5.0, 0.0, 0.0]), [], "backup"),
+        ]
+        m = ShieldMetrics()
+        for action, state, obstacles, expected in states:
+            _, info = shield.filter(action, state, obstacles)
+            assert info["method"] == expected  # the run really is multi-tier
+            m.record(info, violation=False)
+        s = m.summary()
+        assert s["n_steps"] == 3
+        assert sum(s["tier_histogram"].values()) == s["n_steps"]
+        assert s["tier_histogram"] == {
+            "exact": 1,
+            "relaxed": 1,
+            "backup": 1,
+            "none": 0,
+        }
+        assert s["n_infeasible"] == 2
+        assert s["n_backup"] == 1
 
     def test_clearance_and_per_kind_barrier_floors(self):
         # Three steps.
@@ -1006,6 +1124,63 @@ class TestSummarizeShield:
         assert s["longest_backup_run_per_episode"] == [40, 3]
         assert s["pinned_episodes"] == 1
         assert s["pinned_episode_rate"] == pytest.approx(0.5)
+
+    def test_pooled_integer_counts_are_summed_not_reconstructed(self):
+        # Episode A: 100 steps, 7 interventions, 3 infeasible, 1 backup,
+        #            2 stalled. Episode B: 300 steps, 33 / 0 / 0 / 5.
+        # Pooled: 40 / 3 / 1 / 7 — exact integers, not rate * n_steps, which
+        # would give 40.00000000000001 for 0.07 * 100 + 0.11 * 300.
+        a = _log(
+            "capture",
+            100,
+            0,
+            _shield(
+                n_steps=100,
+                min_h_floor=1.0,
+                min_clearance_floor=1.0,
+                n_interventions=7,
+                n_infeasible=3,
+                n_backup=1,
+                n_stalled=2,
+            ),
+        )
+        b = _log(
+            "timeout",
+            300,
+            0,
+            _shield(
+                n_steps=300,
+                min_h_floor=1.0,
+                min_clearance_floor=1.0,
+                n_interventions=33,
+                n_infeasible=0,
+                n_backup=0,
+                n_stalled=5,
+            ),
+        )
+        s = summarize_shield([a, b])
+        assert s["n_interventions"] == 40
+        assert s["n_infeasible"] == 3
+        assert s["n_backup"] == 1
+        assert s["n_stalled"] == 7
+        for key in ("n_interventions", "n_infeasible", "n_backup", "n_stalled"):
+            assert isinstance(s[key], int), key
+
+    def test_pooled_tier_histogram_sums_to_pooled_step_count(self):
+        cfg = EnvConfig()
+        logs = [
+            run_shielded_duel(
+                PursuitEvasionEnv(cfg),
+                GreedyPursuer(),
+                GreedyEvader(),
+                CBFShield(cfg),
+                seed=760040 + i,
+            )
+            for i in range(3)
+        ]
+        s = summarize_shield(logs)
+        assert sum(s["tier_histogram"].values()) == s["n_steps"]
+        assert s["n_steps"] == sum(log["steps"] for log in logs)
 
     def test_refuses_a_log_with_no_shield_block(self):
         # A run_duel log has no shield block. Refusing it (rather than

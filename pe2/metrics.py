@@ -163,7 +163,19 @@ class ShieldMetrics:
         n = self.n_steps
         return {
             "n_steps": n,
+            # Integer counts alongside the rates: the sweep aggregator sums
+            # these rather than reconstructing counts from floating-point
+            # rates, so a pooled count is exact and cannot disagree with the
+            # pooled tier histogram.
+            "n_interventions": self.n_interventions,
+            "n_infeasible": self.n_infeasible,
+            "n_backup": self.n_backup,
+            "n_stalled": self.n_stalled,
             "violation_rate": self.n_violations / n if n else 0.0,
+            # NOT a safety-effort proxy: on the relaxed tier the shield can
+            # return the nominal unmodified while an obstacle barrier is
+            # negative, so a step can log no intervention while being among
+            # the least safe in the episode. Read it with the tier histogram.
             "intervention_rate": self.n_interventions / n if n else 0.0,
             "infeasibility_rate": self.n_infeasible / n if n else 0.0,
             "backup_rate": self.n_backup / n if n else 0.0,
@@ -238,12 +250,19 @@ def summarize_shield(logs: list[dict]) -> dict:
     min_clearance = [log["shield"]["min_clearance_floor"] for log in logs]
     deadlocks = sum(bool(log["shield"]["deadlock"]) for log in logs)
     pinned = sum(bool(log["shield"]["pinned"]) for log in logs)
+    # Exact pooled counts, summed from the per-episode integers. The rate keys
+    # below keep their original pooling (rate x n_steps) for continuity.
+    counts = {
+        key: sum(log["shield"][key] for log in logs)
+        for key in ("n_interventions", "n_infeasible", "n_backup", "n_stalled")
+    }
     n_immobile = sum(log["shield"]["n_immobile"] for log in logs)
     with_violation = sum(log["violations"] > 0 for log in logs)
     return {
         "n_episodes": n_episodes,
         "n_steps": n_steps,
         "shielded_roles": roles,
+        **counts,
         "violation_steps": sum(log["violations"] for log in logs),
         "episodes_with_violation": with_violation,
         "violation_episode_rate": with_violation / n_episodes if n_episodes else 0.0,
