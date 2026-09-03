@@ -51,6 +51,12 @@ INTERVENTION_ATOL = 1e-4  # |Δu| above this counts as an intervention (root con
 HEAD_ON_TIE_TOL = 1e-9  # |error| within this of pi counts as an exact head-on tie
 STALL_V_FRAC = 0.05  # executed speed <= this fraction of v_max counts as stopped
 MOVE_V_FRAC = 0.5  # nominal speed >= this fraction of v_max counts as "wanted to move"
+BACKUP_V_FRAC = 0.1  # backup-tier crawl speed, as a fraction of the effective v_max
+# NOT independent of STALL_V_FRAC: BACKUP_V_FRAC > STALL_V_FRAC by construction,
+# so a backup-tier step can never be flagged `stalled` or `immobile`. Tier-3
+# immobility is therefore invisible to those two flags and is counted
+# separately as a backup run (ShieldMetrics.longest_backup_run / `pinned`).
+# Changing either constant must preserve that ordering, or update both metrics.
 
 
 @dataclass
@@ -237,8 +243,16 @@ class CBFShield:
         dt = self.cfg.dt
         return [(dt * c.a_v, dt * c.a_omega, -self.gamma * c.h) for c in cons]
 
-    def backup(self, state: np.ndarray, obstacles: list[dict]) -> np.ndarray:
-        """Tier 3: brake + turn away from the nearest danger (root pattern). Exact head-on ties turn CCW."""
+    def backup(
+        self, state: np.ndarray, obstacles: list[dict], v_max: float | None = None
+    ) -> np.ndarray:
+        """Tier 3: brake + turn away from the nearest danger (root pattern).
+
+        Exact head-on ties turn CCW. The crawl speed is BACKUP_V_FRAC of the
+        EFFECTIVE cap `v_max` (the caller's per-role cap, as in `filter`), so
+        the returned action never exceeds the cap it was given.
+        """
+        v_max = self.cfg.v_max if v_max is None else v_max
         x, y, theta = float(state[0]), float(state[1]), float(state[2])
         dangers = [
             (0.0, self._x_lim - x),
@@ -257,7 +271,7 @@ class CBFShield:
         if err <= -np.pi + HEAD_ON_TIE_TOL:
             err = np.pi
         omega = float(np.clip(3.0 * err, -self.cfg.omega_max, self.cfg.omega_max))
-        return np.array([0.1 * self.cfg.v_max, omega], dtype=np.float64)
+        return np.array([BACKUP_V_FRAC * v_max, omega], dtype=np.float64)
 
     def filter(
         self,
@@ -277,6 +291,12 @@ class CBFShield:
         kinds and is therefore mixed-unit (obstacle m², boundary m). It must
         never be reported as a distance. `min_clearance` is the worst signed
         distance in metres and is the reportable safety margin.
+
+        `immobile` is `v_exec <= STALL_V_FRAC * v_max` with no condition on the
+        nominal; `stalled` additionally requires `v_nom >= MOVE_V_FRAC * v_max`
+        ("the policy wanted to move"). A policy that lowers its own commanded
+        speed can therefore be immobile without ever being stalled, which is
+        why both are reported.
 
         `v_exec` is the speed this filter RETURNS, not necessarily the speed
         the environment applies: with `cfg.prep_steps > 0` the env zeroes the
@@ -307,12 +327,13 @@ class CBFShield:
 
         # Tier 3: backup controller.
         if not feasible:
-            u = self.backup(state, obstacles)
+            u = self.backup(state, obstacles, v_max)
             method = "backup"
 
         intervention = not np.allclose(u, [v_nom, w_nom], atol=INTERVENTION_ATOL)
         v_exec = float(u[0])
-        stalled = v_exec <= STALL_V_FRAC * v_max and v_nom >= MOVE_V_FRAC * v_max
+        immobile = v_exec <= STALL_V_FRAC * v_max
+        stalled = immobile and v_nom >= MOVE_V_FRAC * v_max
         info = {
             "method": method,
             "feasible": method == "exact",
@@ -327,6 +348,7 @@ class CBFShield:
             "v_nom": float(v_nom),
             "v_exec": v_exec,
             "stalled": bool(stalled),
+            "immobile": bool(immobile),
         }
         return u, info
 

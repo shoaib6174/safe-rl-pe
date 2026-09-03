@@ -21,6 +21,16 @@ Deadlock: CBF controllers can settle at a force-equilibrium and stall short of
 the goal (Grover, Liu & Sycara, WAFR 2020 / IJRR 2023). We detect the
 behavioral signature: the shield holds executed speed near zero while the
 nominal policy wants to move, for DEADLOCK_STEPS consecutive steps.
+
+Three immobility diagnostics, because no single one covers every mechanism:
+- `deadlock`: DEADLOCK_STEPS consecutive `stalled` steps (executed speed in
+  the stall band AND the nominal wanted to move).
+- `immobile_step_rate` / `longest_immobile_run`: the same speed test with no
+  condition on the nominal, so a policy that lowers its own commanded speed
+  cannot hide shield-induced immobility.
+- `pinned`: DEADLOCK_STEPS consecutive BACKUP-tier steps. The backup
+  controller crawls above the stall band by construction, so tier-3
+  immobility is invisible to the other two.
 """
 
 from __future__ import annotations
@@ -60,8 +70,17 @@ class ShieldMetrics:
     n_infeasible: int = 0
     n_backup: int = 0
     n_stalled: int = 0
+    n_immobile: int = 0
     longest_stall_run: int = 0
-    _current_stall_run: int = 0
+    longest_immobile_run: int = 0
+    longest_backup_run: int = 0
+    # In-flight run counters: reset by the next non-matching step, so they are
+    # not part of the reported state. repr/compare off so a gate script that
+    # serializes or compares the dataclass instead of calling summary() cannot
+    # pick them up.
+    _current_stall_run: int = field(default=0, repr=False, compare=False)
+    _current_immobile_run: int = field(default=0, repr=False, compare=False)
+    _current_backup_run: int = field(default=0, repr=False, compare=False)
     method_counts: dict[str, int] = field(default_factory=dict)
     min_h_floor: float = math.inf  # worst mixed-unit QP margin seen anywhere
     min_h_sum: float = 0.0  # for the mean margin
@@ -100,6 +119,25 @@ class ShieldMetrics:
             )
         else:
             self._current_stall_run = 0
+        if shield_info["immobile"]:
+            self.n_immobile += 1
+            self._current_immobile_run += 1
+            self.longest_immobile_run = max(
+                self.longest_immobile_run, self._current_immobile_run
+            )
+        else:
+            self._current_immobile_run = 0
+        # Tier-3 pinning: the backup controller crawls ABOVE the stall band by
+        # construction (shield.BACKUP_V_FRAC > shield.STALL_V_FRAC), so a run
+        # of backup steps is invisible to the stall/immobile counters and needs
+        # its own. Same threshold as deadlock.
+        if method == "backup":
+            self._current_backup_run += 1
+            self.longest_backup_run = max(
+                self.longest_backup_run, self._current_backup_run
+            )
+        else:
+            self._current_backup_run = 0
 
     def summary(self) -> dict:
         """Rates + margins. Every floor is None if it was never observed.
@@ -125,6 +163,11 @@ class ShieldMetrics:
             "stall_step_rate": self.n_stalled / n if n else 0.0,
             "longest_stall_run": self.longest_stall_run,
             "deadlock": self.longest_stall_run >= DEADLOCK_STEPS,
+            "n_immobile": self.n_immobile,
+            "immobile_step_rate": self.n_immobile / n if n else 0.0,
+            "longest_immobile_run": self.longest_immobile_run,
+            "longest_backup_run": self.longest_backup_run,
+            "pinned": self.longest_backup_run >= DEADLOCK_STEPS,
         }
 
 
@@ -151,6 +194,8 @@ def summarize_shield(logs: list[dict]) -> dict:
     min_h = [log["shield"]["min_h_floor"] for log in logs]
     min_clearance = [log["shield"]["min_clearance_floor"] for log in logs]
     deadlocks = sum(bool(log["shield"]["deadlock"]) for log in logs)
+    pinned = sum(bool(log["shield"]["pinned"]) for log in logs)
+    n_immobile = sum(log["shield"]["n_immobile"] for log in logs)
     with_violation = sum(log["violations"] > 0 for log in logs)
     return {
         "n_episodes": n_episodes,
@@ -174,6 +219,16 @@ def summarize_shield(logs: list[dict]) -> dict:
         ),
         "deadlock_episodes": deadlocks,
         "deadlock_episode_rate": deadlocks / n_episodes if n_episodes else 0.0,
+        "n_immobile": n_immobile,
+        "immobile_step_rate": n_immobile / n_steps if n_steps else 0.0,
+        "longest_immobile_run_per_episode": [
+            log["shield"]["longest_immobile_run"] for log in logs
+        ],
+        "longest_backup_run_per_episode": [
+            log["shield"]["longest_backup_run"] for log in logs
+        ],
+        "pinned_episodes": pinned,
+        "pinned_episode_rate": pinned / n_episodes if n_episodes else 0.0,
         "timeout_rate": (
             sum(log["outcome"] == "timeout" for log in logs) / n_episodes
             if n_episodes

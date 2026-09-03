@@ -8,6 +8,7 @@ from pe2.env import OUTCOME_CAPTURE, PursuitEvasionEnv
 from pe2.metrics import DEADLOCK_STEPS, ShieldMetrics, summarize_shield
 from pe2.scripted import GreedyEvader, GreedyPursuer, run_shielded_duel
 from pe2.shield import (
+    STALL_V_FRAC,
     CBFShield,
     _boundary_constraints,
     _obstacle_constraint,
@@ -245,6 +246,52 @@ class TestCBFShieldFilter:
         _, info = shield.filter((0.2, 0.0), np.array([4.749, 0.0, 0.0]), [])
         assert info["stalled"] is False
 
+    def test_immobile_is_flagged_even_when_the_nominal_is_slow(self):
+        # A policy that lowers its OWN commanded speed hides from `stalled`:
+        # nominal 0.4 < 0.5 * v_max, so stalled is False by definition, but
+        # the shield still holds the executed speed at 0.004 <= 0.05 * v_max.
+        # `immobile` is the nominal-independent flag that catches it.
+        shield = CBFShield(CFG)
+        _, info = shield.filter((0.4, 0.0), np.array([4.749, 0.0, 0.0]), [])
+        assert info["v_exec"] == pytest.approx(0.004, abs=1e-6)
+        assert info["stalled"] is False
+        assert info["immobile"] is True
+
+    def test_immobile_and_stalled_agree_when_the_nominal_is_fast(self):
+        shield = CBFShield(CFG)
+        _, info = shield.filter((1.0, 0.0), np.array([4.749, 0.0, 0.0]), [])
+        assert info["stalled"] is True
+        assert info["immobile"] is True
+        # And neither fires in open space.
+        _, free = shield.filter((0.5, 0.0), np.array([0.0, 0.0, 0.0]), [])
+        assert free["stalled"] is False
+        assert free["immobile"] is False
+
+    def test_backup_speed_sits_above_the_stall_band_by_construction(self):
+        # The two constants are not independent: the backup controller returns
+        # 0.1 * v_max, which is strictly above STALL_V_FRAC * v_max = 0.05, so
+        # a backup-tier step can never be flagged stalled or immobile. That is
+        # exactly why tier-3 immobility needs its own counter.
+        assert 0.1 > STALL_V_FRAC
+        shield = CBFShield(CFG)
+        _, info = shield.filter((1.0, 0.0), np.array([5.0, 0.0, 0.0]), [])
+        assert info["method"] == "backup"
+        assert info["v_exec"] == pytest.approx(0.1 * CFG.v_max)
+        assert info["stalled"] is False
+        assert info["immobile"] is False
+
+    def test_backup_honours_the_effective_speed_cap(self):
+        # Called with a cap below 0.1 * cfg.v_max, the backup controller must
+        # not return an action above the cap it was given: 0.1 * 0.5 = 0.05.
+        shield = CBFShield(CFG)
+        u = shield.backup(np.array([5.0, 0.0, 0.0]), [], v_max=0.5)
+        assert u[0] == pytest.approx(0.05)
+        # Same through filter, where the cap comes from the caller's role.
+        u, info = shield.filter((1.0, 0.0), np.array([5.0, 0.0, 0.0]), [], v_max=0.5)
+        assert info["method"] == "backup"
+        assert u[0] == pytest.approx(0.05)
+        assert u[0] <= 0.5
+
     def test_equal_clearance_wall_and_obstacle_report_equal_clearance(self):
         # The mixed-unit trap: 0.02 m of clearance from a wall and 0.02 m from
         # a radius-1.0 obstacle must report the SAME min_clearance, while min_h
@@ -434,6 +481,74 @@ class TestShieldMetrics:
         assert s["stall_step_rate"] == pytest.approx(8 / 9)
         assert s["longest_stall_run"] == 5
         assert s["deadlock"] is False
+
+    def test_backup_tier_pinning_has_its_own_counter(self):
+        # DEADLOCK_STEPS consecutive backup-tier steps: the robot crawls at
+        # 0.1 * v_max spinning at omega_max, so it is neither stalled nor
+        # immobile, yet it is permanently stuck. `pinned` must fire while
+        # `deadlock` stays False.
+        m = ShieldMetrics()
+        for _ in range(DEADLOCK_STEPS):
+            m.record(
+                _info(method="backup", stalled=False, immobile=False), violation=False
+            )
+        s = m.summary()
+        assert s["longest_backup_run"] == DEADLOCK_STEPS
+        assert s["pinned"] is True
+        assert s["deadlock"] is False
+        assert s["longest_stall_run"] == 0
+        assert s["stall_step_rate"] == 0.0
+
+    def test_backup_run_broken_in_the_middle_is_not_pinned(self):
+        # DEADLOCK_STEPS steps with one exact-tier step at the midpoint:
+        # the longest backup run is DEADLOCK_STEPS // 2 = 20 < 40.
+        m = ShieldMetrics()
+        for i in range(DEADLOCK_STEPS):
+            method = "exact" if i == DEADLOCK_STEPS // 2 else "backup"
+            m.record(_info(method=method, immobile=False), violation=False)
+        s = m.summary()
+        assert s["longest_backup_run"] == DEADLOCK_STEPS // 2
+        assert s["pinned"] is False
+
+    def test_empty_summary_backup_and_immobile_counters(self):
+        s = ShieldMetrics().summary()
+        assert s["longest_backup_run"] == 0
+        assert s["pinned"] is False
+        assert s["immobile_step_rate"] == 0.0
+        assert s["longest_immobile_run"] == 0
+
+    def test_immobile_runs_are_tracked_independently_of_stalls(self):
+        # 6 steps, all with a slow nominal so `stalled` is never set:
+        # immobile pattern T T F T T T -> rate 5/6, longest run 3.
+        m = ShieldMetrics()
+        for immobile in (True, True, False, True, True, True):
+            m.record(_info(stalled=False, immobile=immobile), violation=False)
+        s = m.summary()
+        assert s["immobile_step_rate"] == pytest.approx(5 / 6)
+        assert s["longest_immobile_run"] == 3
+        assert s["stall_step_rate"] == 0.0
+        assert s["longest_stall_run"] == 0
+
+    def test_private_run_counters_stay_out_of_repr_and_equality(self):
+        # A gate script that serialized the dataclass instead of calling
+        # summary() must not pick up the in-flight run counters.
+        # a: free, stall, stall -> n_stalled 2, longest 2, in-flight run 2.
+        # b: stall, stall, free -> n_stalled 2, longest 2, in-flight run 0.
+        # Every reported field matches, so the two must compare equal.
+        a, b = ShieldMetrics(), ShieldMetrics()
+        for stalled in (False, True, True):
+            a.record(_info(stalled=stalled), violation=False)
+        for stalled in (True, True, False):
+            b.record(_info(stalled=stalled), violation=False)
+        assert a.summary()["longest_stall_run"] == 2
+        assert b.summary()["longest_stall_run"] == 2
+        assert a == b
+        for name in (
+            "_current_stall_run",
+            "_current_immobile_run",
+            "_current_backup_run",
+        ):
+            assert name not in repr(a)
 
     def test_deadlock_when_stall_run_reaches_threshold(self):
         # Exactly DEADLOCK_STEPS consecutive stalled steps -> deadlock True.
@@ -654,6 +769,47 @@ class TestSummarizeShield:
         assert s["min_clearance_floor"] == pytest.approx(0.05)
         assert s["min_h_obstacle_floor"] == pytest.approx(0.9)
         assert s["min_h_boundary_floor"] == pytest.approx(0.05)
+
+    def test_pinning_and_immobility_pooled(self):
+        # Episode A: 100 steps, 10 immobile, longest immobile run 4,
+        #            longest backup run 40 -> pinned.
+        # Episode B: 300 steps, 0 immobile, longest backup run 3.
+        # Pooled: immobile 10/400 = 0.025; pinned 1/2.
+        a = _log(
+            "timeout",
+            100,
+            0,
+            _shield(
+                n_steps=100,
+                min_h_floor=0.1,
+                min_clearance_floor=0.1,
+                n_immobile=10,
+                longest_immobile_run=4,
+                longest_backup_run=40,
+                pinned=True,
+            ),
+        )
+        b = _log(
+            "capture",
+            300,
+            0,
+            _shield(
+                n_steps=300,
+                min_h_floor=0.5,
+                min_clearance_floor=0.5,
+                n_immobile=0,
+                longest_immobile_run=0,
+                longest_backup_run=3,
+                pinned=False,
+            ),
+        )
+        s = summarize_shield([a, b])
+        assert s["n_immobile"] == 10
+        assert s["immobile_step_rate"] == pytest.approx(0.025)
+        assert s["longest_immobile_run_per_episode"] == [4, 0]
+        assert s["longest_backup_run_per_episode"] == [40, 3]
+        assert s["pinned_episodes"] == 1
+        assert s["pinned_episode_rate"] == pytest.approx(0.5)
 
     def test_empty(self):
         s = summarize_shield([])
