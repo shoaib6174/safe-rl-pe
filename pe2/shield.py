@@ -38,6 +38,8 @@ from pe2.env import wrap_angle
 FEAS_TOL = 1e-9  # feasibility slack for the exact QP (float noise only)
 INTERVENTION_ATOL = 1e-4  # |Δu| above this counts as an intervention (root convention)
 HEAD_ON_TIE_TOL = 1e-9  # |error| within this of pi counts as an exact head-on tie
+STALL_V_FRAC = 0.05  # executed speed <= this fraction of v_max counts as stopped
+MOVE_V_FRAC = 0.5  # nominal speed >= this fraction of v_max counts as "wanted to move"
 
 
 @dataclass
@@ -237,8 +239,8 @@ class CBFShield:
         """Project a nominal action into the safe set; never blocks capture.
 
         Returns (safe_action, info). info keys: method ("exact" | "relaxed" |
-        "backup"), intervention (bool), min_h, h_obstacle, h_boundary,
-        n_constraints.
+        "backup"), feasible, intervention (bool), min_h, h_obstacle, h_boundary,
+        n_constraints, v_nom, v_exec, stalled.
         """
         v_max = self.cfg.v_max if v_max is None else v_max
         v_nom = float(np.clip(float(action[0]), 0.0, v_max))
@@ -265,13 +267,19 @@ class CBFShield:
             method = "backup"
 
         intervention = not np.allclose(u, [v_nom, w_nom], atol=INTERVENTION_ATOL)
+        v_exec = float(u[0])
+        stalled = v_exec <= STALL_V_FRAC * v_max and v_nom >= MOVE_V_FRAC * v_max
         info = {
             "method": method,
+            "feasible": method == "exact",
             "intervention": bool(intervention),
             "min_h": float(min_h),
             "h_obstacle": [c.h for c in cons if c.kind == "obstacle"],
             "h_boundary": [c.h for c in cons if c.kind == "boundary"],
             "n_constraints": len(cons),
+            "v_nom": float(v_nom),
+            "v_exec": v_exec,
+            "stalled": bool(stalled),
         }
         return u, info
 

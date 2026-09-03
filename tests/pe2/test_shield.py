@@ -192,6 +192,38 @@ class TestCBFShieldFilter:
     def test_gamma_default_pinned(self):
         assert CBFShield(CFG).gamma == 0.2  # D31
 
+    def test_filter_info_reports_feasibility_and_speeds(self):
+        shield = CBFShield(CFG)
+        # Safe state: exact tier, no change -> feasible, v_exec == v_nom.
+        _, info = shield.filter((0.5, 0.0), np.array([0.0, 0.0, 0.0]), [])
+        assert info["feasible"] is True
+        assert info["v_nom"] == pytest.approx(0.5)
+        assert info["v_exec"] == pytest.approx(0.5)
+        assert info["stalled"] is False
+        # Outside the wall: backup tier -> not feasible.
+        _, info = shield.filter((1.0, 0.0), np.array([5.0, 0.0, 0.0]), [])
+        assert info["feasible"] is False
+        assert info["method"] == "backup"
+
+    def test_filter_flags_stall_when_shield_stops_a_moving_nominal(self):
+        # The +x wall barrier is h = x_lim - qx = 4.85 - (x + 0.1) = 4.75 - x.
+        # At x = 4.749: h = 0.001, and dt*a_v*v + gamma*h >= 0 with a_v = -1
+        # gives v <= gamma*h/dt = 0.2 * 0.001 / 0.05 = 0.004. That is below
+        # 0.05 * v_max = 0.05 while the nominal 1.0 is above 0.5 * v_max,
+        # so the step is a stall on the exact tier.
+        shield = CBFShield(CFG)
+        u, info = shield.filter((1.0, 0.0), np.array([4.749, 0.0, 0.0]), [])
+        assert info["method"] == "exact"
+        assert u[0] == pytest.approx(0.004, abs=1e-6)
+        assert info["stalled"] is True
+
+    def test_filter_not_stalled_when_nominal_is_slow(self):
+        # Same wall squeeze, but the nominal itself is slow (0.2 < 0.5 * v_max):
+        # braking a slow nominal is not a stall.
+        shield = CBFShield(CFG)
+        _, info = shield.filter((0.2, 0.0), np.array([4.749, 0.0, 0.0]), [])
+        assert info["stalled"] is False
+
 
 def info_kinds(cons):
     return {c.kind for c in cons}
