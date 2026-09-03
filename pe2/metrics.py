@@ -208,6 +208,11 @@ def summarize_shield(logs: list[dict]) -> dict:
     matching how G1 counts "violation steps over N episodes". Per-episode
     minima are kept as a list so the gate can report their distribution.
 
+    `min_h_per_episode` / `min_h_floor` are MIXED-UNIT quadratic-program
+    margins (obstacle barriers m², boundary barriers m) and must never be
+    reported as distances; `min_clearance_per_episode` / `min_clearance_floor`
+    are the reportable metres.
+
     REFUSES (rather than tolerates) two malformed inputs, because both would
     silently corrupt a gate number:
     - a log with no `shield` block or no `shielded_role` — i.e. a `run_duel`
