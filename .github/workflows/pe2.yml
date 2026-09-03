@@ -1,0 +1,38 @@
+name: pe2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pe2/**"
+      - "tests/pe2/**"
+      - "pyproject.toml"
+      - ".github/workflows/pe2.yml"
+  pull_request:
+    paths:
+      - "pe2/**"
+      - "tests/pe2/**"
+      - "pyproject.toml"
+      - ".github/workflows/pe2.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pe2
+        run: pip install -e .
+
+      - name: Install test tools
+        run: pip install pytest ruff
+
+      - name: Ruff
+        run: ruff check pe2 tests/pe2
+
+      - name: Pytest (incl. determinism gate)
+        run: python -m pytest tests/pe2/ -v

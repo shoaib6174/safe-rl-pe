@@ -1,0 +1,291 @@
+"""Step 6: VCP-CBF safety shield — discrete-time, γ=0.2 (D31).
+
+Constraints: obstacles + arena boundaries ONLY. The inter-agent constraint is
+NEVER applied to the pursuer — capture requires contact (plan Step 6, root
+codebase_reference §3 note). The shield sees the TRUE state and the static map
+while the policy sees sensors; that split is what keeps the CBF well-posed
+under partial observability (root dcbf_action_wrapper architecture).
+
+DCBF condition (root vcp_cbf.dcbf_filter_action): h(x_{k+1}) ≥ (1−γ)h(x_k),
+linearized around the current state so it stays a QP:
+    dt·a_v·v + dt·a_ω·ω + γ·h ≥ 0
+
+D85 (deviation from the root pattern): the root solves this QP with scipy
+SLSQP for n-robot generality. pe2's action space is strictly 2-D (v, ω) with
+box bounds, so the exact optimum is enumerated instead: unconstrained point,
+weighted projection onto each active constraint line, pairwise line
+intersections, line∩box-edge intersections, box corners — the optimum of a
+convex 2-D QP is always one of these. Exact, deterministic, and drops the
+scipy dependency (pe2's CI installs only numpy/gymnasium/matplotlib/imageio).
+
+3-tier fallback (root SafeActionResolver pattern, minus the unused Tier-1 SVM
+classifier): exact QP (all constraints) → relaxed QP (boundary only; obstacles
+are lowest priority) → backup controller (brake + turn away from nearest
+danger). A violation is defined at env level (wall/obstacle contact flags);
+this module only maintains h > 0, which coincides with contact-free motion
+because constraint radii include agent_radius.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from pe2.config import EnvConfig
+from pe2.env import wrap_angle
+
+FEAS_TOL = 1e-9  # feasibility slack for the exact QP (float noise only)
+INTERVENTION_ATOL = 1e-4  # |Δu| above this counts as an intervention (root convention)
+
+
+@dataclass
+class Constraint:
+    """One VCP-CBF constraint: h ≥ 0 safe; h_dot ≈ a_v·v + a_ω·ω."""
+
+    h: float
+    a_v: float
+    a_omega: float
+    kind: str  # "obstacle" | "boundary"
+
+
+def compute_vcp(x: float, y: float, theta: float, d: float) -> tuple[float, float]:
+    """Virtual control point d ahead of the robot (uniform relative degree 1)."""
+    return x + d * np.cos(theta), y + d * np.sin(theta)
+
+
+def _obstacle_constraint(
+    state: np.ndarray, obs_x: float, obs_y: float, eff_radius: float, d: float
+) -> Constraint:
+    """h = ||q − p_obs||² − r_eff², q = VCP. Coefficients from root vcp_cbf_obstacle."""
+    x, y, theta = float(state[0]), float(state[1]), float(state[2])
+    qx, qy = compute_vcp(x, y, theta, d)
+    dx, dy = qx - obs_x, qy - obs_y
+    h = dx * dx + dy * dy - eff_radius * eff_radius
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+    a_v = 2.0 * dx * cos_t + 2.0 * dy * sin_t
+    a_omega = 2.0 * dx * (-d * sin_t) + 2.0 * dy * (d * cos_t)
+    return Constraint(float(h), float(a_v), float(a_omega), "obstacle")
+
+
+def _boundary_constraints(
+    state: np.ndarray, x_lim: float, y_lim: float, d: float
+) -> list[Constraint]:
+    """Linear barriers h = x_lim − qx etc. Coefficients from root vcp_cbf_boundary."""
+    x, y, theta = float(state[0]), float(state[1]), float(state[2])
+    qx, qy = compute_vcp(x, y, theta, d)
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+    return [
+        Constraint(float(x_lim - qx), float(-cos_t), float(d * sin_t), "boundary"),
+        Constraint(float(qx + x_lim), float(cos_t), float(-d * sin_t), "boundary"),
+        Constraint(float(y_lim - qy), float(-sin_t), float(-d * cos_t), "boundary"),
+        Constraint(float(qy + y_lim), float(sin_t), float(d * cos_t), "boundary"),
+    ]
+
+
+def _solve_qp_2d(
+    v_nom: float,
+    w_nom: float,
+    rows: list[tuple[float, float, float]],
+    v_max: float,
+    omega_max: float,
+    w_v: float,
+    w_omega: float,
+) -> tuple[np.ndarray, bool]:
+    """Exact 2-D weighted least-squares projection onto {c0·v + c1·ω ≥ c2} ∩ box.
+
+    Enumerates every candidate the convex optimum could be (D85). Returns
+    (u, feasible); feasible=False means no point satisfies all rows + box.
+    """
+    box = [(0.0, v_max), (-omega_max, omega_max)]
+
+    def objective(u: np.ndarray) -> float:
+        return w_v * (u[0] - v_nom) ** 2 + w_omega * (u[1] - w_nom) ** 2
+
+    def feasible(u: np.ndarray) -> bool:
+        if u[0] < box[0][0] - FEAS_TOL or u[0] > box[0][1] + FEAS_TOL:
+            return False
+        if u[1] < box[1][0] - FEAS_TOL or u[1] > box[1][1] + FEAS_TOL:
+            return False
+        return all(c0 * u[0] + c1 * u[1] >= c2 - FEAS_TOL for c0, c1, c2 in rows)
+
+    def clip_box(u: np.ndarray) -> np.ndarray:
+        return np.array(
+            [np.clip(u[0], *box[0]), np.clip(u[1], *box[1])], dtype=np.float64
+        )
+
+    candidates = [clip_box(np.array([v_nom, w_nom]))]
+
+    # Weighted projection of the nominal onto each constraint line.
+    for c0, c1, c2 in rows:
+        denom = c0 * c0 / w_v + c1 * c1 / w_omega
+        if denom < 1e-18:
+            continue
+        lam = (c0 * v_nom + c1 * w_nom - c2) / denom
+        candidates.append(
+            clip_box(np.array([v_nom - lam * c0 / w_v, w_nom - lam * c1 / w_omega]))
+        )
+
+    # Pairwise line intersections (QP vertices).
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            c0i, c1i, c2i = rows[i]
+            c0j, c1j, c2j = rows[j]
+            det = c0i * c1j - c0j * c1i
+            if abs(det) < 1e-12:
+                continue
+            v = (c2i * c1j - c2j * c1i) / det
+            w = (c0i * c2j - c0j * c2i) / det
+            candidates.append(clip_box(np.array([v, w])))
+
+    # Line ∩ box-edge intersections.
+    for c0, c1, c2 in rows:
+        for v_edge in (box[0][0], box[0][1]):
+            if abs(c1) > 1e-12:
+                candidates.append(
+                    clip_box(np.array([v_edge, (c2 - c0 * v_edge) / c1]))
+                )
+        for w_edge in (box[1][0], box[1][1]):
+            if abs(c0) > 1e-12:
+                candidates.append(
+                    clip_box(np.array([(c2 - c1 * w_edge) / c0, w_edge]))
+                )
+
+    # Box corners.
+    for v_c in (box[0][0], box[0][1]):
+        for w_c in (box[1][0], box[1][1]):
+            candidates.append(np.array([v_c, w_c]))
+
+    feasible_candidates = [u for u in candidates if feasible(u)]
+    if not feasible_candidates:
+        return clip_box(np.array([v_nom, w_nom])), False
+    best = min(feasible_candidates, key=objective)
+    return best, True
+
+
+class CBFShield:
+    """Discrete-time VCP-CBF action filter for one robot (γ=0.2, D31).
+
+    Usage:
+        shield = CBFShield(env.cfg)
+        safe_action, info = shield.filter(nominal, env.pursuer_pose, env.obstacles)
+    """
+
+    def __init__(
+        self,
+        cfg: EnvConfig,
+        gamma: float = 0.2,
+        vcp_d: float = 0.1,
+        w_v: float = 150.0,
+        w_omega: float = 1.0,
+    ):
+        self.cfg = cfg
+        self.gamma = gamma
+        self.d = vcp_d
+        self.w_v = w_v
+        self.w_omega = w_omega
+        half = cfg.arena_size / 2.0
+        self._x_lim = half - cfg.agent_radius
+        self._y_lim = half - cfg.agent_radius
+
+    def constraints(
+        self, state: np.ndarray, obstacles: list[dict]
+    ) -> list[Constraint]:
+        """Obstacle (effective radius = obs + agent) + 4 boundary constraints."""
+        cons = _boundary_constraints(state, self._x_lim, self._y_lim, self.d)
+        for obs in obstacles:
+            cons.append(
+                _obstacle_constraint(
+                    state,
+                    obs["x"],
+                    obs["y"],
+                    obs["radius"] + self.cfg.agent_radius,
+                    self.d,
+                )
+            )
+        return cons
+
+    def _dcbf_rows(
+        self, cons: list[Constraint]
+    ) -> list[tuple[float, float, float]]:
+        """Linearized DCBF: dt·a_v·v + dt·a_ω·ω ≥ −γ·h → (c0, c1, c2)."""
+        dt = self.cfg.dt
+        return [(dt * c.a_v, dt * c.a_omega, -self.gamma * c.h) for c in cons]
+
+    def backup(self, state: np.ndarray, obstacles: list[dict]) -> np.ndarray:
+        """Tier 3: brake + turn away from the nearest danger (root pattern)."""
+        x, y, theta = float(state[0]), float(state[1]), float(state[2])
+        dangers = [
+            (0.0, self._x_lim - x),
+            (np.pi, x + self._x_lim),
+            (np.pi / 2, self._y_lim - y),
+            (-np.pi / 2, y + self._y_lim),
+        ]
+        for obs in obstacles:
+            dx, dy = obs["x"] - x, obs["y"] - y
+            dist = max(np.hypot(dx, dy) - obs["radius"], 0.01)
+            dangers.append((float(np.arctan2(dy, dx)), float(dist)))
+        away = min(dangers, key=lambda d: d[1])[0] + np.pi
+        omega = float(
+            np.clip(3.0 * wrap_angle(away - theta), -self.cfg.omega_max, self.cfg.omega_max)
+        )
+        return np.array([0.1 * self.cfg.v_max, omega], dtype=np.float64)
+
+    def filter(
+        self,
+        action: tuple[float, float] | np.ndarray,
+        state: np.ndarray,
+        obstacles: list[dict],
+        v_max: float | None = None,
+    ) -> tuple[np.ndarray, dict]:
+        """Project a nominal action into the safe set; never blocks capture.
+
+        Returns (safe_action, info). info keys: method ("exact" | "relaxed" |
+        "backup"), intervention (bool), min_h, h_obstacle, h_boundary,
+        n_constraints.
+        """
+        v_max = self.cfg.v_max if v_max is None else v_max
+        v_nom = float(np.clip(float(action[0]), 0.0, v_max))
+        w_nom = float(np.clip(float(action[1]), -self.cfg.omega_max, self.cfg.omega_max))
+
+        cons = self.constraints(state, obstacles)
+        min_h = min(c.h for c in cons)
+
+        # Tier 1: exact — all constraints.
+        u, feasible = self._solve(v_nom, w_nom, cons, v_max)
+        method = "exact"
+
+        # Tier 2: relaxed — boundary only (obstacles lowest priority, root).
+        if not feasible:
+            boundary = [c for c in cons if c.kind == "boundary"]
+            u, feasible = self._solve(v_nom, w_nom, boundary, v_max)
+            method = "relaxed"
+
+        # Tier 3: backup controller.
+        if not feasible:
+            u = self.backup(state, obstacles)
+            method = "backup"
+
+        intervention = not np.allclose(u, [v_nom, w_nom], atol=INTERVENTION_ATOL)
+        info = {
+            "method": method,
+            "intervention": bool(intervention),
+            "min_h": float(min_h),
+            "h_obstacle": [c.h for c in cons if c.kind == "obstacle"],
+            "h_boundary": [c.h for c in cons if c.kind == "boundary"],
+            "n_constraints": len(cons),
+        }
+        return u, info
+
+    def _solve(
+        self, v_nom: float, w_nom: float, cons: list[Constraint], v_max: float
+    ) -> tuple[np.ndarray, bool]:
+        return _solve_qp_2d(
+            v_nom,
+            w_nom,
+            self._dcbf_rows(cons),
+            v_max,
+            self.cfg.omega_max,
+            self.w_v,
+            self.w_omega,
+        )

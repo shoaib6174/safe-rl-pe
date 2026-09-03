@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pe2"
+version = "0.1.0"
+description = "Safe adversarial co-adaptation for 1v1 pursuit-evasion (Pathway B)"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "gymnasium",
+    "matplotlib",
+    "imageio",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "stable-baselines3",
+]
+
+[tool.setuptools]
+packages = ["pe2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/pe2"]
+
+[tool.ruff]
+target-version = "py310"
