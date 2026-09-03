@@ -6,7 +6,7 @@ import pytest
 from pe2.config import EnvConfig
 from pe2.env import OUTCOME_CAPTURE, PursuitEvasionEnv
 from pe2.metrics import DEADLOCK_STEPS, ShieldMetrics
-from pe2.scripted import GreedyEvader, GreedyPursuer
+from pe2.scripted import GreedyEvader, GreedyPursuer, run_shielded_duel
 from pe2.shield import (
     CBFShield,
     _boundary_constraints,
@@ -339,3 +339,73 @@ class TestShieldMetrics:
         for i in range(DEADLOCK_STEPS):
             m2.record(_info(stalled=(i != DEADLOCK_STEPS // 2)), violation=False)
         assert m2.summary()["deadlock"] is False
+
+
+class TestRunShieldedDuel:
+    def test_obstacle_free_shielded_pursuer_log_shape(self):
+        cfg = EnvConfig(n_obstacles=0)
+        env = PursuitEvasionEnv(cfg)
+        log = run_shielded_duel(
+            env, GreedyPursuer(), GreedyEvader(), CBFShield(cfg), seed=760000
+        )
+        # run_duel fields preserved.
+        for key in (
+            "seed",
+            "pursuer",
+            "evader",
+            "outcome",
+            "steps",
+            "final_distance",
+            "los_breaks",
+        ):
+            assert key in log
+        assert log["seed"] == 760000
+        assert log["shielded_role"] == "pursuer"
+        # One shield record per env step.
+        assert log["shield"]["n_steps"] == log["steps"]
+        # No obstacles and a boundary shield: no contacts for the shielded role.
+        assert log["violations"] == 0
+        assert log["shield"]["violation_rate"] == 0.0
+        assert set(log["shield"]["tier_histogram"]) == {"exact", "relaxed", "backup"}
+
+    def test_shielded_evader_uses_evader_speed_cap(self):
+        # The evader's v_max is 1.2x; the shield must clip the nominal to the
+        # evader cap, not the pursuer's, or a fast evader is silently slowed.
+        cfg = EnvConfig(n_obstacles=0)
+        env = PursuitEvasionEnv(cfg)
+        log = run_shielded_duel(
+            env,
+            GreedyPursuer(),
+            GreedyEvader(),
+            CBFShield(cfg),
+            seed=760001,
+            shielded_role="evader",
+        )
+        assert log["shielded_role"] == "evader"
+        assert log["shield"]["n_steps"] == log["steps"]
+        assert log["violations"] == 0
+
+    def test_shielded_duel_is_deterministic(self):
+        # Same seed, obstacle-free -> the whole log dict must match exactly.
+        cfg = EnvConfig(n_obstacles=0)
+        env = PursuitEvasionEnv(cfg)
+        a = run_shielded_duel(
+            env, GreedyPursuer(), GreedyEvader(), CBFShield(cfg), seed=760002
+        )
+        b = run_shielded_duel(
+            env, GreedyPursuer(), GreedyEvader(), CBFShield(cfg), seed=760002
+        )
+        assert a == b
+
+    def test_rejects_unknown_role(self):
+        cfg = EnvConfig(n_obstacles=0)
+        env = PursuitEvasionEnv(cfg)
+        with pytest.raises(ValueError):
+            run_shielded_duel(
+                env,
+                GreedyPursuer(),
+                GreedyEvader(),
+                CBFShield(cfg),
+                seed=1,
+                shielded_role="both",
+            )

@@ -15,6 +15,7 @@ from __future__ import annotations
 import numpy as np
 
 from pe2.env import PursuitEvasionEnv, wrap_angle
+from pe2.metrics import ShieldMetrics
 from pe2.obs import opponent_world_from_obs, own_pose_from_obs
 
 K_OMEGA = 3.0  # P-gain on heading error (rad/s per rad)
@@ -170,4 +171,69 @@ def run_duel(
         "steps": env.current_step,
         "final_distance": float(info["distance"]),
         "los_breaks": los_breaks,
+    }
+
+
+def run_shielded_duel(
+    env: PursuitEvasionEnv,
+    pursuer,
+    evader,
+    shield,
+    seed: int,
+    shielded_role: str = "pursuer",
+) -> dict:
+    """Run one episode with `shield` filtering one role's actions.
+
+    Returns the `run_duel` log plus `shielded_role`, `violations` (env contact
+    steps of the shielded role — the pre-registered Step 6 semantics) and
+    `shield` (ShieldMetrics.summary() for the episode). The shield sees the
+    TRUE pose and the static map; the policies see their observations.
+    """
+    if shielded_role not in ("pursuer", "evader"):
+        raise ValueError(
+            f"shielded_role must be 'pursuer' or 'evader', got {shielded_role!r}"
+        )
+    pursuer.reset()
+    evader.reset()
+    obs, _ = env.reset(seed=seed)
+    los_prev = bool(obs["pursuer"][6] > 0.5)
+    los_breaks = 0
+    metrics = ShieldMetrics()
+    violations = 0
+    v_cap = env.cfg.v_max if shielded_role == "pursuer" else env.cfg.evader_v_max
+    while True:
+        v_p, w_p = pursuer.act(obs["pursuer"], env)
+        v_e, w_e = evader.act(obs["evader"], env)
+        if shielded_role == "pursuer":
+            (v_p, w_p), sinfo = shield.filter(
+                (v_p, w_p), env.pursuer_pose, env.obstacles, v_max=v_cap
+            )
+        else:
+            (v_e, w_e), sinfo = shield.filter(
+                (v_e, w_e), env.evader_pose, env.obstacles, v_max=v_cap
+            )
+        obs, _, terminated, truncated, info = env.step([v_p, w_p, v_e, w_e])
+        contact = bool(
+            info[f"{shielded_role}_wall_contact"]
+            or info[f"{shielded_role}_obstacle_contact"]
+        )
+        violations += int(contact)
+        metrics.record(sinfo, violation=contact)
+        los = bool(obs["pursuer"][6] > 0.5)
+        if los_prev and not los:
+            los_breaks += 1
+        los_prev = los
+        if terminated or truncated:
+            break
+    return {
+        "seed": seed,
+        "pursuer": type(pursuer).__name__,
+        "evader": type(evader).__name__,
+        "outcome": info["outcome"],
+        "steps": env.current_step,
+        "final_distance": float(info["distance"]),
+        "los_breaks": los_breaks,
+        "shielded_role": shielded_role,
+        "violations": violations,
+        "shield": metrics.summary(),
     }
