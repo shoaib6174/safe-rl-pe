@@ -341,13 +341,27 @@ class TestShieldMetrics:
         assert m2.summary()["deadlock"] is False
 
 
+class _CapSpy:
+    """Wraps a CBFShield and records every v_max it is called with, so a test
+    can prove which cap was actually passed rather than inferring it from a
+    zero-violation count (which cannot distinguish a correct cap from a
+    wrongly-lowered one in an obstacle-free arena)."""
+
+    def __init__(self, shield):
+        self.shield = shield
+        self.caps: list[float | None] = []
+
+    def filter(self, action, state, obstacles, v_max=None):
+        self.caps.append(v_max)
+        return self.shield.filter(action, state, obstacles, v_max=v_max)
+
+
 class TestRunShieldedDuel:
     def test_obstacle_free_shielded_pursuer_log_shape(self):
         cfg = EnvConfig(n_obstacles=0)
         env = PursuitEvasionEnv(cfg)
-        log = run_shielded_duel(
-            env, GreedyPursuer(), GreedyEvader(), CBFShield(cfg), seed=760000
-        )
+        spy = _CapSpy(CBFShield(cfg))
+        log = run_shielded_duel(env, GreedyPursuer(), GreedyEvader(), spy, seed=760000)
         # run_duel fields preserved.
         for key in (
             "seed",
@@ -367,23 +381,33 @@ class TestRunShieldedDuel:
         assert log["violations"] == 0
         assert log["shield"]["violation_rate"] == 0.0
         assert set(log["shield"]["tier_histogram"]) == {"exact", "relaxed", "backup"}
+        # Every step must have been filtered at the pursuer's cap, never the
+        # evader's.
+        assert set(spy.caps) == {cfg.v_max}
 
     def test_shielded_evader_uses_evader_speed_cap(self):
-        # The evader's v_max is 1.2x; the shield must clip the nominal to the
-        # evader cap, not the pursuer's, or a fast evader is silently slowed.
+        # The evader's cap is 1.2x the pursuer's. Passing the pursuer's cap
+        # would silently slow a shielded evader, and a zero-violation
+        # assertion cannot detect that (a lower cap only makes wall contact
+        # less likely in an obstacle-free arena), so spy on the cap instead.
         cfg = EnvConfig(n_obstacles=0)
         env = PursuitEvasionEnv(cfg)
+        spy = _CapSpy(CBFShield(cfg))
         log = run_shielded_duel(
             env,
             GreedyPursuer(),
             GreedyEvader(),
-            CBFShield(cfg),
+            spy,
             seed=760001,
             shielded_role="evader",
         )
         assert log["shielded_role"] == "evader"
         assert log["shield"]["n_steps"] == log["steps"]
         assert log["violations"] == 0
+        # Every step must have been filtered at the evader's cap, never the
+        # pursuer's — and the two are genuinely different numbers.
+        assert cfg.evader_v_max == pytest.approx(1.2 * cfg.v_max)
+        assert set(spy.caps) == {cfg.evader_v_max}
 
     def test_shielded_duel_is_deterministic(self):
         # Same seed, obstacle-free -> the whole log dict must match exactly.
