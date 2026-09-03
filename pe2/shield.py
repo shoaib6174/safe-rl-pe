@@ -22,8 +22,19 @@ scipy dependency (pe2's CI installs only numpy/gymnasium/matplotlib/imageio).
 classifier): exact QP (all constraints) → relaxed QP (boundary only; obstacles
 are lowest priority) → backup controller (brake + turn away from nearest
 danger). A violation is defined at env level (wall/obstacle contact flags);
-this module only maintains h > 0, which coincides with contact-free motion
-because constraint radii include agent_radius.
+this module only maintains h > 0.
+
+h > 0 is a CONSERVATIVE early warning, not a contact indicator. The barriers
+are evaluated at the virtual control point d = 0.1 m ahead of the body, so in
+the heading direction the barrier reaches zero roughly d BEFORE the body
+touches anything (on top of the agent_radius already folded into the
+constraint radii). h = 0 is therefore not the contact surface and h < 0 does
+not imply contact — only the env contact flags do.
+
+Units: `Constraint.h` is a barrier value whose units depend on the kind
+(obstacle barriers are m², boundary barriers are m), so it is a QP margin and
+never a distance. `Constraint.clearance` is the signed distance in metres for
+both kinds and is the only field that may be reported as a distance.
 """
 
 from __future__ import annotations
@@ -44,12 +55,20 @@ MOVE_V_FRAC = 0.5  # nominal speed >= this fraction of v_max counts as "wanted t
 
 @dataclass
 class Constraint:
-    """One VCP-CBF constraint: h ≥ 0 safe; h_dot ≈ a_v·v + a_ω·ω."""
+    """One VCP-CBF constraint: h ≥ 0 safe; h_dot ≈ a_v·v + a_ω·ω.
+
+    `h` is the quadratic-program margin and its units depend on `kind`
+    (obstacle: m²; boundary: m) — it is NOT comparable across kinds and must
+    never be reported as a distance. `clearance` is the equivalent signed
+    distance in metres for every kind, computed by the constructor that knows
+    the geometry, and is the reportable quantity.
+    """
 
     h: float
     a_v: float
     a_omega: float
     kind: str  # "obstacle" | "boundary"
+    clearance: float  # signed distance to the constraint surface, metres
 
 
 def compute_vcp(x: float, y: float, theta: float, d: float) -> tuple[float, float]:
@@ -65,10 +84,15 @@ def _obstacle_constraint(
     qx, qy = compute_vcp(x, y, theta, d)
     dx, dy = qx - obs_x, qy - obs_y
     h = dx * dx + dy * dy - eff_radius * eff_radius
+    # h + r_eff² = ||q − p_obs||² ≥ 0, so this sqrt is exact, not an
+    # approximation, and gives the signed clearance in metres.
+    clearance = np.sqrt(h + eff_radius * eff_radius) - eff_radius
     cos_t, sin_t = np.cos(theta), np.sin(theta)
     a_v = 2.0 * dx * cos_t + 2.0 * dy * sin_t
     a_omega = 2.0 * dx * (-d * sin_t) + 2.0 * dy * (d * cos_t)
-    return Constraint(float(h), float(a_v), float(a_omega), "obstacle")
+    return Constraint(
+        float(h), float(a_v), float(a_omega), "obstacle", float(clearance)
+    )
 
 
 def _boundary_constraints(
@@ -78,11 +102,17 @@ def _boundary_constraints(
     x, y, theta = float(state[0]), float(state[1]), float(state[2])
     qx, qy = compute_vcp(x, y, theta, d)
     cos_t, sin_t = np.cos(theta), np.sin(theta)
+
+    def wall(h: float, a_v: float, a_omega: float) -> Constraint:
+        # A boundary barrier is already a signed distance in metres, so the
+        # clearance passes through unchanged.
+        return Constraint(float(h), float(a_v), float(a_omega), "boundary", float(h))
+
     return [
-        Constraint(float(x_lim - qx), float(-cos_t), float(d * sin_t), "boundary"),
-        Constraint(float(qx + x_lim), float(cos_t), float(-d * sin_t), "boundary"),
-        Constraint(float(y_lim - qy), float(-sin_t), float(-d * cos_t), "boundary"),
-        Constraint(float(qy + y_lim), float(sin_t), float(d * cos_t), "boundary"),
+        wall(x_lim - qx, -cos_t, d * sin_t),
+        wall(qx + x_lim, cos_t, -d * sin_t),
+        wall(y_lim - qy, -sin_t, -d * cos_t),
+        wall(qy + y_lim, sin_t, d * cos_t),
     ]
 
 
@@ -239,8 +269,19 @@ class CBFShield:
         """Project a nominal action into the safe set; never blocks capture.
 
         Returns (safe_action, info). info keys: method ("exact" | "relaxed" |
-        "backup"), feasible, intervention (bool), min_h, h_obstacle, h_boundary,
-        n_constraints, v_nom, v_exec, stalled.
+        "backup"), feasible, intervention (bool), min_h, min_clearance,
+        min_h_obstacle, min_h_boundary, h_obstacle, h_boundary, n_constraints,
+        v_nom, v_exec, stalled, immobile.
+
+        `min_h` is the worst quadratic-program margin over constraints of BOTH
+        kinds and is therefore mixed-unit (obstacle m², boundary m). It must
+        never be reported as a distance. `min_clearance` is the worst signed
+        distance in metres and is the reportable safety margin.
+
+        `v_exec` is the speed this filter RETURNS, not necessarily the speed
+        the environment applies: with `cfg.prep_steps > 0` the env zeroes the
+        pursuer's speed for the first prep steps after the filter has run.
+        The default is `prep_steps = 0`, where the two coincide.
         """
         v_max = self.cfg.v_max if v_max is None else v_max
         v_nom = float(np.clip(float(action[0]), 0.0, v_max))
@@ -249,7 +290,10 @@ class CBFShield:
         )
 
         cons = self.constraints(state, obstacles)
-        min_h = min(c.h for c in cons)
+        min_h = min(c.h for c in cons)  # mixed-unit QP margin, NOT a distance
+        min_clearance = min(c.clearance for c in cons)  # metres, reportable
+        h_obstacle = [c.h for c in cons if c.kind == "obstacle"]
+        h_boundary = [c.h for c in cons if c.kind == "boundary"]
 
         # Tier 1: exact — all constraints.
         u, feasible = self._solve(v_nom, w_nom, cons, v_max)
@@ -274,8 +318,11 @@ class CBFShield:
             "feasible": method == "exact",
             "intervention": bool(intervention),
             "min_h": float(min_h),
-            "h_obstacle": [c.h for c in cons if c.kind == "obstacle"],
-            "h_boundary": [c.h for c in cons if c.kind == "boundary"],
+            "min_clearance": float(min_clearance),
+            "min_h_obstacle": min(h_obstacle) if h_obstacle else None,
+            "min_h_boundary": min(h_boundary) if h_boundary else None,
+            "h_obstacle": h_obstacle,
+            "h_boundary": h_boundary,
             "n_constraints": len(cons),
             "v_nom": float(v_nom),
             "v_exec": v_exec,

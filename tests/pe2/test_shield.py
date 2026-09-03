@@ -40,6 +40,27 @@ class TestVCPMath:
         assert c.a_v == pytest.approx(-2.0)
         assert c.a_omega == pytest.approx(-0.06)
 
+    def test_obstacle_clearance_is_metres_not_metres_squared(self):
+        # Same geometry as test_obstacle_constraint_head_on: q=(0.1, 0),
+        # obstacle at (1.1, 0), r_eff=0.5 -> ||q - p_obs|| = 1.0, so the
+        # signed clearance is 1.0 - 0.5 = 0.5 m while h = 0.75 m^2.
+        c = _obstacle_constraint(np.array([0.0, 0.0, 0.0]), 1.1, 0.0, 0.5, 0.1)
+        assert c.h == pytest.approx(0.75)
+        assert c.clearance == pytest.approx(0.5)
+
+    def test_obstacle_clearance_negative_inside_effective_radius(self):
+        # q=(0.1, 0), obstacle at (0.3, 0), r_eff=0.5: dist 0.2 ->
+        # h = 0.04 - 0.25 = -0.21 m^2, clearance = 0.2 - 0.5 = -0.3 m.
+        c = _obstacle_constraint(np.array([0.0, 0.0, 0.0]), 0.3, 0.0, 0.5, 0.1)
+        assert c.h == pytest.approx(-0.21)
+        assert c.clearance == pytest.approx(-0.3)
+
+    def test_boundary_clearance_equals_barrier(self):
+        # A boundary barrier is already a distance, so it passes through.
+        cons = _boundary_constraints(np.array([0.0, 0.0, 0.0]), X_LIM, X_LIM, 0.1)
+        for c in cons:
+            assert c.clearance == pytest.approx(c.h)
+
     def test_boundary_constraints_headings(self):
         cons = _boundary_constraints(np.array([0.0, 0.0, 0.0]), X_LIM, X_LIM, 0.1)
         assert len(cons) == 4
@@ -224,6 +245,32 @@ class TestCBFShieldFilter:
         _, info = shield.filter((0.2, 0.0), np.array([4.749, 0.0, 0.0]), [])
         assert info["stalled"] is False
 
+    def test_equal_clearance_wall_and_obstacle_report_equal_clearance(self):
+        # The mixed-unit trap: 0.02 m of clearance from a wall and 0.02 m from
+        # a radius-1.0 obstacle must report the SAME min_clearance, while min_h
+        # differs by more than 2x because the obstacle barrier is in m^2.
+        shield = CBFShield(CFG)
+        # Wall: x_lim = 4.85, q = x + 0.1. x = 4.73 -> q = 4.83, h = 0.02 m.
+        _, wall = shield.filter((0.1, 0.0), np.array([4.73, 0.0, 0.0]), [])
+        # Obstacle: q = (0.1, 0), r_eff = 1.0 + 0.15 = 1.15. Centre at
+        # (0.1 + 1.17, 0) -> dist 1.17, h = 1.17^2 - 1.15^2 = 0.0464 m^2,
+        # clearance = 1.17 - 1.15 = 0.02 m. Boundaries here are >= 4.75 m.
+        _, obst = shield.filter(
+            (0.1, 0.0),
+            np.array([0.0, 0.0, 0.0]),
+            [{"x": 1.27, "y": 0.0, "radius": 1.0}],
+        )
+        assert wall["min_h"] == pytest.approx(0.02)
+        assert obst["min_h"] == pytest.approx(0.0464)
+        # The reportable number agrees at identical physical clearance.
+        assert wall["min_clearance"] == pytest.approx(0.02)
+        assert obst["min_clearance"] == pytest.approx(0.02)
+        # Per-kind barrier floors stay available for filter-internal diagnostics.
+        assert wall["min_h_obstacle"] is None
+        assert wall["min_h_boundary"] == pytest.approx(0.02)
+        assert obst["min_h_obstacle"] == pytest.approx(0.0464)
+        assert obst["min_h_boundary"] == pytest.approx(X_LIM - 0.1)
+
 
 def info_kinds(cons):
     return {c.kind for c in cons}
@@ -273,13 +320,26 @@ class TestShieldedEnvIntegration:
         assert info["outcome"] == OUTCOME_CAPTURE
 
 
-def _info(method="exact", intervention=False, min_h=1.0, stalled=False):
-    return {
+def _info(method="exact", intervention=False, min_h=1.0, stalled=False, **over):
+    """A CBFShield.filter info dict with defaults; `over` overrides any key.
+
+    Defaults keep `min_clearance` and `min_h_boundary` equal to `min_h` so the
+    hand-computed barrier assertions below stay readable; the clearance tests
+    override them explicitly.
+    """
+    info = {
         "method": method,
+        "feasible": method == "exact",
         "intervention": intervention,
         "min_h": min_h,
+        "min_clearance": min_h,
+        "min_h_obstacle": None,
+        "min_h_boundary": min_h,
         "stalled": stalled,
+        "immobile": stalled,
     }
+    info.update(over)
+    return info
 
 
 class TestShieldMetrics:
@@ -316,6 +376,53 @@ class TestShieldMetrics:
         assert s["infeasibility_rate"] == pytest.approx(0.5)
         assert s["backup_rate"] == pytest.approx(0.25)
         assert s["tier_histogram"] == {"exact": 2, "relaxed": 1, "backup": 1}
+
+    def test_clearance_and_per_kind_barrier_floors(self):
+        # Three steps.
+        #   step 1: min_h 0.9 (obstacle 0.9, boundary 4.0), clearance 0.30
+        #   step 2: min_h 0.05 (no obstacle, boundary 0.05), clearance 0.05
+        #   step 3: min_h 0.30 (obstacle 0.30, boundary 1.0), clearance 0.12
+        # -> min_h_floor 0.05, min_clearance_floor 0.05,
+        #    min_h_obstacle_floor 0.30, min_h_boundary_floor 0.05.
+        m = ShieldMetrics()
+        m.record(
+            _info(
+                min_h=0.9, min_clearance=0.30, min_h_obstacle=0.9, min_h_boundary=4.0
+            ),
+            violation=False,
+        )
+        m.record(
+            _info(
+                min_h=0.05, min_clearance=0.05, min_h_obstacle=None, min_h_boundary=0.05
+            ),
+            violation=False,
+        )
+        m.record(
+            _info(
+                min_h=0.30, min_clearance=0.12, min_h_obstacle=0.30, min_h_boundary=1.0
+            ),
+            violation=False,
+        )
+        s = m.summary()
+        assert s["min_h_floor"] == pytest.approx(0.05)
+        assert s["min_clearance_floor"] == pytest.approx(0.05)
+        assert s["min_h_obstacle_floor"] == pytest.approx(0.30)
+        assert s["min_h_boundary_floor"] == pytest.approx(0.05)
+
+    def test_obstacle_floor_is_none_when_no_obstacle_was_ever_constrained(self):
+        m = ShieldMetrics()
+        m.record(
+            _info(min_h=1.0, min_clearance=1.0, min_h_boundary=1.0), violation=False
+        )
+        s = m.summary()
+        assert s["min_h_obstacle_floor"] is None
+        assert s["min_h_boundary_floor"] == pytest.approx(1.0)
+
+    def test_empty_summary_clearance_floors_are_none(self):
+        s = ShieldMetrics().summary()
+        assert s["min_clearance_floor"] is None
+        assert s["min_h_obstacle_floor"] is None
+        assert s["min_h_boundary_floor"] is None
 
     def test_stall_runs_and_deadlock_threshold(self):
         # Pattern: 3 stalled, 1 free, 5 stalled -> longest run 5, stall rate 8/9,
@@ -435,12 +542,22 @@ class TestRunShieldedDuel:
             )
 
 
-def _log(outcome, steps, violations, shield):
+def _shield(**over):
+    """A ShieldMetrics-shaped episode summary: the empty summary with `over`
+    applied. Using the real shape means a new summary key cannot silently go
+    missing from these fixtures."""
+    s = ShieldMetrics().summary()
+    s.update(over)
+    return s
+
+
+def _log(outcome, steps, violations, shield, shielded_role="pursuer"):
     return {
         "outcome": outcome,
         "steps": steps,
         "violations": violations,
         "shield": shield,
+        "shielded_role": shielded_role,
     }
 
 
@@ -458,29 +575,31 @@ class TestSummarizeShield:
             "capture",
             100,
             0,
-            {
-                "n_steps": 100,
-                "intervention_rate": 0.10,
-                "infeasibility_rate": 0.04,
-                "backup_rate": 0.01,
-                "tier_histogram": {"exact": 96, "relaxed": 3, "backup": 1},
-                "min_h_floor": 0.2,
-                "deadlock": False,
-            },
+            _shield(
+                n_steps=100,
+                intervention_rate=0.10,
+                infeasibility_rate=0.04,
+                backup_rate=0.01,
+                tier_histogram={"exact": 96, "relaxed": 3, "backup": 1, "none": 0},
+                min_h_floor=0.2,
+                min_clearance_floor=0.2,
+                deadlock=False,
+            ),
         )
         b = _log(
             "timeout",
             300,
             2,
-            {
-                "n_steps": 300,
-                "intervention_rate": 0.10,
-                "infeasibility_rate": 0.0,
-                "backup_rate": 0.0,
-                "tier_histogram": {"exact": 300, "relaxed": 0, "backup": 0},
-                "min_h_floor": -0.05,
-                "deadlock": True,
-            },
+            _shield(
+                n_steps=300,
+                intervention_rate=0.10,
+                infeasibility_rate=0.0,
+                backup_rate=0.0,
+                tier_histogram={"exact": 300, "relaxed": 0, "backup": 0, "none": 0},
+                min_h_floor=-0.05,
+                min_clearance_floor=-0.05,
+                deadlock=True,
+            ),
         )
         s = summarize_shield([a, b])
         assert s["n_episodes"] == 2
@@ -499,12 +618,53 @@ class TestSummarizeShield:
         assert s["timeout_rate"] == pytest.approx(0.5)
         assert s["capture_rate"] == pytest.approx(0.5)
 
+    def test_clearance_floors_pooled_in_metres(self):
+        # Episode A: clearance floor 0.30 m, obstacle barrier floor 0.9 m^2,
+        #            boundary barrier floor 4.0 m.
+        # Episode B: clearance floor 0.05 m, no obstacle ever constrained,
+        #            boundary barrier floor 0.05 m.
+        # -> reportable floor 0.05 m; obstacle floor 0.9 (B contributes none);
+        #    boundary floor 0.05.
+        a = _log(
+            "capture",
+            10,
+            0,
+            _shield(
+                n_steps=10,
+                min_h_floor=0.9,
+                min_clearance_floor=0.30,
+                min_h_obstacle_floor=0.9,
+                min_h_boundary_floor=4.0,
+            ),
+        )
+        b = _log(
+            "timeout",
+            10,
+            0,
+            _shield(
+                n_steps=10,
+                min_h_floor=0.05,
+                min_clearance_floor=0.05,
+                min_h_obstacle_floor=None,
+                min_h_boundary_floor=0.05,
+            ),
+        )
+        s = summarize_shield([a, b])
+        assert s["min_clearance_per_episode"] == [0.30, 0.05]
+        assert s["min_clearance_floor"] == pytest.approx(0.05)
+        assert s["min_h_obstacle_floor"] == pytest.approx(0.9)
+        assert s["min_h_boundary_floor"] == pytest.approx(0.05)
+
     def test_empty(self):
         s = summarize_shield([])
         assert s["n_episodes"] == 0
         assert s["n_steps"] == 0
         assert s["min_h_per_episode"] == []
         assert s["min_h_floor"] is None
+        assert s["min_clearance_per_episode"] == []
+        assert s["min_clearance_floor"] is None
+        assert s["min_h_obstacle_floor"] is None
+        assert s["min_h_boundary_floor"] is None
         assert s["tier_histogram"] == {"exact": 0, "relaxed": 0, "backup": 0}
 
     def test_from_real_shielded_duels(self):
