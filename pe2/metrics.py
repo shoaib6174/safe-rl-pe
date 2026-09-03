@@ -189,6 +189,10 @@ class ShieldMetrics:
             "stall_step_rate": self.n_stalled / n if n else 0.0,
             "longest_stall_run": self.longest_stall_run,
             "deadlock": self.longest_stall_run >= DEADLOCK_STEPS,
+            # Still stalled on the last recorded step. A genuine
+            # force-equilibrium never recovers; a slow turn away does, so this
+            # separates the two at equal stall-run length.
+            "stalled_at_end": self._current_stall_run > 0,
             "n_immobile": self.n_immobile,
             "immobile_step_rate": self.n_immobile / n if n else 0.0,
             "longest_immobile_run": self.longest_immobile_run,
@@ -282,6 +286,24 @@ def summarize_shield(logs: list[dict]) -> dict:
         ),
         "deadlock_episodes": deadlocks,
         "deadlock_episode_rate": deadlocks / n_episodes if n_episodes else 0.0,
+        # The distribution behind the deadlock boolean, so DEADLOCK_STEPS is a
+        # reported cut on visible data rather than a hidden constant. A benign
+        # nose-first wall approach with a full-rate turn away takes roughly 28
+        # steps to clear the stall band; FovLimitedEvader's 0.3 * omega_max
+        # scan takes about 37, one short of the cut, and a slower learned
+        # policy crosses it — so the per-episode runs and the
+        # still-stalled-at-the-end flag are what separate a slow recovery
+        # from a real standoff.
+        "stall_step_rate": counts["n_stalled"] / n_steps if n_steps else 0.0,
+        "longest_stall_run_per_episode": [
+            log["shield"]["longest_stall_run"] for log in logs
+        ],
+        "stalled_at_episode_end": [
+            bool(log["shield"]["stalled_at_end"]) for log in logs
+        ],
+        "episodes_stalled_at_end": sum(
+            bool(log["shield"]["stalled_at_end"]) for log in logs
+        ),
         "n_immobile": n_immobile,
         "immobile_step_rate": n_immobile / n_steps if n_steps else 0.0,
         "longest_immobile_run_per_episode": [

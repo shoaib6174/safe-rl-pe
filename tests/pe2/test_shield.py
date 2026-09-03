@@ -739,6 +739,21 @@ class TestShieldMetrics:
         ):
             assert name not in repr(a)
 
+    def test_stalled_at_end_distinguishes_a_standoff_from_a_recovery(self):
+        # A genuine force-equilibrium never recovers; a slow turn away does.
+        # Same stall count and same longest run, opposite endings.
+        recovered = ShieldMetrics()
+        for stalled in (True, True, True, False):
+            recovered.record(_info(stalled=stalled), violation=False)
+        stuck = ShieldMetrics()
+        for stalled in (False, True, True, True):
+            stuck.record(_info(stalled=stalled), violation=False)
+        assert recovered.summary()["longest_stall_run"] == 3
+        assert stuck.summary()["longest_stall_run"] == 3
+        assert recovered.summary()["stalled_at_end"] is False
+        assert stuck.summary()["stalled_at_end"] is True
+        assert ShieldMetrics().summary()["stalled_at_end"] is False
+
     def test_deadlock_when_stall_run_reaches_threshold(self):
         # Exactly DEADLOCK_STEPS consecutive stalled steps -> deadlock True.
         m = ShieldMetrics()
@@ -1182,6 +1197,46 @@ class TestSummarizeShield:
         assert sum(s["tier_histogram"].values()) == s["n_steps"]
         assert s["n_steps"] == sum(log["steps"] for log in logs)
 
+    def test_stall_distribution_is_reported_not_just_the_boolean(self):
+        # The 40-step deadlock threshold must be auditable. Episode A has a
+        # 39-step run (one short of the cut, and it recovers); episode B has a
+        # 41-step run that never recovers. Both are 100 steps, so the pooled
+        # stall step rate is (39 + 41) / 200 = 0.4.
+        a = _log(
+            "timeout",
+            100,
+            0,
+            _shield(
+                n_steps=100,
+                min_h_floor=1.0,
+                min_clearance_floor=1.0,
+                n_stalled=39,
+                longest_stall_run=39,
+                deadlock=False,
+                stalled_at_end=False,
+            ),
+        )
+        b = _log(
+            "timeout",
+            100,
+            0,
+            _shield(
+                n_steps=100,
+                min_h_floor=1.0,
+                min_clearance_floor=1.0,
+                n_stalled=41,
+                longest_stall_run=41,
+                deadlock=True,
+                stalled_at_end=True,
+            ),
+        )
+        s = summarize_shield([a, b])
+        assert s["stall_step_rate"] == pytest.approx(0.4)
+        assert s["longest_stall_run_per_episode"] == [39, 41]
+        assert s["stalled_at_episode_end"] == [False, True]
+        assert s["episodes_stalled_at_end"] == 1
+        assert s["deadlock_episodes"] == 1
+
     def test_refuses_a_log_with_no_shield_block(self):
         # A run_duel log has no shield block. Refusing it (rather than
         # inventing zeros) is what stops the negative control from shipping a
@@ -1264,6 +1319,17 @@ class TestSummarizeShield:
             "backup": 0,
             "none": 0,
         }
+        # EVERY rate resolves to zero, so a mix-up between the episode-count
+        # guard and the step-count guard cannot hide behind an unasserted key.
+        rate_keys = [k for k in s if k.endswith("_rate")]
+        assert len(rate_keys) >= 9  # the guard would be vacuous if renamed away
+        for key in rate_keys:
+            assert s[key] == 0.0, key
+        # And every count is zero, every per-episode list empty.
+        for key in ("n_episodes", "n_steps", "violation_steps", "n_immobile"):
+            assert s[key] == 0, key
+        for key in [k for k in s if k.endswith("_per_episode")]:
+            assert s[key] == [], key
 
     def test_from_real_shielded_duels(self):
         cfg = EnvConfig(n_obstacles=0)
