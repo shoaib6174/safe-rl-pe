@@ -304,16 +304,8 @@ class CBFShield:
         The default is `prep_steps = 0`, where the two coincide.
         """
         v_max = self.cfg.v_max if v_max is None else v_max
-        v_nom = float(np.clip(float(action[0]), 0.0, v_max))
-        w_nom = float(
-            np.clip(float(action[1]), -self.cfg.omega_max, self.cfg.omega_max)
-        )
-
+        v_nom, w_nom = self._clip_nominal(action, v_max)
         cons = self.constraints(state, obstacles)
-        min_h = min(c.h for c in cons)  # mixed-unit QP margin, NOT a distance
-        min_clearance = min(c.clearance for c in cons)  # metres, reportable
-        h_obstacle = [c.h for c in cons if c.kind == "obstacle"]
-        h_boundary = [c.h for c in cons if c.kind == "boundary"]
 
         # Tier 1: exact — all constraints.
         u, feasible = self._solve(v_nom, w_nom, cons, v_max)
@@ -330,16 +322,46 @@ class CBFShield:
             u = self.backup(state, obstacles, v_max)
             method = "backup"
 
-        intervention = not np.allclose(u, [v_nom, w_nom], atol=INTERVENTION_ATOL)
+        # `feasible` here is the single source of truth for whether the exact
+        # program solved: it is what goes into info["feasible"], and
+        # ShieldMetrics.record reads that key rather than re-deriving it from
+        # the method string, so a new tier cannot disagree with itself.
+        return u, self._info(method, method == "exact", u, v_nom, w_nom, cons, v_max)
+
+    def _clip_nominal(
+        self, action: tuple[float, float] | np.ndarray, v_max: float
+    ) -> tuple[float, float]:
+        """The nominal (v, ω) actually fed to the program, clipped to the box."""
+        return (
+            float(np.clip(float(action[0]), 0.0, v_max)),
+            float(np.clip(float(action[1]), -self.cfg.omega_max, self.cfg.omega_max)),
+        )
+
+    def _info(
+        self,
+        method: str,
+        feasible: bool,
+        u: np.ndarray,
+        v_nom: float,
+        w_nom: float,
+        cons: list[Constraint],
+        v_max: float,
+    ) -> dict:
+        """Build the per-step info dict. Shared with NoOpShield so the shielded
+        and unshielded arms report exactly the same keys."""
+        h_obstacle = [c.h for c in cons if c.kind == "obstacle"]
+        h_boundary = [c.h for c in cons if c.kind == "boundary"]
         v_exec = float(u[0])
         immobile = v_exec <= STALL_V_FRAC * v_max
         stalled = immobile and v_nom >= MOVE_V_FRAC * v_max
-        info = {
+        return {
             "method": method,
-            "feasible": method == "exact",
-            "intervention": bool(intervention),
-            "min_h": float(min_h),
-            "min_clearance": float(min_clearance),
+            "feasible": bool(feasible),
+            "intervention": bool(
+                not np.allclose(u, [v_nom, w_nom], atol=INTERVENTION_ATOL)
+            ),
+            "min_h": float(min(c.h for c in cons)),  # mixed-unit, NOT a distance
+            "min_clearance": float(min(c.clearance for c in cons)),  # metres
             "min_h_obstacle": min(h_obstacle) if h_obstacle else None,
             "min_h_boundary": min(h_boundary) if h_boundary else None,
             "h_obstacle": h_obstacle,
@@ -350,7 +372,6 @@ class CBFShield:
             "stalled": bool(stalled),
             "immobile": bool(immobile),
         }
-        return u, info
 
     def _solve(
         self, v_nom: float, w_nom: float, cons: list[Constraint], v_max: float
@@ -364,3 +385,40 @@ class CBFShield:
             self.w_v,
             self.w_omega,
         )
+
+
+class NoOpShield(CBFShield):
+    """Pass-through filter for the pre-registered UNSHIELDED negative control.
+
+    D83 requires the Step 6 gate to carry an unshielded arm. Running one
+    through `run_shielded_duel` with a hand-rolled pass-through object would
+    write a shield block that looks like a measurement but is not, so the
+    control gets an explicit class here instead.
+
+    It returns the nominal action unchanged (clipped only to the action box,
+    which the env would clip anyway) and reports `method="none"` — a distinct
+    tier in the histogram, so this arm's zero infeasibility rate and zero
+    intervention rate can never be read as an all-exact QP measurement.
+
+    It DOES still measure the barriers: `min_h` / `min_clearance` are
+    properties of the state and the static map, not of the filter, and the
+    unshielded arm's clearance floor is precisely the number the shielded
+    arm's floor is compared against. Nothing it reports is invented — the one
+    value that has no meaning here, QP feasibility, is True because no program
+    was solved and therefore none failed.
+    """
+
+    def filter(
+        self,
+        action: tuple[float, float] | np.ndarray,
+        state: np.ndarray,
+        obstacles: list[dict],
+        v_max: float | None = None,
+    ) -> tuple[np.ndarray, dict]:
+        """Return the nominal unchanged with `method="none"`. Same info keys as
+        `CBFShield.filter`, so the two arms are comparable step by step."""
+        v_max = self.cfg.v_max if v_max is None else v_max
+        v_nom, w_nom = self._clip_nominal(action, v_max)
+        u = np.array([v_nom, w_nom], dtype=np.float64)
+        cons = self.constraints(state, obstacles)
+        return u, self._info("none", True, u, v_nom, w_nom, cons, v_max)

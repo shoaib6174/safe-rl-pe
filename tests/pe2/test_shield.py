@@ -6,10 +6,11 @@ import pytest
 from pe2.config import EnvConfig
 from pe2.env import OUTCOME_CAPTURE, PursuitEvasionEnv
 from pe2.metrics import DEADLOCK_STEPS, ShieldMetrics, summarize_shield
-from pe2.scripted import GreedyEvader, GreedyPursuer, run_shielded_duel
+from pe2.scripted import GreedyEvader, GreedyPursuer, run_duel, run_shielded_duel
 from pe2.shield import (
     STALL_V_FRAC,
     CBFShield,
+    NoOpShield,
     _boundary_constraints,
     _obstacle_constraint,
     _solve_qp_2d,
@@ -323,6 +324,66 @@ def info_kinds(cons):
     return {c.kind for c in cons}
 
 
+class TestNoOpShield:
+    def test_returns_the_nominal_unchanged_and_reports_the_none_tier(self):
+        shield = NoOpShield(CFG)
+        # A state where CBFShield would brake hard (h = 0.001 -> v <= 0.004):
+        # the no-op filter must pass 1.0 straight through.
+        u, info = shield.filter((1.0, 0.3), np.array([4.749, 0.0, 0.0]), [])
+        assert u[0] == pytest.approx(1.0)
+        assert u[1] == pytest.approx(0.3)
+        assert info["method"] == "none"
+        assert info["intervention"] is False
+        assert info["feasible"] is True  # no QP was solved, so nothing failed
+        assert info["v_nom"] == pytest.approx(1.0)
+        assert info["v_exec"] == pytest.approx(1.0)
+        assert info["stalled"] is False
+        assert info["immobile"] is False
+
+    def test_still_measures_the_barriers(self):
+        # The barriers are a property of the STATE, not of the filter, so the
+        # unshielded control reports a real clearance floor to compare against.
+        # x = 4.73 -> q = 4.83, h = x_lim - q = 0.02 m.
+        shield = NoOpShield(CFG)
+        _, info = shield.filter((1.0, 0.0), np.array([4.73, 0.0, 0.0]), [])
+        assert info["min_h"] == pytest.approx(0.02)
+        assert info["min_clearance"] == pytest.approx(0.02)
+        assert info["n_constraints"] == 4
+
+    def test_info_keys_match_the_real_shield(self):
+        # The two arms are compared step by step, so their info dicts must
+        # carry exactly the same keys.
+        state = np.array([1.0, 0.5, 0.3])
+        obstacles = [{"x": 2.0, "y": 0.0, "radius": 0.4}]
+        _, real = CBFShield(CFG).filter((1.0, 0.0), state, obstacles)
+        _, noop = NoOpShield(CFG).filter((1.0, 0.0), state, obstacles)
+        assert set(real) == set(noop)
+
+    def test_respects_the_action_box(self):
+        # The env clips too, but the filter's contract is a valid action.
+        shield = NoOpShield(CFG)
+        u, info = shield.filter((5.0, 99.0), np.array([0.0, 0.0, 0.0]), [])
+        assert u[0] == pytest.approx(CFG.v_max)
+        assert u[1] == pytest.approx(CFG.omega_max)
+        assert info["v_nom"] == pytest.approx(CFG.v_max)
+
+    def test_metrics_classify_a_none_step_distinctly(self):
+        # The negative control must not look like an all-exact measurement.
+        shield = NoOpShield(CFG)
+        _, info = shield.filter((1.0, 0.0), np.array([0.0, 0.0, 0.0]), [])
+        m = ShieldMetrics()
+        m.record(info, violation=False)
+        s = m.summary()
+        assert s["tier_histogram"] == {
+            "exact": 0,
+            "relaxed": 0,
+            "backup": 0,
+            "none": 1,
+        }
+        assert s["infeasibility_rate"] == 0.0
+        assert s["method_counts"] == {"none": 1}
+
+
 class TestShieldedEnvIntegration:
     def test_zero_contacts_driving_straight_at_obstacle(self):
         """Shielded robot ramming an obstacle at v_max for 200 steps must
@@ -409,7 +470,12 @@ class TestShieldMetrics:
         assert s["violation_rate"] == 0.0
         assert s["min_h_floor"] is None
         assert s["infeasibility_rate"] == 0.0
-        assert s["tier_histogram"] == {"exact": 0, "relaxed": 0, "backup": 0}
+        assert s["tier_histogram"] == {
+            "exact": 0,
+            "relaxed": 0,
+            "backup": 0,
+            "none": 0,
+        }
         assert s["longest_stall_run"] == 0
         assert s["deadlock"] is False
 
@@ -422,7 +488,12 @@ class TestShieldMetrics:
         s = m.summary()
         assert s["infeasibility_rate"] == pytest.approx(0.5)
         assert s["backup_rate"] == pytest.approx(0.25)
-        assert s["tier_histogram"] == {"exact": 2, "relaxed": 1, "backup": 1}
+        assert s["tier_histogram"] == {
+            "exact": 2,
+            "relaxed": 1,
+            "backup": 1,
+            "none": 0,
+        }
 
     def test_clearance_and_per_kind_barrier_floors(self):
         # Three steps.
@@ -578,6 +649,19 @@ class _CapSpy:
         return self.shield.filter(action, state, obstacles, v_max=v_max)
 
 
+class _NominalSpy:
+    """Wraps a shield and records every nominal action handed to it, so a test
+    can prove which role's action was filtered."""
+
+    def __init__(self, shield):
+        self.shield = shield
+        self.nominals: list[tuple[float, float]] = []
+
+    def filter(self, action, state, obstacles, v_max=None):
+        self.nominals.append((float(action[0]), float(action[1])))
+        return self.shield.filter(action, state, obstacles, v_max=v_max)
+
+
 class TestRunShieldedDuel:
     def test_obstacle_free_shielded_pursuer_log_shape(self):
         cfg = EnvConfig(n_obstacles=0)
@@ -602,7 +686,12 @@ class TestRunShieldedDuel:
         # No obstacles and a boundary shield: no contacts for the shielded role.
         assert log["violations"] == 0
         assert log["shield"]["violation_rate"] == 0.0
-        assert set(log["shield"]["tier_histogram"]) == {"exact", "relaxed", "backup"}
+        assert set(log["shield"]["tier_histogram"]) == {
+            "exact",
+            "relaxed",
+            "backup",
+            "none",
+        }
         # Every step must have been filtered at the pursuer's cap, never the
         # evader's.
         assert set(spy.caps) == {cfg.v_max}
@@ -655,6 +744,108 @@ class TestRunShieldedDuel:
                 seed=1,
                 shielded_role="both",
             )
+
+
+class TestRunDuelViolations:
+    def test_counts_both_roles_separately(self):
+        # Seed 1, default config: the greedy pursuer never touches anything
+        # while the fleeing evader hits walls on 177 of the 203 steps. An
+        # unshielded control has no privileged role, so both are counted and
+        # a role mix-up cannot hide behind a single number.
+        env = PursuitEvasionEnv(EnvConfig())
+        log = run_duel(env, GreedyPursuer(), GreedyEvader(), seed=1)
+        assert log["steps"] == 203
+        assert log["pursuer_violations"] == 0
+        assert log["evader_violations"] == 177
+        assert log["total_violations"] == 177
+
+    def test_counts_the_mirror_case(self):
+        # Seed 12 is the opposite asymmetry: 1144 pursuer contact steps and
+        # zero evader contacts over a 1200-step timeout.
+        env = PursuitEvasionEnv(EnvConfig())
+        log = run_duel(env, GreedyPursuer(), GreedyEvader(), seed=12)
+        assert log["steps"] == 1200
+        assert log["pursuer_violations"] == 1144
+        assert log["evader_violations"] == 0
+        assert log["total_violations"] == 1144
+
+    def test_total_is_the_sum_of_the_roles(self):
+        env = PursuitEvasionEnv(EnvConfig())
+        for seed in (0, 5, 8):
+            log = run_duel(env, GreedyPursuer(), GreedyEvader(), seed=seed)
+            assert (
+                log["total_violations"]
+                == log["pursuer_violations"] + log["evader_violations"]
+            )
+
+
+class TestRunnersAgreeWithoutAShield:
+    """A pre-registered gate compares the shielded and unshielded arms, so the
+    two runners must agree step for step when the shield does nothing."""
+
+    def test_noop_shielded_duel_matches_run_duel_on_every_key(self):
+        # Default config (2 obstacles) so the obstacle path is exercised, and
+        # seed 1, where the evader racks up 177 contacts: a divergence in
+        # action handling or LOS accounting would move at least one field.
+        cfg = EnvConfig()
+        plain = run_duel(
+            PursuitEvasionEnv(cfg), GreedyPursuer(), GreedyEvader(), seed=1
+        )
+        shielded = run_shielded_duel(
+            PursuitEvasionEnv(cfg),
+            GreedyPursuer(),
+            GreedyEvader(),
+            NoOpShield(cfg),
+            seed=1,
+        )
+        for key, value in plain.items():
+            assert shielded[key] == value, key
+        # And the shielded arm's own violation count is the shielded role's.
+        assert shielded["violations"] == plain["pursuer_violations"]
+
+    def test_matches_run_duel_with_the_evader_shielded_too(self):
+        cfg = EnvConfig()
+        plain = run_duel(
+            PursuitEvasionEnv(cfg), GreedyPursuer(), GreedyEvader(), seed=1
+        )
+        shielded = run_shielded_duel(
+            PursuitEvasionEnv(cfg),
+            GreedyPursuer(),
+            GreedyEvader(),
+            NoOpShield(cfg),
+            seed=1,
+            shielded_role="evader",
+        )
+        for key, value in plain.items():
+            assert shielded[key] == value, key
+        assert shielded["violations"] == plain["evader_violations"]
+
+    def test_only_the_shielded_role_reaches_the_filter(self):
+        # GreedyPursuer always commands v_max = 1.0 and GreedyEvader always
+        # commands evader_v_max = 1.2, so the nominal speeds the filter sees
+        # identify the role unambiguously.
+        cfg = EnvConfig()
+        assert cfg.evader_v_max == pytest.approx(1.2)
+        spy = _NominalSpy(NoOpShield(cfg))
+        log = run_shielded_duel(
+            PursuitEvasionEnv(cfg), GreedyPursuer(), GreedyEvader(), spy, seed=1
+        )
+        assert len(spy.nominals) == log["steps"]
+        assert {round(v, 6) for v, _ in spy.nominals} == {1.0}
+
+    def test_only_the_shielded_evader_reaches_the_filter(self):
+        cfg = EnvConfig()
+        spy = _NominalSpy(NoOpShield(cfg))
+        log = run_shielded_duel(
+            PursuitEvasionEnv(cfg),
+            GreedyPursuer(),
+            GreedyEvader(),
+            spy,
+            seed=1,
+            shielded_role="evader",
+        )
+        assert len(spy.nominals) == log["steps"]
+        assert {round(v, 6) for v, _ in spy.nominals} == {1.2}
 
 
 def _shield(**over):
@@ -725,7 +916,12 @@ class TestSummarizeShield:
         assert s["intervention_rate"] == pytest.approx(0.1)
         assert s["infeasibility_rate"] == pytest.approx(0.01)
         assert s["backup_rate"] == pytest.approx(1 / 400)
-        assert s["tier_histogram"] == {"exact": 396, "relaxed": 3, "backup": 1}
+        assert s["tier_histogram"] == {
+            "exact": 396,
+            "relaxed": 3,
+            "backup": 1,
+            "none": 0,
+        }
         assert s["min_h_per_episode"] == [0.2, -0.05]
         assert s["min_h_floor"] == pytest.approx(-0.05)
         assert s["deadlock_episodes"] == 1
@@ -811,6 +1007,72 @@ class TestSummarizeShield:
         assert s["pinned_episodes"] == 1
         assert s["pinned_episode_rate"] == pytest.approx(0.5)
 
+    def test_refuses_a_log_with_no_shield_block(self):
+        # A run_duel log has no shield block. Refusing it (rather than
+        # inventing zeros) is what stops the negative control from shipping a
+        # fabricated shield summary; the message must name the fix.
+        plain = run_duel(
+            PursuitEvasionEnv(EnvConfig(n_obstacles=0)),
+            GreedyPursuer(),
+            GreedyEvader(),
+            seed=760020,
+        )
+        with pytest.raises(ValueError, match="NoOpShield"):
+            summarize_shield([plain])
+
+    def test_refuses_a_log_with_no_shielded_role(self):
+        log = _log("capture", 10, 0, _shield(n_steps=10, min_h_floor=1.0))
+        del log["shielded_role"]
+        with pytest.raises(ValueError, match="shielded_role"):
+            summarize_shield([log])
+
+    def test_refuses_a_mix_of_shielded_roles(self):
+        # The stall/immobility thresholds are fractions of the per-role cap
+        # (1.0 for the pursuer, 1.2 for the evader), so pooling the two arms
+        # would average incomparable numbers.
+        a = _log(
+            "capture",
+            10,
+            0,
+            _shield(n_steps=10, min_h_floor=1.0),
+            shielded_role="pursuer",
+        )
+        b = _log(
+            "capture",
+            10,
+            0,
+            _shield(n_steps=10, min_h_floor=1.0),
+            shielded_role="evader",
+        )
+        with pytest.raises(ValueError, match="one shielded role"):
+            summarize_shield([a, b])
+
+    def test_carries_the_shielded_role(self):
+        a = _log("capture", 10, 0, _shield(n_steps=10, min_h_floor=1.0))
+        assert summarize_shield([a])["shielded_roles"] == ["pursuer"]
+        assert summarize_shield([])["shielded_roles"] == []
+
+    def test_unshielded_control_is_all_none_tier(self):
+        # The pre-registered negative control: a real sweep through
+        # run_shielded_duel with NoOpShield. Its zero infeasibility rate is
+        # only readable because the histogram says no QP ever ran.
+        cfg = EnvConfig(n_obstacles=0)
+        logs = [
+            run_shielded_duel(
+                PursuitEvasionEnv(cfg),
+                GreedyPursuer(),
+                GreedyEvader(),
+                NoOpShield(cfg),
+                seed=760030 + i,
+            )
+            for i in range(3)
+        ]
+        s = summarize_shield(logs)
+        assert s["tier_histogram"]["none"] == s["n_steps"]
+        assert s["tier_histogram"]["exact"] == 0
+        assert s["infeasibility_rate"] == 0.0
+        assert s["intervention_rate"] == 0.0
+
     def test_empty(self):
         s = summarize_shield([])
         assert s["n_episodes"] == 0
@@ -821,7 +1083,12 @@ class TestSummarizeShield:
         assert s["min_clearance_floor"] is None
         assert s["min_h_obstacle_floor"] is None
         assert s["min_h_boundary_floor"] is None
-        assert s["tier_histogram"] == {"exact": 0, "relaxed": 0, "backup": 0}
+        assert s["tier_histogram"] == {
+            "exact": 0,
+            "relaxed": 0,
+            "backup": 0,
+            "none": 0,
+        }
 
     def test_from_real_shielded_duels(self):
         cfg = EnvConfig(n_obstacles=0)

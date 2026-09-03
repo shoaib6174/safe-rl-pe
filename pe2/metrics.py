@@ -38,7 +38,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-TIERS = ("exact", "relaxed", "backup")
+# Every method `record` accepts. "none" is NoOpShield — the pre-registered
+# unshielded negative control — and is kept distinct from "exact" so that
+# control's zero infeasibility rate can never be read as an all-exact QP
+# measurement. A method outside this tuple is an error, not a silent drop:
+# a new tier that only half-registered would produce a histogram that does
+# not sum to the step count beside a contradictory infeasibility rate.
+TIERS = ("exact", "relaxed", "backup", "none")
 DEADLOCK_STEPS = 40  # 2.0 s at dt = 0.05
 
 
@@ -94,8 +100,16 @@ class ShieldMetrics:
         self.n_violations += int(violation)
         self.n_interventions += int(shield_info["intervention"])
         method = shield_info["method"]
+        if method not in TIERS:
+            raise ValueError(
+                f"unknown shield method {method!r}; add it to pe2.metrics.TIERS "
+                "(and decide how it counts toward feasibility) before recording it"
+            )
         self.method_counts[method] = self.method_counts.get(method, 0) + 1
-        self.n_infeasible += int(method != "exact")
+        # The shield's own `feasible` flag is the single source of truth; do
+        # NOT re-derive it from the method string here, or a new tier can be
+        # feasible in one module and infeasible in the other.
+        self.n_infeasible += int(not shield_info["feasible"])
         self.n_backup += int(method == "backup")
         self.min_h_floor = min(self.min_h_floor, shield_info["min_h"])
         self.min_h_sum += shield_info["min_h"]
@@ -177,7 +191,36 @@ def summarize_shield(logs: list[dict]) -> dict:
     Step-level rates are pooled over all steps (weighted by episode length),
     matching how G1 counts "violation steps over N episodes". Per-episode
     minima are kept as a list so the gate can report their distribution.
+
+    REFUSES (rather than tolerates) two malformed inputs, because both would
+    silently corrupt a gate number:
+    - a log with no `shield` block or no `shielded_role` — i.e. a `run_duel`
+      log. Use `run_shielded_duel` with a `pe2.shield.NoOpShield` for the
+      unshielded control so its shield block is measured, not invented.
+    - a mix of shielded roles. The stall and immobility thresholds are
+      fractions of the per-role speed cap (1.0 for a shielded pursuer, 1.2
+      for a shielded evader), so the two arms are not poolable.
     """
+    for i, log in enumerate(logs):
+        if "shield" not in log:
+            raise ValueError(
+                f"log {i} has no 'shield' block: summarize_shield consumes "
+                "run_shielded_duel logs only. For the unshielded control, run "
+                "run_shielded_duel with pe2.shield.NoOpShield — never a "
+                "hand-rolled pass-through, whose shield block would be fabricated."
+            )
+        if "shielded_role" not in log:
+            raise ValueError(
+                f"log {i} has no 'shielded_role': summarize_shield consumes "
+                "run_shielded_duel logs only."
+            )
+    roles = sorted({log["shielded_role"] for log in logs})
+    if len(roles) > 1:
+        raise ValueError(
+            f"logs mix shielded roles {roles}; summarize_shield pools one "
+            "shielded role at a time because the stall and immobility "
+            "thresholds are fractions of the per-role speed cap"
+        )
     n_episodes = len(logs)
     n_steps = sum(log["shield"]["n_steps"] for log in logs)
     tiers = {t: 0 for t in TIERS}
@@ -200,6 +243,7 @@ def summarize_shield(logs: list[dict]) -> dict:
     return {
         "n_episodes": n_episodes,
         "n_steps": n_steps,
+        "shielded_roles": roles,
         "violation_steps": sum(log["violations"] for log in logs),
         "episodes_with_violation": with_violation,
         "violation_episode_rate": with_violation / n_episodes if n_episodes else 0.0,

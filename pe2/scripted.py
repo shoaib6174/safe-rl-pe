@@ -147,16 +147,31 @@ def run_duel(
 
     `los_breaks` counts pursuer-view visible -> not-visible transitions
     (occlusion events) from the observation flag.
+
+    Violations use the pre-registered Step 6 semantics: an env contact step
+    (wall or obstacle) for the role in question. Unlike `run_shielded_duel`,
+    this runner has no shielded role, so BOTH roles are counted separately
+    (`pursuer_violations`, `evader_violations`) plus their sum
+    (`total_violations`) — an unshielded arm has no privileged role, and the
+    gate's negative control picks whichever role the shielded arm shielded.
     """
     pursuer.reset()
     evader.reset()
     obs, _ = env.reset(seed=seed)
     los_prev = bool(obs["pursuer"][6] > 0.5)
     los_breaks = 0
+    pursuer_violations = 0
+    evader_violations = 0
     while True:
         v_p, w_p = pursuer.act(obs["pursuer"], env)
         v_e, w_e = evader.act(obs["evader"], env)
         obs, _, terminated, truncated, info = env.step([v_p, w_p, v_e, w_e])
+        pursuer_violations += int(
+            info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"]
+        )
+        evader_violations += int(
+            info["evader_wall_contact"] or info["evader_obstacle_contact"]
+        )
         los = bool(obs["pursuer"][6] > 0.5)
         if los_prev and not los:
             los_breaks += 1
@@ -171,6 +186,9 @@ def run_duel(
         "steps": env.current_step,
         "final_distance": float(info["distance"]),
         "los_breaks": los_breaks,
+        "pursuer_violations": pursuer_violations,
+        "evader_violations": evader_violations,
+        "total_violations": pursuer_violations + evader_violations,
     }
 
 
@@ -184,10 +202,16 @@ def run_shielded_duel(
 ) -> dict:
     """Run one episode with `shield` filtering one role's actions.
 
-    Returns the `run_duel` log plus `shielded_role`, `violations` (env contact
-    steps of the shielded role — the pre-registered Step 6 semantics) and
-    `shield` (ShieldMetrics.summary() for the episode). The shield sees the
-    TRUE pose and the static map; the policies see their observations.
+    Returns the `run_duel` log (including its per-role violation counts, so a
+    shielded log and an unshielded log can be compared key by key) plus
+    `shielded_role`, `violations` (env contact steps of the SHIELDED role —
+    the pre-registered Step 6 semantics) and `shield`
+    (ShieldMetrics.summary() for the episode). The shield sees the TRUE pose
+    and the static map; the policies see their observations.
+
+    For the pre-registered unshielded negative control, pass a
+    `pe2.shield.NoOpShield`: the log then has the same shape with a shield
+    block whose tier histogram is entirely "none".
     """
     if shielded_role not in ("pursuer", "evader"):
         raise ValueError(
@@ -199,7 +223,8 @@ def run_shielded_duel(
     los_prev = bool(obs["pursuer"][6] > 0.5)
     los_breaks = 0
     metrics = ShieldMetrics()
-    violations = 0
+    pursuer_violations = 0
+    evader_violations = 0
     v_cap = env.cfg.v_max if shielded_role == "pursuer" else env.cfg.evader_v_max
     while True:
         v_p, w_p = pursuer.act(obs["pursuer"], env)
@@ -213,11 +238,16 @@ def run_shielded_duel(
                 (v_e, w_e), env.evader_pose, env.obstacles, v_max=v_cap
             )
         obs, _, terminated, truncated, info = env.step([v_p, w_p, v_e, w_e])
+        pursuer_violations += int(
+            info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"]
+        )
+        evader_violations += int(
+            info["evader_wall_contact"] or info["evader_obstacle_contact"]
+        )
         contact = bool(
             info[f"{shielded_role}_wall_contact"]
             or info[f"{shielded_role}_obstacle_contact"]
         )
-        violations += int(contact)
         metrics.record(sinfo, violation=contact)
         los = bool(obs["pursuer"][6] > 0.5)
         if los_prev and not los:
@@ -233,7 +263,13 @@ def run_shielded_duel(
         "steps": env.current_step,
         "final_distance": float(info["distance"]),
         "los_breaks": los_breaks,
+        "pursuer_violations": pursuer_violations,
+        "evader_violations": evader_violations,
+        "total_violations": pursuer_violations + evader_violations,
         "shielded_role": shielded_role,
-        "violations": violations,
+        # The pre-registered gate quantity: contact steps of the SHIELDED role.
+        "violations": (
+            pursuer_violations if shielded_role == "pursuer" else evader_violations
+        ),
         "shield": metrics.summary(),
     }
