@@ -74,3 +74,53 @@ class ShieldMetrics:
             "longest_stall_run": self.longest_stall_run,
             "deadlock": self.longest_stall_run >= DEADLOCK_STEPS,
         }
+
+
+def summarize_shield(logs: list[dict]) -> dict:
+    """Aggregate `run_shielded_duel` logs into the sweep-level gate numbers.
+
+    Step-level rates are pooled over all steps (weighted by episode length),
+    matching how G1 counts "violation steps over N episodes". Per-episode
+    minima are kept as a list so the gate can report their distribution.
+    """
+    n_episodes = len(logs)
+    n_steps = sum(log["shield"]["n_steps"] for log in logs)
+    tiers = {t: 0 for t in TIERS}
+    interventions = 0.0
+    infeasible = 0.0
+    backup = 0.0
+    for log in logs:
+        sh = log["shield"]
+        for t in TIERS:
+            tiers[t] += sh["tier_histogram"].get(t, 0)
+        interventions += sh["intervention_rate"] * sh["n_steps"]
+        infeasible += sh["infeasibility_rate"] * sh["n_steps"]
+        backup += sh["backup_rate"] * sh["n_steps"]
+    min_h = [log["shield"]["min_h_floor"] for log in logs]
+    deadlocks = sum(bool(log["shield"]["deadlock"]) for log in logs)
+    with_violation = sum(log["violations"] > 0 for log in logs)
+    return {
+        "n_episodes": n_episodes,
+        "n_steps": n_steps,
+        "violation_steps": sum(log["violations"] for log in logs),
+        "episodes_with_violation": with_violation,
+        "violation_episode_rate": with_violation / n_episodes if n_episodes else 0.0,
+        "intervention_rate": interventions / n_steps if n_steps else 0.0,
+        "infeasibility_rate": infeasible / n_steps if n_steps else 0.0,
+        "backup_rate": backup / n_steps if n_steps else 0.0,
+        "tier_histogram": tiers,
+        "min_h_per_episode": min_h,
+        "min_h_floor": min(min_h) if min_h else None,
+        "deadlock_episodes": deadlocks,
+        "deadlock_episode_rate": deadlocks / n_episodes if n_episodes else 0.0,
+        "timeout_rate": (
+            sum(log["outcome"] == "timeout" for log in logs) / n_episodes
+            if n_episodes
+            else 0.0
+        ),
+        "capture_rate": (
+            sum(log["outcome"] == "capture" for log in logs) / n_episodes
+            if n_episodes
+            else 0.0
+        ),
+    }

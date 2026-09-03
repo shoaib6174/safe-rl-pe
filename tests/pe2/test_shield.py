@@ -5,7 +5,7 @@ import pytest
 
 from pe2.config import EnvConfig
 from pe2.env import OUTCOME_CAPTURE, PursuitEvasionEnv
-from pe2.metrics import DEADLOCK_STEPS, ShieldMetrics
+from pe2.metrics import DEADLOCK_STEPS, ShieldMetrics, summarize_shield
 from pe2.scripted import GreedyEvader, GreedyPursuer, run_shielded_duel
 from pe2.shield import (
     CBFShield,
@@ -433,3 +433,92 @@ class TestRunShieldedDuel:
                 seed=1,
                 shielded_role="both",
             )
+
+
+def _log(outcome, steps, violations, shield):
+    return {
+        "outcome": outcome,
+        "steps": steps,
+        "violations": violations,
+        "shield": shield,
+    }
+
+
+class TestSummarizeShield:
+    def test_pooled_rates_hand_computed(self):
+        # Episode A: 100 steps, 10 interventions, 4 infeasible (3 relaxed + 1
+        # backup), min_h 0.2, no stall, 0 violations, capture.
+        # Episode B: 300 steps, 30 interventions, 0 infeasible, min_h -0.05,
+        # deadlock, 2 violations, timeout.
+        # Pooled: steps 400, intervention 40/400 = 0.1, infeasible 4/400 = 0.01,
+        # backup 1/400, tiers exact 396 / relaxed 3 / backup 1,
+        # violation steps 2, episodes with violation 1/2, deadlock 1/2,
+        # timeout 1/2, capture 1/2, floor -0.05.
+        a = _log(
+            "capture",
+            100,
+            0,
+            {
+                "n_steps": 100,
+                "intervention_rate": 0.10,
+                "infeasibility_rate": 0.04,
+                "backup_rate": 0.01,
+                "tier_histogram": {"exact": 96, "relaxed": 3, "backup": 1},
+                "min_h_floor": 0.2,
+                "deadlock": False,
+            },
+        )
+        b = _log(
+            "timeout",
+            300,
+            2,
+            {
+                "n_steps": 300,
+                "intervention_rate": 0.10,
+                "infeasibility_rate": 0.0,
+                "backup_rate": 0.0,
+                "tier_histogram": {"exact": 300, "relaxed": 0, "backup": 0},
+                "min_h_floor": -0.05,
+                "deadlock": True,
+            },
+        )
+        s = summarize_shield([a, b])
+        assert s["n_episodes"] == 2
+        assert s["n_steps"] == 400
+        assert s["violation_steps"] == 2
+        assert s["episodes_with_violation"] == 1
+        assert s["violation_episode_rate"] == pytest.approx(0.5)
+        assert s["intervention_rate"] == pytest.approx(0.1)
+        assert s["infeasibility_rate"] == pytest.approx(0.01)
+        assert s["backup_rate"] == pytest.approx(1 / 400)
+        assert s["tier_histogram"] == {"exact": 396, "relaxed": 3, "backup": 1}
+        assert s["min_h_per_episode"] == [0.2, -0.05]
+        assert s["min_h_floor"] == pytest.approx(-0.05)
+        assert s["deadlock_episodes"] == 1
+        assert s["deadlock_episode_rate"] == pytest.approx(0.5)
+        assert s["timeout_rate"] == pytest.approx(0.5)
+        assert s["capture_rate"] == pytest.approx(0.5)
+
+    def test_empty(self):
+        s = summarize_shield([])
+        assert s["n_episodes"] == 0
+        assert s["n_steps"] == 0
+        assert s["min_h_per_episode"] == []
+        assert s["min_h_floor"] is None
+        assert s["tier_histogram"] == {"exact": 0, "relaxed": 0, "backup": 0}
+
+    def test_from_real_shielded_duels(self):
+        cfg = EnvConfig(n_obstacles=0)
+        env = PursuitEvasionEnv(cfg)
+        logs = [
+            run_shielded_duel(
+                env, GreedyPursuer(), GreedyEvader(), CBFShield(cfg), seed=760010 + i
+            )
+            for i in range(3)
+        ]
+        s = summarize_shield(logs)
+        assert s["n_episodes"] == 3
+        assert s["n_steps"] == sum(log["steps"] for log in logs)
+        assert s["violation_steps"] == 0
+        assert len(s["min_h_per_episode"]) == 3
+        assert sum(s["tier_histogram"].values()) == s["n_steps"]
