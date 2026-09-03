@@ -5,7 +5,7 @@ import pytest
 
 from pe2.config import EnvConfig
 from pe2.env import OUTCOME_CAPTURE, PursuitEvasionEnv
-from pe2.metrics import ShieldMetrics
+from pe2.metrics import DEADLOCK_STEPS, ShieldMetrics
 from pe2.scripted import GreedyEvader, GreedyPursuer
 from pe2.shield import (
     CBFShield,
@@ -273,18 +273,21 @@ class TestShieldedEnvIntegration:
         assert info["outcome"] == OUTCOME_CAPTURE
 
 
+def _info(method="exact", intervention=False, min_h=1.0, stalled=False):
+    return {
+        "method": method,
+        "intervention": intervention,
+        "min_h": min_h,
+        "stalled": stalled,
+    }
+
+
 class TestShieldMetrics:
     def test_rates_hand_computed(self):
         m = ShieldMetrics()
-        m.record(
-            {"intervention": True, "method": "exact", "min_h": 0.5}, violation=False
-        )
-        m.record(
-            {"intervention": False, "method": "exact", "min_h": 0.3}, violation=True
-        )
-        m.record(
-            {"intervention": True, "method": "backup", "min_h": 0.1}, violation=False
-        )
+        m.record(_info(method="exact", intervention=True, min_h=0.5), violation=False)
+        m.record(_info(method="exact", intervention=False, min_h=0.3), violation=True)
+        m.record(_info(method="backup", intervention=True, min_h=0.1), violation=False)
         s = m.summary()
         assert s["n_steps"] == 3
         assert s["violation_rate"] == pytest.approx(1 / 3)
@@ -298,3 +301,41 @@ class TestShieldMetrics:
         assert s["n_steps"] == 0
         assert s["violation_rate"] == 0.0
         assert s["min_h_floor"] is None
+        assert s["infeasibility_rate"] == 0.0
+        assert s["tier_histogram"] == {"exact": 0, "relaxed": 0, "backup": 0}
+        assert s["longest_stall_run"] == 0
+        assert s["deadlock"] is False
+
+    def test_infeasibility_and_tier_histogram(self):
+        # 4 steps: exact, relaxed, backup, exact -> infeasible = 2/4,
+        # backup = 1/4, histogram exact 2 / relaxed 1 / backup 1.
+        m = ShieldMetrics()
+        for method in ("exact", "relaxed", "backup", "exact"):
+            m.record(_info(method=method), violation=False)
+        s = m.summary()
+        assert s["infeasibility_rate"] == pytest.approx(0.5)
+        assert s["backup_rate"] == pytest.approx(0.25)
+        assert s["tier_histogram"] == {"exact": 2, "relaxed": 1, "backup": 1}
+
+    def test_stall_runs_and_deadlock_threshold(self):
+        # Pattern: 3 stalled, 1 free, 5 stalled -> longest run 5, stall rate 8/9,
+        # deadlock False (5 < 40).
+        m = ShieldMetrics()
+        for stalled in [True, True, True, False, True, True, True, True, True]:
+            m.record(_info(stalled=stalled), violation=False)
+        s = m.summary()
+        assert s["stall_step_rate"] == pytest.approx(8 / 9)
+        assert s["longest_stall_run"] == 5
+        assert s["deadlock"] is False
+
+    def test_deadlock_when_stall_run_reaches_threshold(self):
+        # Exactly DEADLOCK_STEPS consecutive stalled steps -> deadlock True.
+        m = ShieldMetrics()
+        for _ in range(DEADLOCK_STEPS):
+            m.record(_info(stalled=True), violation=False)
+        assert m.summary()["deadlock"] is True
+        # One fewer, broken by a free step in the middle -> False.
+        m2 = ShieldMetrics()
+        for i in range(DEADLOCK_STEPS):
+            m2.record(_info(stalled=(i != DEADLOCK_STEPS // 2)), violation=False)
+        assert m2.summary()["deadlock"] is False
