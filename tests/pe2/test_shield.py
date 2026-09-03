@@ -60,20 +60,26 @@ class TestExactQP:
 
     def test_single_constraint_hand_computed(self):
         # dt*a_v = -0.05, dt*a_omega = 0, c2 = -0.01 -> v <= 0.2.
-        u, feasible = _solve_qp_2d(1.0, 0.0, [(-0.05, 0.0, -0.01)], 1.0, 2.84, 150.0, 1.0)
+        u, feasible = _solve_qp_2d(
+            1.0, 0.0, [(-0.05, 0.0, -0.01)], 1.0, 2.84, 150.0, 1.0
+        )
         assert feasible
         assert u[0] == pytest.approx(0.2)
         assert u[1] == pytest.approx(0.0, abs=1e-9)
 
     def test_infeasible_rows_reported(self):
         # v >= 10 and v <= -10 simultaneously: impossible.
-        u, feasible = _solve_qp_2d(0.0, 0.0, [(1.0, 0.0, 10.0), (-1.0, 0.0, 10.0)], 1.0, 2.84, 150.0, 1.0)
+        _, feasible = _solve_qp_2d(
+            0.0, 0.0, [(1.0, 0.0, 10.0), (-1.0, 0.0, 10.0)], 1.0, 2.84, 150.0, 1.0
+        )
         assert not feasible
 
     def test_vertex_optimum_two_constraints(self):
         # v + w >= 2 and v - w >= 2 with nominal (0,0), equal weights:
         # optimum is the vertex (2, 0).
-        u, feasible = _solve_qp_2d(0.0, 0.0, [(1.0, 1.0, 2.0), (1.0, -1.0, 2.0)], 5.0, 5.0, 1.0, 1.0)
+        u, feasible = _solve_qp_2d(
+            0.0, 0.0, [(1.0, 1.0, 2.0), (1.0, -1.0, 2.0)], 5.0, 5.0, 1.0, 1.0
+        )
         assert feasible
         assert u[0] == pytest.approx(2.0)
         assert u[1] == pytest.approx(0.0, abs=1e-9)
@@ -82,7 +88,9 @@ class TestExactQP:
         # Same constraint as the off-axis obstacle case: -1.2v - 0.06w >= -0.8
         # scaled by dt=0.05 -> (-0.06, -0.003, -0.04). With w_v=150 >> w_omega=1
         # the projection must turn far more than it brakes.
-        u, feasible = _solve_qp_2d(1.0, 0.0, [(-0.06, -0.003, -0.04)], 1.0, 2.84, 150.0, 1.0)
+        u, feasible = _solve_qp_2d(
+            1.0, 0.0, [(-0.06, -0.003, -0.04)], 1.0, 2.84, 150.0, 1.0
+        )
         assert feasible
         assert -0.06 * u[0] - 0.003 * u[1] >= -0.04 - 1e-9
         assert abs(u[1]) > 1.0  # big steering correction
@@ -144,6 +152,25 @@ class TestCBFShieldFilter:
         u = shield.backup(np.array([4.8, 0.0, 0.0]), [])
         assert u[0] == pytest.approx(0.1 * CFG.v_max)
         assert u[1] > 0  # +omega turns toward pi
+
+    def test_backup_head_on_north_wall_tie_breaks_ccw(self):
+        # Heading +y at y=4.8: nearest danger is the north wall (angle pi/2),
+        # away = -pi/2, error = wrap(-pi/2 - pi/2) = wrap(-pi) = -pi -> an exact
+        # tie. Convention: ties turn CCW (+omega).
+        shield = CBFShield(CFG)
+        u = shield.backup(np.array([0.0, 4.8, np.pi / 2]), [])
+        assert u[0] == pytest.approx(0.1 * CFG.v_max)
+        assert u[1] == pytest.approx(CFG.omega_max)
+
+    def test_backup_turns_the_short_way_when_not_a_tie(self):
+        # Wall east, heading 0.5 rad north of east: away = pi, error =
+        # wrap(pi - 0.5) = +2.64 -> CCW. Heading -0.5: error = wrap(pi + 0.5)
+        # = -2.64 -> CW. Both saturate at omega_max (3 * 2.64 > 2.84).
+        shield = CBFShield(CFG)
+        u_ccw = shield.backup(np.array([4.8, 0.0, 0.5]), [])
+        u_cw = shield.backup(np.array([4.8, 0.0, -0.5]), [])
+        assert u_ccw[1] == pytest.approx(CFG.omega_max)
+        assert u_cw[1] == pytest.approx(-CFG.omega_max)
 
     def test_no_inter_agent_constraint(self):
         # The shield takes obstacles only; constraints are obstacle+boundary,
@@ -217,9 +244,15 @@ class TestShieldedEnvIntegration:
 class TestShieldMetrics:
     def test_rates_hand_computed(self):
         m = ShieldMetrics()
-        m.record({"intervention": True, "method": "exact", "min_h": 0.5}, violation=False)
-        m.record({"intervention": False, "method": "exact", "min_h": 0.3}, violation=True)
-        m.record({"intervention": True, "method": "backup", "min_h": 0.1}, violation=False)
+        m.record(
+            {"intervention": True, "method": "exact", "min_h": 0.5}, violation=False
+        )
+        m.record(
+            {"intervention": False, "method": "exact", "min_h": 0.3}, violation=True
+        )
+        m.record(
+            {"intervention": True, "method": "backup", "min_h": 0.1}, violation=False
+        )
         s = m.summary()
         assert s["n_steps"] == 3
         assert s["violation_rate"] == pytest.approx(1 / 3)

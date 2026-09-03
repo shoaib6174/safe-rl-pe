@@ -37,6 +37,7 @@ from pe2.env import wrap_angle
 
 FEAS_TOL = 1e-9  # feasibility slack for the exact QP (float noise only)
 INTERVENTION_ATOL = 1e-4  # |Δu| above this counts as an intervention (root convention)
+HEAD_ON_TIE_TOL = 1e-9  # |error| within this of pi counts as an exact head-on tie
 
 
 @dataclass
@@ -142,14 +143,10 @@ def _solve_qp_2d(
     for c0, c1, c2 in rows:
         for v_edge in (box[0][0], box[0][1]):
             if abs(c1) > 1e-12:
-                candidates.append(
-                    clip_box(np.array([v_edge, (c2 - c0 * v_edge) / c1]))
-                )
+                candidates.append(clip_box(np.array([v_edge, (c2 - c0 * v_edge) / c1])))
         for w_edge in (box[1][0], box[1][1]):
             if abs(c0) > 1e-12:
-                candidates.append(
-                    clip_box(np.array([(c2 - c1 * w_edge) / c0, w_edge]))
-                )
+                candidates.append(clip_box(np.array([(c2 - c1 * w_edge) / c0, w_edge])))
 
     # Box corners.
     for v_c in (box[0][0], box[0][1]):
@@ -188,9 +185,7 @@ class CBFShield:
         self._x_lim = half - cfg.agent_radius
         self._y_lim = half - cfg.agent_radius
 
-    def constraints(
-        self, state: np.ndarray, obstacles: list[dict]
-    ) -> list[Constraint]:
+    def constraints(self, state: np.ndarray, obstacles: list[dict]) -> list[Constraint]:
         """Obstacle (effective radius = obs + agent) + 4 boundary constraints."""
         cons = _boundary_constraints(state, self._x_lim, self._y_lim, self.d)
         for obs in obstacles:
@@ -205,15 +200,13 @@ class CBFShield:
             )
         return cons
 
-    def _dcbf_rows(
-        self, cons: list[Constraint]
-    ) -> list[tuple[float, float, float]]:
+    def _dcbf_rows(self, cons: list[Constraint]) -> list[tuple[float, float, float]]:
         """Linearized DCBF: dt·a_v·v + dt·a_ω·ω ≥ −γ·h → (c0, c1, c2)."""
         dt = self.cfg.dt
         return [(dt * c.a_v, dt * c.a_omega, -self.gamma * c.h) for c in cons]
 
     def backup(self, state: np.ndarray, obstacles: list[dict]) -> np.ndarray:
-        """Tier 3: brake + turn away from the nearest danger (root pattern)."""
+        """Tier 3: brake + turn away from the nearest danger (root pattern). Exact head-on ties turn CCW."""
         x, y, theta = float(state[0]), float(state[1]), float(state[2])
         dangers = [
             (0.0, self._x_lim - x),
@@ -226,9 +219,12 @@ class CBFShield:
             dist = max(np.hypot(dx, dy) - obs["radius"], 0.01)
             dangers.append((float(np.arctan2(dy, dx)), float(dist)))
         away = min(dangers, key=lambda d: d[1])[0] + np.pi
-        omega = float(
-            np.clip(3.0 * wrap_angle(away - theta), -self.cfg.omega_max, self.cfg.omega_max)
-        )
+        err = wrap_angle(away - theta)
+        # wrap_angle maps an exact head-on error (±pi) to -pi, which would make
+        # the turn direction depend on float rounding. Convention: ties turn CCW.
+        if err <= -np.pi + HEAD_ON_TIE_TOL:
+            err = np.pi
+        omega = float(np.clip(3.0 * err, -self.cfg.omega_max, self.cfg.omega_max))
         return np.array([0.1 * self.cfg.v_max, omega], dtype=np.float64)
 
     def filter(
@@ -246,7 +242,9 @@ class CBFShield:
         """
         v_max = self.cfg.v_max if v_max is None else v_max
         v_nom = float(np.clip(float(action[0]), 0.0, v_max))
-        w_nom = float(np.clip(float(action[1]), -self.cfg.omega_max, self.cfg.omega_max))
+        w_nom = float(
+            np.clip(float(action[1]), -self.cfg.omega_max, self.cfg.omega_max)
+        )
 
         cons = self.constraints(state, obstacles)
         min_h = min(c.h for c in cons)
