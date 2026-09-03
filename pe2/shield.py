@@ -322,10 +322,14 @@ class CBFShield:
             u = self.backup(state, obstacles, v_max)
             method = "backup"
 
-        # `feasible` here is the single source of truth for whether the exact
-        # program solved: it is what goes into info["feasible"], and
-        # ShieldMetrics.record reads that key rather than re-deriving it from
-        # the method string, so a new tier cannot disagree with itself.
+        # info["feasible"] is derived from the tier, not from the local
+        # `feasible` above: only the exact tier means the full constraint set
+        # was satisfied, whereas the local merely records whether the most
+        # recent _solve() call returned a point (true again after a
+        # successful relaxed solve, when the reported feasibility must stay
+        # False). ShieldMetrics.record reads info["feasible"] rather than
+        # re-deriving it from the method string, so a new tier cannot
+        # disagree with itself.
         return u, self._info(method, method == "exact", u, v_nom, w_nom, cons, v_max)
 
     def _clip_nominal(

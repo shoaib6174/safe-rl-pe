@@ -582,6 +582,20 @@ class TestShieldMetrics:
         with pytest.raises(ValueError, match="TIERS"):
             m.record(_info(method="feasible-with-margin"), violation=False)
 
+    def test_rejected_record_leaves_the_accumulator_unchanged(self):
+        # record() used to increment n_steps/n_violations/n_interventions
+        # before checking the tier, so a caller that caught the ValueError and
+        # carried on was left with a histogram that no longer summed to
+        # n_steps. Validate first: a rejected record must be a total no-op.
+        # Record one real step first so the accumulator is non-empty and any
+        # stray increment would show up in the comparison.
+        m = ShieldMetrics()
+        m.record(_info(method="exact", intervention=True), violation=True)
+        before = m.summary()
+        with pytest.raises(ValueError, match="TIERS"):
+            m.record(_info(method="feasible-with-margin"), violation=True)
+        assert m.summary() == before
+
     def test_tier_histogram_sums_to_step_count_across_real_tiers(self):
         # Three real filter calls, one per QP tier, fed through the
         # accumulator: the histogram must account for every step.
@@ -738,6 +752,17 @@ class TestShieldMetrics:
             "_current_backup_run",
         ):
             assert name not in repr(a)
+
+    def test_private_run_counters_are_not_constructor_parameters(self):
+        # Before init=False, ShieldMetrics(_current_stall_run=7).summary()
+        # reported "stalled_at_end": True on an accumulator that had recorded
+        # nothing. The counters must be unreachable from the constructor.
+        with pytest.raises(TypeError, match="_current_stall_run"):
+            ShieldMetrics(_current_stall_run=7)
+        with pytest.raises(TypeError, match="_current_immobile_run"):
+            ShieldMetrics(_current_immobile_run=7)
+        with pytest.raises(TypeError, match="_current_backup_run"):
+            ShieldMetrics(_current_backup_run=7)
 
     def test_stalled_at_end_distinguishes_a_standoff_from_a_recovery(self):
         # A genuine force-equilibrium never recovers; a slow turn away does.
@@ -1275,6 +1300,36 @@ class TestSummarizeShield:
             shielded_role="evader",
         )
         with pytest.raises(ValueError, match="one shielded role"):
+            summarize_shield([a, b])
+
+    def test_refuses_a_mix_of_a_shielded_arm_and_a_noop_control_arm(self):
+        # Same shielded_role on both logs, so the role guard above does not
+        # fire -- but one log is a real shielded sweep (all 'exact' tier) and
+        # the other is the NoOpShield control (all 'none' tier). Pooling them
+        # would produce a tier histogram like {'exact': 10, 'none': 10} with
+        # no complaint: these are the two arms of a comparison and must be
+        # summarized separately.
+        a = _log(
+            "capture",
+            10,
+            0,
+            _shield(
+                n_steps=10,
+                min_h_floor=1.0,
+                tier_histogram={"exact": 10, "relaxed": 0, "backup": 0, "none": 0},
+            ),
+        )
+        b = _log(
+            "capture",
+            10,
+            0,
+            _shield(
+                n_steps=10,
+                min_h_floor=1.0,
+                tier_histogram={"exact": 0, "relaxed": 0, "backup": 0, "none": 10},
+            ),
+        )
+        with pytest.raises(ValueError, match="NoOpShield"):
             summarize_shield([a, b])
 
     def test_carries_the_shielded_role(self):

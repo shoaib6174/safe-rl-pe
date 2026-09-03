@@ -83,10 +83,12 @@ class ShieldMetrics:
     # In-flight run counters: reset by the next non-matching step, so they are
     # not part of the reported state. repr/compare off so a gate script that
     # serializes or compares the dataclass instead of calling summary() cannot
-    # pick them up.
-    _current_stall_run: int = field(default=0, repr=False, compare=False)
-    _current_immobile_run: int = field(default=0, repr=False, compare=False)
-    _current_backup_run: int = field(default=0, repr=False, compare=False)
+    # pick them up; init off so they cannot be seeded through the constructor
+    # either (ShieldMetrics(_current_stall_run=7) would otherwise report a
+    # non-empty accumulator as already stalled).
+    _current_stall_run: int = field(default=0, repr=False, compare=False, init=False)
+    _current_immobile_run: int = field(default=0, repr=False, compare=False, init=False)
+    _current_backup_run: int = field(default=0, repr=False, compare=False, init=False)
     method_counts: dict[str, int] = field(default_factory=dict)
     min_h_floor: float = math.inf  # worst mixed-unit QP margin seen anywhere
     min_h_sum: float = 0.0  # for the mean margin
@@ -96,15 +98,15 @@ class ShieldMetrics:
 
     def record(self, shield_info: dict, violation: bool) -> None:
         """One step: shield_info from CBFShield.filter, violation from env info."""
-        self.n_steps += 1
-        self.n_violations += int(violation)
-        self.n_interventions += int(shield_info["intervention"])
         method = shield_info["method"]
         if method not in TIERS:
             raise ValueError(
                 f"unknown shield method {method!r}; add it to pe2.metrics.TIERS "
                 "(and decide how it counts toward feasibility) before recording it"
             )
+        self.n_steps += 1
+        self.n_violations += int(violation)
+        self.n_interventions += int(shield_info["intervention"])
         self.method_counts[method] = self.method_counts.get(method, 0) + 1
         # The shield's own `feasible` flag is the single source of truth; do
         # NOT re-derive it from the method string here, or a new tier can be
@@ -213,14 +215,17 @@ def summarize_shield(logs: list[dict]) -> dict:
     reported as distances; `min_clearance_per_episode` / `min_clearance_floor`
     are the reportable metres.
 
-    REFUSES (rather than tolerates) two malformed inputs, because both would
-    silently corrupt a gate number:
+    REFUSES (rather than tolerates) three malformed inputs, because all three
+    would silently corrupt a gate number:
     - a log with no `shield` block or no `shielded_role` — i.e. a `run_duel`
       log. Use `run_shielded_duel` with a `pe2.shield.NoOpShield` for the
       unshielded control so its shield block is measured, not invented.
     - a mix of shielded roles. The stall and immobility thresholds are
       fractions of the per-role speed cap (1.0 for a shielded pursuer, 1.2
       for a shielded evader), so the two arms are not poolable.
+    - a mix of a real shielded arm and a NoOpShield control arm. Both are
+      valid `run_shielded_duel` logs of the same role, so nothing above
+      catches this; only a partially-'none' pooled tier histogram does.
     """
     for i, log in enumerate(logs):
         if "shield" not in log:
@@ -255,6 +260,13 @@ def summarize_shield(logs: list[dict]) -> dict:
         interventions += sh["intervention_rate"] * sh["n_steps"]
         infeasible += sh["infeasibility_rate"] * sh["n_steps"]
         backup += sh["backup_rate"] * sh["n_steps"]
+    if 0 < tiers["none"] < n_steps:
+        raise ValueError(
+            f"{tiers['none']}/{n_steps} pooled steps are tier 'none' and the "
+            "rest are not: logs mix a real shielded arm with a NoOpShield "
+            "control arm. The two are the arms of a comparison and must be "
+            "summarized separately, never pooled into one summary."
+        )
     min_h = [log["shield"]["min_h_floor"] for log in logs]
     min_clearance = [log["shield"]["min_clearance_floor"] for log in logs]
     deadlocks = sum(bool(log["shield"]["deadlock"]) for log in logs)
