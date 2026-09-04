@@ -88,7 +88,8 @@ class DenseRewardWrapper(gym.Wrapper):
     reward, since that is what training must optimize, but also reports the
     dense term alone under `info["dense_reward"]` so a non-degeneracy check
     can measure the dense signal in isolation instead of being contaminated
-    by the rare terminal +/-1.
+    by the rare terminal +/-1, and the individual terms under
+    `info["dense_terms"]` because the plateau check is per term.
     """
 
     def __init__(
@@ -141,28 +142,98 @@ class DenseRewardWrapper(gym.Wrapper):
     def step(self, action):
         phi = self._phi() if self.w_pbrs else 0.0
         obs, reward, terminated, truncated, info = self.env.step(action)
-        dense = 0.0
+        terms: dict[str, float] = {}
         visible = self._visible()
         if self.w_vis:
-            dense += self.w_vis * float(visible)
+            terms["vis"] = self.w_vis * float(visible)
         if self.tracker is not None:
-            dense += self.w_search * self.tracker.observe_and_reward(
+            terms["search"] = self.w_search * self.tracker.observe_and_reward(
                 self._own_pose(), self.env.env.obstacles, self.env.env.current_step
             )
         if self.w_evis:
-            dense += self.w_evis * (-1.0 if visible else 1.0)
+            terms["evis"] = self.w_evis * (-1.0 if visible else 1.0)
         if self.w_pbrs:
-            dense += self.w_pbrs * (self.gamma * self._phi() - phi)
+            terms["pbrs"] = self.w_pbrs * (self.gamma * self._phi() - phi)
+        dense = sum(terms.values())
+        # The terms are reported SEPARATELY as well as summed: the T0.2
+        # plateau check is a per-term question (see nondegeneracy_report),
+        # and it cannot be asked of a sum of terms on different scales.
+        info["dense_terms"] = terms
         info["dense_reward"] = dense
         return obs, reward + dense, terminated, truncated, info
 
 
 def signal_nondegeneracy(rewards: list[float]) -> dict:
-    """T0.2 plateau check: a dense signal must vary (std > 0) and be neither
-    always-on nor never-on (0.05 < frac_positive < 0.95) over a rollout."""
+    """Descriptive statistics of one dense term over a rollout.
+
+    `frac_modal` is the fraction of steps carrying the single most common
+    value: the scale-free way to see a flat region in a continuous term,
+    where `std > 0` alone is satisfied by a term that is constant on 96% of
+    steps. The verdicts live in `nondegeneracy_report`.
+    """
     r = np.asarray(rewards, dtype=float)
+    if not r.size:
+        return {"frac_positive": 0.0, "std": 0.0, "mean": 0.0, "frac_modal": 1.0}
+    _, counts = np.unique(r, return_counts=True)
     return {
-        "frac_positive": float((r > 0).mean()) if r.size else 0.0,
-        "std": float(r.std()) if r.size else 0.0,
-        "mean": float(r.mean()) if r.size else 0.0,
+        "frac_positive": float((r > 0).mean()),
+        "std": float(r.std()),
+        "mean": float(r.mean()),
+        "frac_modal": float(counts.max() / r.size),
     }
+
+
+# Which plateau check each dense term is owed. The derisk spec (T0.2) states
+# a DIFFERENT check per term, because the terms are different shapes:
+#
+#   vis, evis  "indicator": the term is on/off (+w / 0, or +w / -w). A flat
+#              region shows up as the term being on, or off, on nearly every
+#              step -> the 0.05-0.95 band on frac_positive.
+#   search,    "continuous": the term takes many values on a bounded range.
+#   pbrs       Staleness is NON-NEGATIVE by construction (mean staleness of
+#              the observed cells, 0 only when nothing is visible), so its
+#              frac_positive is ~1 whatever it does and the band says nothing
+#              about it; the spec's check is that it be "non-constant along a
+#              random trajectory" -> std > 0 AND no single value on >= 95% of
+#              steps. Measured on the shipped P-A configuration over 6211
+#              clone steps: frac_positive 0.969, but ~700 distinct values and
+#              frac_modal 0.49 — a live signal, not a plateau.
+#
+# Applying the band to the SUM (frac_positive 0.971 for that configuration)
+# is not interpretable: the sum mixes a 0.1-scale indicator with a 1e-4-scale
+# continuous term, and its positivity is decided by whichever term is
+# non-negative.
+TERM_KINDS = {
+    "vis": "indicator",
+    "evis": "indicator",
+    "search": "continuous",
+    "pbrs": "continuous",
+}
+BAND = (0.05, 0.95)
+MAX_MODAL_FRACTION = 0.95
+
+
+def nondegeneracy_report(terms: dict[str, list[float]]) -> dict:
+    """T0.2 plateau check, applied PER TERM (see TERM_KINDS).
+
+    `terms` maps a term name to its per-step values over a rollout, as
+    `DenseRewardWrapper` reports them in `info["dense_terms"]`. Returns
+    `{"terms": {name: {...stats, "kind", "passes"}}, "all_pass": bool}`.
+    A term with no declared kind raises rather than being checked by a
+    criterion that may not apply to it.
+    """
+    out = {}
+    for name, values in terms.items():
+        if name not in TERM_KINDS:
+            raise ValueError(
+                f"dense term {name!r} has no declared kind; add it to "
+                "TERM_KINDS so the right plateau check is applied to it"
+            )
+        kind = TERM_KINDS[name]
+        stats = signal_nondegeneracy(values)
+        if kind == "indicator":
+            passes = BAND[0] < stats["frac_positive"] < BAND[1] and stats["std"] > 0.0
+        else:
+            passes = stats["std"] > 0.0 and stats["frac_modal"] < MAX_MODAL_FRACTION
+        out[name] = {**stats, "kind": kind, "passes": bool(passes)}
+    return {"terms": out, "all_pass": all(t["passes"] for t in out.values())}

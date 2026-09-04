@@ -5,7 +5,12 @@ import pytest
 
 from pe2.config import EnvConfig
 from pe2.exploitability import SingleAgentWrapper
-from pe2.rewards import DenseRewardWrapper, SearchStalenessTracker, signal_nondegeneracy
+from pe2.rewards import (
+    DenseRewardWrapper,
+    SearchStalenessTracker,
+    nondegeneracy_report,
+    signal_nondegeneracy,
+)
 from pe2.scripted import GreedyEvader, GreedyPursuer
 
 CFG = EnvConfig()
@@ -201,3 +206,111 @@ class TestDenseRewardWrapper:
         nd = signal_nondegeneracy(dense_rewards)
         assert 0.05 < nd["frac_positive"] < 0.95
         assert nd["std"] > 0.0
+
+
+class TestPerTermNondegeneracy:
+    """The T0.2 plateau check is a PER-TERM question. Asked of the sum it is
+    not interpretable — terms live on different scales (w_vis=0.1 against
+    w_search=1e-4), and the sum of the shipped P-A configuration reads
+    frac_positive = 0.97 purely because the staleness term is non-negative."""
+
+    def test_dense_terms_are_reported_separately_and_sum_to_the_dense_reward(self):
+        cfg = EnvConfig(n_obstacles=0)
+        w = DenseRewardWrapper(
+            SingleAgentWrapper(cfg, "pursuer", GreedyEvader), w_vis=0.1, w_search=1e-4
+        )
+        w.reset(seed=0)
+        _place(w.env, (0.0, 0.0, 0.0), (2.0, 0.0, 0.0))  # evader visible ahead
+        _, _r, _, _, info = w.step(np.array([-1.0, 0.0]))
+        assert set(info["dense_terms"]) == {"vis", "search"}
+        # visible -> 0.1; first step after reset -> every visible cell fully
+        # stale -> 1e-4 * 1.0. Sum is the reported dense term.
+        assert info["dense_terms"]["vis"] == pytest.approx(0.1, abs=1e-9)
+        assert info["dense_terms"]["search"] == pytest.approx(1e-4, abs=1e-12)
+        assert info["dense_reward"] == pytest.approx(
+            sum(info["dense_terms"].values()), abs=1e-12
+        )
+
+    def test_an_always_on_indicator_is_degenerate(self):
+        # 100 steps, the term on at every one: frac_positive 1.0, std 0.
+        # An indicator that never turns off carries no information.
+        rep = nondegeneracy_report({"vis": [0.1] * 100})
+        assert rep["terms"]["vis"]["frac_positive"] == 1.0
+        assert rep["terms"]["vis"]["passes"] is False
+        assert rep["all_pass"] is False
+
+    def test_a_live_indicator_passes(self):
+        # on for 7 of 100 steps -> frac_positive 0.07, inside (0.05, 0.95).
+        rep = nondegeneracy_report({"vis": [0.1] * 7 + [0.0] * 93})
+        assert rep["terms"]["vis"]["frac_positive"] == pytest.approx(0.07)
+        assert rep["terms"]["vis"]["passes"] is True
+        assert rep["all_pass"] is True
+
+    def test_a_varying_non_negative_continuous_term_passes(self):
+        # k/100 for k = 1..100: frac_positive is 1.0 BY CONSTRUCTION (the
+        # staleness term is non-negative), which fails the indicator band —
+        # yet every step carries a different value, so there is a gradient
+        # to learn from. This is the case the band would wrongly reject.
+        vals = [k / 100 for k in range(1, 101)]
+        rep = nondegeneracy_report({"search": vals})
+        assert rep["terms"]["search"]["frac_positive"] == 1.0
+        assert rep["terms"]["search"]["frac_modal"] == pytest.approx(0.01)
+        assert rep["terms"]["search"]["passes"] is True
+
+    def test_a_frozen_continuous_term_is_degenerate(self):
+        # one value on every step: std 0, frac_modal 1.0 — the flat region
+        # the check exists to reject.
+        rep = nondegeneracy_report({"search": [5e-5] * 100})
+        assert rep["terms"]["search"]["std"] == 0.0
+        assert rep["terms"]["search"]["frac_modal"] == 1.0
+        assert rep["terms"]["search"]["passes"] is False
+
+    def test_a_near_frozen_continuous_term_is_degenerate(self):
+        # 96 steps on one value, 4 elsewhere: std > 0, so std alone would
+        # pass it; frac_modal 0.96 >= 0.95 rejects it.
+        vals = [5e-5] * 96 + [1e-5, 2e-5, 3e-5, 4e-5]
+        rep = nondegeneracy_report({"search": vals})
+        assert rep["terms"]["search"]["std"] > 0.0
+        assert rep["terms"]["search"]["frac_modal"] == pytest.approx(0.96)
+        assert rep["terms"]["search"]["passes"] is False
+
+    def test_an_unknown_term_name_is_refused(self):
+        # A new term must declare which check applies to it; silently
+        # defaulting would apply the wrong criterion to it.
+        with pytest.raises(ValueError, match="kind"):
+            nondegeneracy_report({"mystery": [1.0, 2.0]})
+
+    def test_the_shipped_p_a_configuration_on_a_real_rollout(self):
+        # The gate applied to what actually trains (w_vis=0.1, w_search=1e-4).
+        # Measured on the gated clone over 6211 steps: the SUM reads
+        # frac_positive 0.971, outside the band, entirely because staleness
+        # is non-negative; per term, vis is on 7% of steps and staleness
+        # takes ~700 distinct values. Rolled here with the scripted teacher
+        # so the test needs no saved model.
+        from pe2.scripted import FovLimitedPursuer
+
+        cfg = EnvConfig()
+        w = DenseRewardWrapper(
+            SingleAgentWrapper(cfg, "pursuer", GreedyEvader), w_vis=0.1, w_search=1e-4
+        )
+        terms: dict[str, list[float]] = {}
+        for ep in range(2):
+            _obs, _ = w.reset(seed=790500 + ep)
+            teacher = FovLimitedPursuer()
+            teacher.reset()
+            while True:
+                v, om = teacher.act(w.env._last_joint_obs["pursuer"], w.env.env)
+                a = np.array(
+                    [2.0 * v / cfg.v_max - 1.0, om / cfg.omega_max], dtype=np.float32
+                )
+                _obs, _r, term, trunc, info = w.step(a)
+                for k, val in info["dense_terms"].items():
+                    terms.setdefault(k, []).append(val)
+                if term or trunc:
+                    break
+        rep = nondegeneracy_report(terms)
+        assert set(rep["terms"]) == {"vis", "search"}
+        assert rep["all_pass"] is True, rep
+        # not vacuous: the sum would fail the indicator band it is not owed.
+        summed = [sum(v) for v in zip(*terms.values(), strict=True)]
+        assert signal_nondegeneracy(summed)["frac_positive"] > 0.95

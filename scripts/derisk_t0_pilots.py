@@ -41,11 +41,13 @@ from pe2.derisk import (
     TrainingCaptureCounter,
     control_collapsed,
     pilot_passes,
+    seed_torch,
     start_is_adequate,
 )
 from pe2.eval import win_count
 from pe2.exploitability import (
     CheckpointEvalProbe,
+    SingleAgentWrapper,
     collect_demonstrations,
     evaluate_sb3_policy,
     finetune_br,
@@ -53,7 +55,7 @@ from pe2.exploitability import (
     finetune_ppo,
     train_bc_ppo,
 )
-from pe2.rewards import DenseRewardWrapper
+from pe2.rewards import DenseRewardWrapper, nondegeneracy_report
 from pe2.scripted import FovLimitedPursuer, GreedyEvader
 
 OUT = pathlib.Path("results/derisk")
@@ -73,6 +75,65 @@ OFF_POLICY_SEED = 7
 SEEDS = {"PA": OFF_POLICY_SEED, "PB": OFF_POLICY_SEED, "PC": 9, "CTRL": OFF_POLICY_SEED}
 W_VIS, W_SEARCH, BETA = 0.1, 1e-4, 1.0
 KILL_POSITIVES_PER_1M = 50
+# T0.2 plateau gate: rollout stream (790000+, the audit's family) offset off
+# the audit's own episodes so the two diagnostics do not share episodes.
+NONDEG_SEED0 = 790500
+NONDEG_MIN_STEPS = 6000
+
+
+def nondegeneracy_gate(cfg, device) -> dict:
+    """T0.2 plateau check on the EXACT dense configuration P-A trains with.
+
+    The spec rejects a dense reward with a flat region BEFORE use, so this
+    runs before P-A does and its result is written next to the pilot
+    results — the record then shows the gate was applied to what actually
+    trains, not to one term in a test. Rolled with the gated clone, which
+    is the policy the arm starts from, in the stochastic training regime.
+    """
+    from stable_baselines3 import SAC  # lazy: optional dependency
+
+    seed_torch(NONDEG_SEED0)
+    model = SAC.load(CLONE, device=device)
+    w = DenseRewardWrapper(
+        SingleAgentWrapper(cfg, "pursuer", GreedyEvader),
+        w_vis=W_VIS,
+        w_search=W_SEARCH,
+    )
+    terms: dict[str, list[float]] = {}
+    steps = ep = 0
+    while steps < NONDEG_MIN_STEPS:
+        obs, _ = w.reset(seed=NONDEG_SEED0 + ep)
+        ep += 1
+        while True:
+            action, _ = model.predict(obs, deterministic=False)
+            obs, _r, terminated, truncated, info = w.step(action)
+            steps += 1
+            for name, value in info["dense_terms"].items():
+                terms.setdefault(name, []).append(value)
+            if terminated or truncated:
+                break
+    report = nondegeneracy_report(terms)
+    report |= {
+        "config": {"w_vis": W_VIS, "w_search": W_SEARCH},
+        "rollout": {
+            "policy": str(CLONE),
+            "deterministic": False,
+            "steps": steps,
+            "episodes": ep,
+            "seed0": NONDEG_SEED0,
+            "torch_seed": NONDEG_SEED0,
+        },
+    }
+    with open(OUT / "t0_nondegeneracy.json", "w") as f:
+        json.dump(report, f, indent=2)
+    for name, t in report["terms"].items():
+        print(
+            f"[nondeg] {name:7s} kind={t['kind']:10s} "
+            f"frac_positive={t['frac_positive']:.3f} frac_modal={t['frac_modal']:.3f} "
+            f"std={t['std']:.3g} passes={t['passes']}",
+            flush=True,
+        )
+    return report
 
 
 def probe(cfg, label, every, eval_n):
@@ -351,6 +412,17 @@ def main() -> None:
     if not CLONE.exists():
         raise SystemExit(f"gated clone missing: {CLONE}")
     cfg = EnvConfig()
+
+    if "PA" in args.arms:
+        # A dense reward with a flat region is rejected BEFORE use (T0.2).
+        gate = nondegeneracy_gate(cfg, args.device)
+        if not gate["all_pass"]:
+            raise SystemExit(
+                "T0.2 plateau gate FAILED on the shipped dense configuration "
+                f"(see {OUT}/t0_nondegeneracy.json). That is a finding about "
+                "the reward, not a threshold to relax: fix the term or drop "
+                "P-A, do not widen the band."
+            )
 
     results = {}
     for arm in args.arms:
