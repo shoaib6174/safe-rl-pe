@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from pe2.config import EnvConfig
-from pe2.derisk import mc_returns, signal_audit
+from pe2.derisk import CLONE_CI_LO, mc_returns, pilot_passes, signal_audit
 from pe2.scripted import GreedyEvader
 
 CFG = EnvConfig()
@@ -96,3 +96,22 @@ class TestSignalAudit:
         assert rep["captures"] == 0
         assert rep["positives"] == rep["n_episodes"]
         assert rep["positives_per_1M"] > 0.0
+
+
+class TestPilotPassRule:
+    def test_pass_requires_every_probe_from_100k(self):
+        rows = [
+            {"steps": 50_000, "win_rate": 0.05},  # before the window: ignored
+            {"steps": 100_000, "win_rate": 0.150},
+            {"steps": 150_000, "win_rate": 0.140},
+            {"steps": 200_000, "win_rate": 0.137},  # equal to the bound passes
+        ]
+        assert pilot_passes(rows) is True
+        rows[2]["win_rate"] = 0.136
+        assert pilot_passes(rows) is False
+
+    def test_no_probe_in_window_fails(self):
+        assert pilot_passes([{"steps": 50_000, "win_rate": 0.9}]) is False
+
+    def test_bound_is_the_gated_clone_ci_lo(self):
+        assert CLONE_CI_LO == 0.137
