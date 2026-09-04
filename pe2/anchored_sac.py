@@ -316,32 +316,66 @@ class AnchorKLProbe:
         self.callback = _CB()
 
 
+# Anchor divergence above which the actor has demonstrably LEFT the clone.
+#
+# DERIVED, NOT INVENTED. Under an identical protocol (30 gradient steps from
+# the gated clone, seed 3) the UNANCHORED arm reached anchor KL 0.104509
+# while the anchored arm at a large weight (beta=1e3) held 0.000004 — a
+# ~26,000x separation, so the boundary between "moved" and "pinned" is
+# nowhere near delicate. 1e-3 sits 250x above the pinned measurement and
+# 105x below the moved one (the log-scale midpoint of the pair is 6.5e-4),
+# so it is wrong only if a real arm lands inside a two-decade gap in which
+# nothing has ever been observed. Pinned by
+# `test_the_threshold_sits_two_decades_from_both_measured_regimes` and
+# recorded as the A2 threshold in docs/worklogs/2026-09-04_S121.md.
+ANCHOR_KL_MOVED = 1e-3
+
+
 def anchor_kl_grew(rows: list[dict]) -> tuple[bool | None, str]:
-    """Did the anchored arm's divergence from the clone GROW across probes?
+    """Did the anchored arm's actor actually LEAVE the clone?
 
     Returns `(verdict, reason)` in the shape `pe2.derisk.control_collapsed`
-    uses. A pass for the anchored arm means "did not collapse"; without
-    growth the arm has PRESERVED the clone rather than stopped drift, and
-    its win rate is the clone's, not evidence that anchored RL learns.
-    `None` means the question cannot be answered (fewer than two
-    measurements), never a bare null.
+    uses. A pass for the anchored arm means "did not collapse"; without a
+    real departure from the clone the arm has PRESERVED it rather than
+    stopped drift, and its win rate is the clone's, not evidence that
+    anchored RL learns. `None` means the question cannot be answered, never
+    a bare null.
+
+    The verdict is the FINAL measured divergence against `ANCHOR_KL_MOVED`,
+    NOT a comparison against the first probe. Under the pre-registered
+    schedule (critic_warmup=50k, probe every 50k) the first probe lands at
+    the end of the frozen phase, where the actor still IS the anchor and
+    the divergence is zero BY CONSTRUCTION; against that baseline the test
+    degenerates to "moved at all", which a pinned actor passes — the P-B
+    smoke run reported growth on a final divergence of 4.6e-5, twelve times
+    the 4e-6 a fully pinned arm holds.
     """
-    kls = [(r["steps"], r["anchor_kl"]) for r in rows if r.get("anchor_kl") is not None]
-    if len(kls) < 2:
+    if not rows:
         return None, (
-            "anchor divergence undetermined: fewer than two probes carry a "
-            f"measurement ({len(kls)} of {len(rows)} rows), so there is "
-            "nothing to compare and neither growth nor pinning can be claimed"
+            "anchor divergence undetermined: no probe rows at all, so the "
+            "arm was never measured and neither a departure from the clone "
+            "nor pinning can be claimed"
+        )
+    kls = [(r["steps"], r["anchor_kl"]) for r in rows if r.get("anchor_kl") is not None]
+    if not kls:
+        return None, (
+            f"anchor divergence undetermined: none of the {len(rows)} probe "
+            "rows carries a measurement (no anchor was set, or AnchorKLProbe "
+            "was not wired), so there is nothing to judge and neither a "
+            "departure from the clone nor pinning can be claimed"
         )
     (s0, k0), (s1, k1) = kls[0], kls[-1]
-    if k1 > k0:
+    trail = f"{k0:.4g} @{s0} -> {k1:.4g} @{s1}"
+    if k1 > ANCHOR_KL_MOVED:
         return True, (
-            f"anchor divergence grew {k0:.4g} @{s0} -> {k1:.4g} @{s1}: the "
-            "actor moved off the clone, so the arm's win rate is not merely "
-            "the clone's preserved"
+            f"anchor divergence {trail} ends above the moved threshold "
+            f"{ANCHOR_KL_MOVED:.4g}: the actor left the clone, so the arm's "
+            "win rate is not merely the clone's preserved"
         )
     return False, (
-        f"anchor divergence did NOT grow ({k0:.4g} @{s0} -> {k1:.4g} @{s1}): "
-        "the anchor has preserved the clone rather than stopped drift, so a "
-        "pass here is not evidence that anchored fine-tuning learns"
+        f"anchor divergence {trail} never exceeds the moved threshold "
+        f"{ANCHOR_KL_MOVED:.4g} (measured: ~4e-6 when pinned, ~0.105 "
+        "unanchored): the anchor has preserved the clone rather than stopped "
+        "drift, so a pass here is not evidence that anchored fine-tuning "
+        "learns"
     )

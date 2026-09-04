@@ -349,19 +349,23 @@ class TestAnchorKLProbe:
 
 
 class TestAnchorKlGrew:
-    def test_growth_is_reported_with_words(self):
-        from pe2.anchored_sac import anchor_kl_grew
+    def test_a_moved_actor_is_reported_with_words(self):
+        from pe2.anchored_sac import ANCHOR_KL_MOVED, anchor_kl_grew
 
         rows = [
             {"steps": 50_000, "anchor_kl": 0.0},  # phase A: actor frozen
             {"steps": 100_000, "anchor_kl": 0.4},
             {"steps": 200_000, "anchor_kl": 1.7},
         ]
+        # 1.7 > ANCHOR_KL_MOVED (1e-3) by 3.2 decades, and 1.7 is 16x the
+        # 0.105 the UNANCHORED control reached: this actor has plainly left
+        # the clone.
+        assert 1.7 > ANCHOR_KL_MOVED
         grew, why = anchor_kl_grew(rows)
         assert grew is True
-        assert "0" in why and "1.7" in why
+        assert "1.7" in why
 
-    def test_a_pinned_actor_is_reported_as_not_grown(self):
+    def test_a_pinned_actor_is_reported_as_not_moved(self):
         # The failure this exists for: the anchor holds the actor ON the
         # clone, the arm never collapses, and "pass" would mean "preserved
         # the clone at the price of an anchored fine-tune".
@@ -375,10 +379,58 @@ class TestAnchorKlGrew:
         assert grew is False
         assert "preserved the clone" in why
 
-    def test_fewer_than_two_measurements_is_undetermined(self):
+    def test_growth_off_the_frozen_phase_zero_is_not_enough(self):
+        # THE REGRESSION THIS CLASS EXISTS FOR. Under the pre-registered
+        # schedule (critic_warmup=50k, probe every 50k) the first probe
+        # lands at the END of the frozen phase, where the actor still IS
+        # the anchor and the divergence is zero BY CONSTRUCTION. A
+        # first-vs-last comparison therefore reduces to "moved at all",
+        # which these rows satisfy: 0.0 -> 4.6e-5 is strictly increasing.
+        # 4.6e-5 is the value the P-B smoke run actually reported, and it
+        # is 22x BELOW the 1e-3 moved threshold and 12x ABOVE the 4e-6 a
+        # pinned arm holds -- a pinned policy by any reading.
+        from pe2.anchored_sac import ANCHOR_KL_MOVED, anchor_kl_grew
+
+        rows = [
+            {"steps": 50_000, "anchor_kl": 0.0},
+            {"steps": 100_000, "anchor_kl": 2.0e-5},
+            {"steps": 200_000, "anchor_kl": 4.6e-5},
+        ]
+        assert rows[-1]["anchor_kl"] < ANCHOR_KL_MOVED  # 4.6e-5 < 1e-3
+        grew, why = anchor_kl_grew(rows)
+        assert grew is False
+        assert "preserved the clone" in why
+
+    def test_one_measurement_above_the_threshold_is_enough_to_judge(self):
+        # The criterion is a MAGNITUDE, not a comparison, so a single probe
+        # answers it: there is no second point to need.
         from pe2.anchored_sac import anchor_kl_grew
 
-        for rows in ([], [{"steps": 100_000, "anchor_kl": 0.5}], [{"steps": 1}]):
+        grew, why = anchor_kl_grew([{"steps": 200_000, "anchor_kl": 0.5}])
+        assert grew is True  # 0.5 > 1e-3
+        assert "0.5" in why
+
+    def test_no_measurement_is_undetermined(self):
+        # Two distinct holes, both undetermined rather than a bare null:
+        # no probe rows at all, and rows that carry no measurement (no
+        # anchor set, or AnchorKLProbe not wired).
+        from pe2.anchored_sac import anchor_kl_grew
+
+        for rows in ([], [{"steps": 1}], [{"steps": 1, "anchor_kl": None}]):
             grew, why = anchor_kl_grew(rows)
             assert grew is None
             assert isinstance(why, str) and len(why) > 20
+
+    def test_the_threshold_sits_two_decades_from_both_measured_regimes(self):
+        # The threshold's whole defence is that it is derived from numbers
+        # measured in this project, not invented: under an identical
+        # protocol (30 gradient steps, seed 3) the UNANCHORED arm reached
+        # anchor KL 0.104509 and the anchored arm at beta=1e3 held
+        # 0.000004. 1e-3 is 250x the pinned value (4e-6 * 100 = 4e-4 < 1e-3)
+        # and 105x below the moved one (0.105 / 100 = 1.05e-3 > 1e-3), so
+        # it is wrong only if a real arm lands inside a two-decade gap in
+        # which nothing has ever been observed.
+        from pe2.anchored_sac import ANCHOR_KL_MOVED
+
+        pinned, moved = 4e-6, 0.105
+        assert pinned * 100 < ANCHOR_KL_MOVED < moved / 100
