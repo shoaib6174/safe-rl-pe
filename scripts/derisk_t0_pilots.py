@@ -92,8 +92,14 @@ def nondegeneracy_gate(cfg, device) -> dict:
     """
     from stable_baselines3 import SAC  # lazy: optional dependency
 
-    seed_torch(NONDEG_SEED0)
     model = SAC.load(CLONE, device=device)
+    # SEED AFTER THE LOAD, never before. `SAC.load` re-applies the seed baked
+    # into the zip through `_setup_model`, so seeding first is silently
+    # overwritten and the declared seed never governs a single sampled
+    # action — while `rollout.torch_seed` below claims it did. That is the
+    # accident `seed_torch`'s own docstring warns about, and it was real
+    # here: two declared seeds gave byte-identical output.
+    seed_torch(NONDEG_SEED0)
     w = DenseRewardWrapper(
         SingleAgentWrapper(cfg, "pursuer", GreedyEvader),
         w_vis=W_VIS,

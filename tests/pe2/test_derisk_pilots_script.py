@@ -82,3 +82,44 @@ class TestSurvivorsAndFigure:
         }
         mod.write_figure(results, summary, eval_n=200)
         assert (tmp_path / "t0_pilots.png").exists()
+
+
+class TestNondegeneracyGate:
+    def test_the_declared_seed_governs_the_rollout(self, tmp_path, monkeypatch):
+        # The gate seeded torch and THEN loaded the clone. `SAC.load`
+        # re-applies the seed baked into the zip through `_setup_model`, so
+        # the declared seed was overwritten before a single action was
+        # sampled and `rollout.torch_seed` in the results file was a false
+        # provenance claim — the exact accident `seed_torch`'s docstring
+        # warns about. Three declared seeds gave byte-identical output.
+        #
+        # Changing the declared seed alone is not enough to catch it: the
+        # seed ALSO drives `reset(seed=NONDEG_SEED0 + ep)`, so the rollout
+        # would differ through the env even with the seeding dead. The
+        # episode stream is therefore pinned here, leaving torch's global
+        # generator as the ONLY thing the declared seed can still move.
+        mod = _runner()
+        if not mod.CLONE.exists():
+            pytest.skip(f"gated clone not present: {mod.CLONE}")
+        from pe2.config import EnvConfig
+
+        class _PinnedStream(mod.SingleAgentWrapper):
+            def reset(self, **kwargs):
+                kwargs["seed"] = 4242
+                return super().reset(**kwargs)
+
+        monkeypatch.setattr(mod, "SingleAgentWrapper", _PinnedStream)
+        monkeypatch.setattr(mod, "OUT", tmp_path)
+        monkeypatch.setattr(mod, "NONDEG_MIN_STEPS", 1)
+        cfg = EnvConfig(max_steps=40)
+
+        monkeypatch.setattr(mod, "NONDEG_SEED0", 11)
+        a = mod.nondegeneracy_gate(cfg, "cpu")
+        monkeypatch.setattr(mod, "NONDEG_SEED0", 22)
+        b = mod.nondegeneracy_gate(cfg, "cpu")
+
+        assert a["rollout"]["torch_seed"] == 11
+        assert b["rollout"]["torch_seed"] == 22
+        # `search` is continuous in the agent's pose, so two different
+        # action streams over the same initial state cannot coincide.
+        assert a["terms"]["search"]["mean"] != b["terms"]["search"]["mean"]
