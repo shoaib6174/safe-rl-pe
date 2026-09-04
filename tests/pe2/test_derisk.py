@@ -1,10 +1,22 @@
-"""Tests for pe2.derisk — Tier 0 signal audit (T0.1)."""
+"""Tests for pe2.derisk — Tier 0 signal audit (T0.1) and pilot rules (T0.3)."""
 
+import dataclasses
+
+import gymnasium as gym
 import numpy as np
 import pytest
 
 from pe2.config import EnvConfig
-from pe2.derisk import CLONE_CI_LO, mc_returns, pilot_passes, signal_audit
+from pe2.derisk import (
+    CLONE_CI_LO,
+    PASS_FROM_STEP,
+    TrainingCaptureCounter,
+    control_collapsed,
+    mc_returns,
+    pilot_passes,
+    signal_audit,
+)
+from pe2.exploitability import SingleAgentWrapper
 from pe2.scripted import GreedyEvader
 
 CFG = EnvConfig()
@@ -115,3 +127,134 @@ class TestPilotPassRule:
 
     def test_bound_is_the_gated_clone_ci_lo(self):
         assert CLONE_CI_LO == 0.137
+
+    def test_probe_exactly_at_window_start_is_judged(self):
+        # The window filter is `steps >= from_step`. Narrowing it to `>`
+        # would drop the first probe from the judgement entirely — and that
+        # is exactly where an arm that has not yet recovered sits, so a
+        # below-bound arm would be wrongly passed. One row, on the edge.
+        edge_low = [{"steps": PASS_FROM_STEP, "win_rate": CLONE_CI_LO - 0.001}]
+        assert pilot_passes(edge_low) is False
+        edge_at = [{"steps": PASS_FROM_STEP, "win_rate": CLONE_CI_LO}]
+        assert pilot_passes(edge_at) is True
+
+
+def _probe_rows(*pairs, n=200):
+    """CheckpointEvalProbe-shaped rows from (steps, k) pairs at N=n."""
+    return [{"steps": s, "k": k, "n": n, "win_rate": k / n} for s, k in pairs]
+
+
+class TestControlCollapsed:
+    """The negative control may only be CERTIFIED as collapsed when it
+    actually reproduced the documented collapse — failing the pass rule is
+    necessary but nowhere near sufficient."""
+
+    def test_documented_d78_trajectory_is_a_collapse(self):
+        # 0.185 -> 0.060 @100k -> 0.020 @200k, the measured naive fine-tune.
+        rows = _probe_rows((50_000, 24), (100_000, 12), (150_000, 8), (200_000, 4))
+        verdict, why = control_collapsed(rows)
+        assert verdict is True, why
+
+    def test_final_rate_near_the_clone_is_not_a_collapse(self):
+        # 0.130 fails the pass rule (it is under 0.137) but is nowhere near
+        # the documented collapse — it nearly PRESERVED the clone. Certifying
+        # this as "the control collapsed" is the critical failure.
+        rows = _probe_rows((100_000, 26), (200_000, 26))
+        assert pilot_passes(rows) is False  # the pass rule alone says "fail"
+        verdict, why = control_collapsed(rows)
+        assert verdict is None
+        assert "not separated" in why
+
+    def test_empty_window_cannot_certify_itself(self):
+        # A run shorter than the window gives EVERY arm an empty window, so
+        # every arm "fails" — including the control, which would then certify
+        # a harness that judged zero probes. This is what a smoke run does.
+        verdict, why = control_collapsed(_probe_rows((200, 0), (400, 0)))
+        assert verdict is None
+        assert "window" in why
+
+    def test_control_that_holds_the_bound_did_not_collapse(self):
+        rows = _probe_rows((100_000, 40), (200_000, 40))  # 0.200, healthy
+        verdict, why = control_collapsed(rows)
+        assert verdict is False, why
+
+    def test_reason_is_always_words(self):
+        for rows in (
+            _probe_rows((100_000, 4)),
+            _probe_rows((100_000, 26)),
+            _probe_rows((400, 0)),
+            _probe_rows((100_000, 40)),
+        ):
+            _, why = control_collapsed(rows)
+            assert isinstance(why, str) and len(why) > 20
+
+
+class _Truth(gym.Wrapper):
+    """Ground truth for the counter: sits INSIDE the vec env, so it sees
+    every env.step directly rather than through SB3's rollout locals."""
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.steps = self.episodes = self.captures = 0
+
+    def step(self, action):
+        obs, r, term, trunc, info = self.env.step(action)
+        self.steps += 1
+        if term or trunc:
+            self.episodes += 1
+            self.captures += int(info["outcome"] == "capture")
+        return obs, r, term, trunc, info
+
+
+# capture_distance = 2 * agent_radius = 4.0 > min_init_distance 3.0, so
+# captures actually happen in a few hundred steps and the outcome-read is
+# exercised instead of trivially counting zero.
+_CAPTURY = dataclasses.replace(EnvConfig(), max_steps=40, agent_radius=2.0)
+
+
+class TestTrainingCaptureCounter:
+    def test_matches_ground_truth_for_both_learner_families(self):
+        pytest.importorskip("stable_baselines3")
+        from stable_baselines3 import PPO, SAC
+
+        for ctor, kwargs, steps in (
+            (SAC, {}, 300),
+            (PPO, {"n_steps": 256, "batch_size": 64}, 256),
+        ):
+            truth = _Truth(
+                SingleAgentWrapper(_CAPTURY, "pursuer", GreedyEvader, seed0=1)
+            )
+            counter = TrainingCaptureCounter(snapshot_every=100)
+            model = ctor("MlpPolicy", truth, seed=0, verbose=0, device="cpu", **kwargs)
+            model.learn(total_timesteps=steps, callback=counter.callback)
+            assert counter.state["steps"] == truth.steps == model.num_timesteps
+            assert counter.state["episodes"] == truth.episodes
+            assert counter.state["captures"] == truth.captures
+            # not vacuous: the capture branch really ran
+            assert counter.state["captures"] > 0
+            assert counter.positives_per_1M == pytest.approx(
+                truth.captures / truth.steps * 1e6
+            )
+
+    def test_segments_decompose_the_aggregate(self):
+        pytest.importorskip("stable_baselines3")
+        from stable_baselines3 import SAC
+
+        truth = _Truth(SingleAgentWrapper(_CAPTURY, "pursuer", GreedyEvader, seed0=1))
+        counter = TrainingCaptureCounter(snapshot_every=100)
+        model = SAC("MlpPolicy", truth, seed=0, verbose=0, device="cpu")
+        model.learn(total_timesteps=250, callback=counter.callback)
+        segs = counter.segments
+        assert len(segs) > 1  # the run really was split
+        assert sum(s["steps"] for s in segs) == counter.state["steps"]
+        assert sum(s["captures"] for s in segs) == counter.state["captures"]
+        assert sum(s["episodes"] for s in segs) == counter.state["episodes"]
+        assert [s["from_step"] for s in segs] == [0, *[s["to_step"] for s in segs[:-1]]]
+
+    def test_no_steps_means_no_rate_and_no_kill_verdict(self):
+        pytest.importorskip("stable_baselines3")
+        counter = TrainingCaptureCounter()
+        # A rate off zero rollouts is UNDEFINED, not 0.0 — returning 0.0 would
+        # fire the kill rule ("signal too sparse") having collected nothing.
+        assert counter.positives_per_1M is None
+        assert counter.segments == []

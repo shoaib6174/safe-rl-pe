@@ -12,9 +12,12 @@ from 100k (pe2.derisk.pilot_passes). Kill rule: P-A training positives/1M
 < 50 -> Route C.
 
 CTRL is the harness's own check: it is the fine-tune already measured to
-collapse (D78, 0.185 -> 0.020 @200k). If it does NOT collapse, the harness
-is not measuring what it claims and no arm's verdict means anything, so this
-script exits non-zero instead of reporting survivors.
+collapse (D78, 0.185 -> 0.060 @100k -> 0.020 @200k). Survivors are reported
+ONLY when CTRL demonstrably reproduced that collapse — `control_collapsed`,
+which needs a non-empty judging window AND a final rate separated from the
+clone, not merely a failed pass rule. Anything else and this script writes a
+null verdict with the reason in words, stamps the figure, and exits non-zero
+rather than naming survivors off an unvalidated harness.
 
 Usage: ./venv/bin/python scripts/derisk_t0_pilots.py --arms PA PB PC CTRL [--timesteps 200000]
 """
@@ -22,6 +25,7 @@ Usage: ./venv/bin/python scripts/derisk_t0_pilots.py --arms PA PB PC CTRL [--tim
 import argparse
 import json
 import pathlib
+import textwrap
 
 import matplotlib
 
@@ -30,10 +34,18 @@ import matplotlib.pyplot as plt
 from stable_baselines3.common.callbacks import CallbackList
 
 from pe2.config import EnvConfig
-from pe2.derisk import CLONE_CI_LO, TrainingCaptureCounter, pilot_passes
+from pe2.derisk import (
+    CLONE_CI_LO,
+    PASS_FROM_STEP,
+    TrainingCaptureCounter,
+    control_collapsed,
+    pilot_passes,
+)
+from pe2.eval import win_count
 from pe2.exploitability import (
     CheckpointEvalProbe,
     collect_demonstrations,
+    evaluate_sb3_policy,
     finetune_br,
     finetune_br_anchored,
     finetune_ppo,
@@ -46,6 +58,7 @@ OUT = pathlib.Path("results/derisk")
 CLONE = pathlib.Path("results/visual_gates/step_05/sac_bc_pursuer.zip")
 EVAL_SEED0 = 780000  # disjoint from demo (750000+) and audit (790000+) streams
 DEMO_SEED0 = 750000
+DEMO_EPISODES = 300  # named once: the call and the recorded row cannot disagree
 SEEDS = {"PA": 7, "PB": 8, "PC": 9, "CTRL": 10}
 W_VIS, W_SEARCH, BETA = 0.1, 1e-4, 1.0
 KILL_POSITIVES_PER_1M = 50
@@ -69,7 +82,11 @@ def probe(cfg, label, every, eval_n):
 
 def run_arm(arm, cfg, timesteps, warmup, every, eval_n, device):
     pr = probe(cfg, arm, every, eval_n)
-    counter = TrainingCaptureCounter()
+    # Snapshots on the probe grid so the kill-rule rate can be decomposed by
+    # phase instead of blending them. With the pre-registered warmup=50k and
+    # every=50k the phase-A/phase-B boundary IS a snapshot boundary; the row
+    # records `critic_warmup` so a reader can locate it for other settings.
+    counter = TrainingCaptureCounter(snapshot_every=every)
     cb = CallbackList([pr.callback, counter.callback])
     seed = SEEDS[arm]
     # One source of truth for what each arm's warm-up ACTUALLY is, so the
@@ -105,13 +122,38 @@ def run_arm(arm, cfg, timesteps, warmup, every, eval_n, device):
         )
     elif arm == "PC":
         demos = collect_demonstrations(
-            cfg, "pursuer", FovLimitedPursuer, GreedyEvader, 300, DEMO_SEED0
+            cfg, "pursuer", FovLimitedPursuer, GreedyEvader, DEMO_EPISODES, DEMO_SEED0
         )
-        bc, _losses = train_bc_ppo(
+        bc, losses = train_bc_ppo(
             cfg, "pursuer", GreedyEvader, demos, seed=seed, device=device, epochs=50
         )
         bc_path = OUT / "ppo_bc_pursuer.zip"
         bc.save(bc_path)
+        # P-A/P-B/CTRL all start from the GATED clone, whose win rate is known
+        # — that is what makes the 0.137 bound meaningful for them. P-C starts
+        # from a fresh PPO clone of UNKNOWN quality and is judged against the
+        # same bound, so without this measurement a P-C failure cannot be told
+        # apart from "the arm never had a competent starting point", and the
+        # tier would wrongly read it as refuting the horizon hypothesis.
+        # Same seeds and same N as the probes use, so it is comparable.
+        bk, bn = win_count(
+            evaluate_sb3_policy(
+                bc, cfg, "pursuer", GreedyEvader, n_episodes=eval_n, seed0=EVAL_SEED0
+            ),
+            "pursuer",
+        )
+        bc_start = {
+            "win_rate": bk / bn,
+            "k": bk,
+            "n": bn,
+            "final_bc_loss": losses[-1],
+            "demo_episodes": DEMO_EPISODES,
+            "demo_seed0": DEMO_SEED0,
+        }
+        print(
+            f"[PC] BC start: {bk}/{bn} = {bk / bn:.3f} (bc loss {losses[-1]:.5f})",
+            flush=True,
+        )
         finetune_ppo(
             cfg,
             "pursuer",
@@ -137,6 +179,7 @@ def run_arm(arm, cfg, timesteps, warmup, every, eval_n, device):
     else:
         raise SystemExit(f"unknown arm {arm}")
     rows = pr.rows
+    rate = counter.positives_per_1M
     result = {
         "arm": arm,
         "seed": seed,
@@ -146,18 +189,112 @@ def run_arm(arm, cfg, timesteps, warmup, every, eval_n, device):
         "eval_seed0": EVAL_SEED0,
         "checkpoints": rows,
         "pass": pilot_passes(rows),
-        "training": dict(counter.state, positives_per_1M=counter.positives_per_1M),
+        "training": dict(
+            counter.state,
+            positives_per_1M=rate,
+            segments=counter.segments,
+        ),
     }
-    if arm == "PA":
+    if arm == "PC":
+        result["bc_start"] = bc_start
+    # The kill rule needs a rate; with no rollouts there is none, and a
+    # verdict off nothing would read as "the signal is too sparse".
+    if arm == "PA" and rate is not None:
         result["kill_rule"] = {
             "threshold": KILL_POSITIVES_PER_1M,
-            "fires": counter.positives_per_1M < KILL_POSITIVES_PER_1M,
+            "fires": rate < KILL_POSITIVES_PER_1M,
         }
-    print(
-        f"[{arm}] pass={result['pass']} positives/1M={counter.positives_per_1M:.1f}",
-        flush=True,
-    )
+    shown = "undefined (no steps)" if rate is None else f"{rate:.1f}"
+    print(f"[{arm}] pass={result['pass']} positives/1M={shown}", flush=True)
     return result
+
+
+def summarize(results, every, eval_n, complete):
+    """Build the digest. `survivors` is reported ONLY when the negative
+    control demonstrably reproduced the documented collapse — that is the
+    entire basis for believing any other arm's verdict."""
+    if not complete:
+        verdict, reason = None, "run in progress: arms still to come"
+    elif "CTRL" not in results:
+        verdict, reason = (
+            None,
+            (
+                "the negative control (CTRL) was not run, so nothing shows the "
+                "harness can discriminate; every arm's verdict is unvalidated"
+            ),
+        )
+    else:
+        verdict, reason = control_collapsed(results["CTRL"]["checkpoints"])
+    ctrl_rows = results.get("CTRL", {}).get("checkpoints") or []
+    return {
+        "status": "complete" if complete else "in_progress",
+        "clone_ci_lo": CLONE_CI_LO,
+        # A different --every gives a materially different judging window;
+        # record both so the file says which rule was actually applied.
+        "pass_from_step": PASS_FROM_STEP,
+        "probe_every": every,
+        "eval_n": eval_n,
+        "survivors": (
+            [a for a, r in results.items() if a != "CTRL" and r["pass"]]
+            if verdict is True
+            else None
+        ),
+        "negative_control_collapsed": verdict,
+        "negative_control_reason": reason,
+        "negative_control_final_win_rate": (
+            max(ctrl_rows, key=lambda r: r["steps"])["win_rate"] if ctrl_rows else None
+        ),
+        "arms": results,
+    }
+
+
+def write_summary(summary) -> None:
+    with open(OUT / "t0_pilots.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
+
+def write_figure(results, summary, eval_n) -> None:
+    validated = summary["negative_control_collapsed"] is True
+    fig, ax = plt.subplots(figsize=(7, 4.4))
+    for arm, r in results.items():
+        # No pass/fail wording when the harness is unvalidated: the figure is
+        # the artifact most likely to end up in a slide, and it must not say
+        # an arm passed when the digest is refusing to name survivors.
+        label = f"{arm} ({'pass' if r['pass'] else 'fail'})" if validated else arm
+        ax.plot(
+            [c["steps"] for c in r["checkpoints"]],
+            [c["win_rate"] for c in r["checkpoints"]],
+            marker="o",
+            label=label,
+        )
+    ax.axhline(CLONE_CI_LO, color="k", ls="--", label=f"clone CI-lo {CLONE_CI_LO}")
+    ax.set(xlabel="training steps", ylabel=f"win rate (N={eval_n}, paired)")
+    if validated:
+        ax.set_title("T0.3 pilots")
+    else:
+        ax.set_title(
+            "T0.3 pilots — HARNESS NOT VALIDATED, DO NOT READ THE ARMS\n"
+            + textwrap.fill(summary["negative_control_reason"], 100),
+            fontsize=7.5,
+            color="firebrick",
+        )
+        ax.text(
+            0.5,
+            0.5,
+            "HARNESS NOT VALIDATED",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=24,
+            color="firebrick",
+            alpha=0.30,
+            rotation=18,
+            zorder=10,
+        )
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(OUT / "t0_pilots.png", dpi=120)
+    plt.close(fig)
 
 
 def main() -> None:
@@ -175,55 +312,32 @@ def main() -> None:
     if not CLONE.exists():
         raise SystemExit(f"gated clone missing: {CLONE}")
     cfg = EnvConfig()
-    results = {
-        arm: run_arm(
+
+    results = {}
+    for arm in args.arms:
+        results[arm] = run_arm(
             arm, cfg, args.timesteps, args.warmup, args.every, args.eval_n, args.device
         )
-        for arm in args.arms
-    }
-    # None (not False) when CTRL was not run: the harness is then UNVALIDATED,
-    # which must not be recorded as "the control collapsed".
-    ctrl_collapsed = None if "CTRL" not in results else not results["CTRL"]["pass"]
-    survivors = [a for a, r in results.items() if a != "CTRL" and r["pass"]]
-    summary = {
-        "clone_ci_lo": CLONE_CI_LO,
-        # null when the control did NOT collapse: the harness is then not
-        # measuring what it claims, so there is no survivor list to report.
-        # The raw per-arm rows and `pass` flags stay under "arms" — nothing
-        # is hidden, it just is not pre-digested into a verdict.
-        "survivors": None if ctrl_collapsed is False else survivors,
-        "negative_control_collapsed": ctrl_collapsed,
-        "arms": results,
-    }
-    with open(OUT / "t0_pilots.json", "w") as f:
-        json.dump(summary, f, indent=2)
+        # Flush after EVERY arm: these runs take hours, and a failure in the
+        # last arm must not discard the ones that already finished.
+        write_summary(summarize(results, args.every, args.eval_n, complete=False))
 
-    fig, ax = plt.subplots(figsize=(7, 4))
-    for arm, r in results.items():
-        ax.plot(
-            [c["steps"] for c in r["checkpoints"]],
-            [c["win_rate"] for c in r["checkpoints"]],
-            marker="o",
-            label=f"{arm} ({'pass' if r['pass'] else 'fail'})",
-        )
-    ax.axhline(CLONE_CI_LO, color="k", ls="--", label="clone CI-lo 0.137")
-    ax.set(
-        xlabel="training steps",
-        ylabel=f"win rate (N={args.eval_n}, paired)",
-        title="T0.3 pilots",
-    )
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(OUT / "t0_pilots.png", dpi=120)
+    summary = summarize(results, args.every, args.eval_n, complete=True)
+    write_summary(summary)
+    write_figure(results, summary, args.eval_n)
     print(f"wrote {OUT}/t0_pilots.{{json,png}}")
-    if ctrl_collapsed is False:
+
+    verdict = summary["negative_control_collapsed"]
+    print(f"negative control: {summary['negative_control_reason']}")
+    if verdict is True:
+        print(f"survivors={summary['survivors']}")
+        return
+    if "CTRL" in results:
         raise SystemExit(
-            "negative control did NOT collapse — pilot harness is broken, "
-            "do not read the arms"
+            "negative control did NOT demonstrably collapse — pilot harness is "
+            "unvalidated, do not read the arms"
         )
-    if ctrl_collapsed is None:
-        print("negative control NOT RUN — survivors below are unvalidated")
-    print(f"survivors={survivors} negative_control_collapsed={ctrl_collapsed}")
+    print("survivors withheld: run CTRL to validate the harness")
 
 
 if __name__ == "__main__":

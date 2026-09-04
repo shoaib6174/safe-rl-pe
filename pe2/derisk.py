@@ -16,6 +16,7 @@ audit gives the terminal-only baseline number.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable
 
 import numpy as np
@@ -136,6 +137,66 @@ def pilot_passes(
     return bool(window) and all(r["win_rate"] >= threshold for r in window)
 
 
+def control_collapsed(
+    rows: list[dict], threshold: float = CLONE_CI_LO, from_step: int = PASS_FROM_STEP
+) -> tuple[bool | None, str]:
+    """Did the negative control REPRODUCE the documented collapse?
+
+    Returns `(verdict, reason)`, verdict in {True, False, None}. The whole
+    justification for reading the other arms is that this control
+    DISCRIMINATES, so `True` is a strong claim and is only made when it is
+    earned. Failing `pilot_passes` is necessary but nowhere near sufficient:
+
+    - the pass rule is "at or above the bound at EVERY probe", so a control
+      that ends at 0.130 fails it while having very nearly preserved the
+      clone (the measured spread across seeds is 0.010-0.280 — not contrived);
+    - a run that never reaches `from_step` gives EVERY arm an empty window,
+      so every arm "fails" and the control would certify a harness that
+      judged zero probes.
+
+    So three things are required for True: a non-empty judging window, a
+    failed pass rule, AND a final win rate that is statistically SEPARATED
+    from the clone — the final probe's Wilson upper bound below `threshold`.
+    That is the same machinery `threshold` itself came from, and it is what
+    distinguishes "collapsed" from "merely under the bound". Reference point,
+    on record in `finetune_br`'s docstring: the naive fine-tune ran
+    0.185 -> 0.060 @100k -> 0.020 @200k. At N=200 a final 0.020 has Wilson
+    hi 0.050 (separated, True) while 0.130 has 0.184 (not separated, None).
+
+    `None` means "cannot claim a collapse"; the reason says which case in
+    words, so a reader never meets a bare null.
+    """
+    from pe2.eval import wilson_ci
+
+    window = [r for r in rows if r["steps"] >= from_step]
+    if not window:
+        return None, (
+            f"judging window empty: no probe at or after {from_step} steps, so "
+            f"nothing was judged and the harness is unvalidated (probes seen: "
+            f"{[r['steps'] for r in rows]})"
+        )
+    if pilot_passes(rows, threshold, from_step):
+        return False, (
+            f"the control held at or above {threshold} at every probe from "
+            f"{from_step}: it did NOT collapse, so the harness is not measuring "
+            f"what it claims"
+        )
+    final = max(window, key=lambda r: r["steps"])
+    lo, hi = wilson_ci(final["k"], final["n"])
+    if hi < threshold:
+        return True, (
+            f"collapse reproduced: final win rate {final['win_rate']:.3f} "
+            f"({final['k']}/{final['n']} @{final['steps']}) has Wilson upper "
+            f"bound {hi:.3f} < {threshold}, separated from the clone"
+        )
+    return None, (
+        f"final win rate {final['win_rate']:.3f} ({final['k']}/{final['n']} "
+        f"@{final['steps']}) is below {threshold} but not separated from the "
+        f"clone (Wilson [{lo:.3f}, {hi:.3f}] reaches it): under the bound is "
+        f"not the same as collapsed, so no collapse can be claimed"
+    )
+
+
 class TrainingCaptureCounter:
     """SB3 callback: count training episodes ending in capture, and env
     steps, so the T0.1 kill rule (positives per 1M) can be read off the P-A
@@ -153,12 +214,23 @@ class TrainingCaptureCounter:
     SB3 2.x; a future SB3 could rename them. Counting `len(dones)` steps per
     call is the VecEnv's `num_envs` — 1 for every `SingleAgentWrapper` path
     here, since SB3 auto-wraps the single Gym env in a `DummyVecEnv`.
+
+    `snapshot_every` records the cumulative counts every N steps. The
+    aggregate rate alone BLENDS REGIMES: `finetune_br` freezes the actor for
+    `critic_warmup` steps and then trains it, so one number averages the
+    clone's own rollouts with whatever the policy became afterwards. The kill
+    rule is meant to say "the reward signal is too sparse to learn from", but
+    the aggregate also moves when the policy degrades — so a phase-B collapse
+    could fire a rule that then gets read as a statement about the reward.
+    `segments` differences the snapshots so the phases can be told apart.
     """
 
-    def __init__(self):
+    def __init__(self, snapshot_every: int | None = None):
         from stable_baselines3.common.callbacks import BaseCallback  # lazy
 
         state = {"steps": 0, "captures": 0, "episodes": 0}
+        snapshots: list[dict] = []
+        next_at = [snapshot_every] if snapshot_every else []
 
         class _CB(BaseCallback):
             def _on_step(inner) -> bool:
@@ -169,11 +241,43 @@ class TrainingCaptureCounter:
                     if done:
                         state["episodes"] += 1
                         state["captures"] += int(info.get("outcome") == "capture")
+                while next_at and state["steps"] >= next_at[0]:
+                    snapshots.append(dict(state))
+                    next_at[0] += snapshot_every
                 return True
 
         self.state = state
+        self.snapshots = snapshots
         self.callback = _CB()
 
     @property
-    def positives_per_1M(self) -> float:
-        return self.state["captures"] / max(self.state["steps"], 1) * 1e6
+    def positives_per_1M(self) -> float | None:
+        """None, NOT 0.0, when nothing was collected: a rate off zero steps is
+        undefined, and returning 0.0 would fire the kill rule ("the signal is
+        too sparse to learn from") having observed no rollouts at all."""
+        if self.state["steps"] == 0:
+            return None
+        return self.state["captures"] / self.state["steps"] * 1e6
+
+    @property
+    def segments(self) -> list[dict]:
+        """Per-interval breakdown, differenced from the snapshots (plus the
+        final state). Segments sum back to the aggregate exactly."""
+        points = [{"steps": 0, "captures": 0, "episodes": 0}, *self.snapshots]
+        if points[-1]["steps"] != self.state["steps"]:
+            points.append(dict(self.state))
+        out = []
+        for a, b in itertools.pairwise(points):
+            d = b["steps"] - a["steps"]
+            captures = b["captures"] - a["captures"]
+            out.append(
+                {
+                    "from_step": a["steps"],
+                    "to_step": b["steps"],
+                    "steps": d,
+                    "episodes": b["episodes"] - a["episodes"],
+                    "captures": captures,
+                    "positives_per_1M": captures / d * 1e6 if d else None,
+                }
+            )
+        return out
