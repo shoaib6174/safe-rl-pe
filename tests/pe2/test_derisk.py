@@ -29,6 +29,14 @@ class _Full:
         return np.array([1.0, 0.0], dtype=np.float32), None
 
 
+class _Flee:
+    """model.predict shim: full-speed-forward evader (only needs to not get
+    caught by a stationary opponent)."""
+
+    def predict(self, obs, deterministic=True):
+        return np.array([1.0, 0.0], dtype=np.float32), None
+
+
 class TestSignalAudit:
     def test_counts_are_consistent(self):
         rep = signal_audit(
@@ -37,8 +45,9 @@ class TestSignalAudit:
         assert rep["total_steps"] >= 3000
         assert rep["n_episodes"] == len(rep["episode_lengths"])
         assert rep["captures"] == len(rep["capture_lengths"])
+        assert len(rep["positive_lengths"]) == rep["positives"]
         assert rep["positives_per_1M"] == pytest.approx(
-            rep["captures"] / rep["total_steps"] * 1e6
+            rep["positives"] / rep["total_steps"] * 1e6
         )
         assert 0.0 <= rep["visible_fraction"] <= 1.0
         # bucket step counts must sum to the total
@@ -70,3 +79,20 @@ class TestSignalAudit:
         assert rep["captures"] == 0
         assert rep["positives_per_1M"] == 0.0
         assert all(b["mean"] < 0 for b in rep["return_variance_by_bucket"] if b["n"])
+
+    def test_evader_positives_are_wins_not_captures(self):
+        # A stationary pursuer never catches the greedy evader, so every
+        # episode is a timeout: for role="evader" that is a WIN on every
+        # episode (positives == n_episodes) and zero captures. The pursuer's
+        # audit of the same situation is the mirror image: zero positives.
+        class _StillOpponent:
+            def reset(self): ...
+            def act(self, obs, env):
+                return (0.0, 0.0)
+
+        rep = signal_audit(
+            _Flee(), CFG, "evader", _StillOpponent, min_steps=2400, seed0=790000
+        )
+        assert rep["captures"] == 0
+        assert rep["positives"] == rep["n_episodes"]
+        assert rep["positives_per_1M"] > 0.0

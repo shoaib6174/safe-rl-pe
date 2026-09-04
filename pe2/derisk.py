@@ -4,10 +4,14 @@ signal_audit rolls a saved policy in the training-time regime and measures
 the learning signal the terminal-only reward actually provides: positive
 terminals per million steps (the exploration bottleneck), the capture-
 length distribution, the fraction of steps with the opponent visible, and
-the variance of the Monte-Carlo return by step index. The pre-registered
-kill rule (< 50 positives per 1M even with dense reward -> Route C) is
-evaluated on the P-A pilot's training episodes, not here; this audit gives
-the terminal-only baseline number.
+the variance of the Monte-Carlo return by step index. "Positive" is
+role-aware (a win for the audited role, `positives_per_1M`/`positive_lengths`)
+and is NOT the same as a literal capture event (`captures`/`capture_lengths`):
+for the pursuer the two coincide, but for the evader a capture is a LOSS, so
+the kill rule below is gated on `positives_per_1M`, never on `captures`. The
+pre-registered kill rule (< 50 positives per 1M even with dense reward ->
+Route C) is evaluated on the P-A pilot's training episodes, not here; this
+audit gives the terminal-only baseline number.
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ def signal_audit(
     visible_steps = 0
     episode_lengths: list[int] = []
     capture_lengths: list[int] = []
+    positive_lengths: list[int] = []
     per_step_returns: list[tuple[int, float]] = []  # (t, G_t)
     ep = 0
     while total_steps < min_steps:
@@ -60,10 +65,13 @@ def signal_audit(
         won = (info["outcome"] == "capture") == (role == "pursuer")
         if info["outcome"] == "capture":
             capture_lengths.append(length)
+        if won:
+            positive_lengths.append(length)
         terminal = 1.0 if won else -1.0
         per_step_returns.extend(enumerate(mc_returns(length, terminal, gamma)))
 
     captures = len(capture_lengths)
+    positives = len(positive_lengths)
     ts = np.array([t for t, _ in per_step_returns])
     gs = np.array([g for _, g in per_step_returns])
     buckets = []
@@ -87,9 +95,13 @@ def signal_audit(
         "total_steps": total_steps,
         "n_episodes": len(episode_lengths),
         "episode_lengths": episode_lengths,
+        # captures: literal capture events (may be a LOSS for the evader).
         "captures": captures,
         "capture_lengths": capture_lengths,
-        "positives_per_1M": captures / total_steps * 1e6,
+        # positives: terminal WINS for the audited role (the kill-rule metric).
+        "positives": positives,
+        "positive_lengths": positive_lengths,
+        "positives_per_1M": positives / total_steps * 1e6,
         "visible_fraction": visible_steps / total_steps,
         "return_variance_overall": float(gs.var()),
         "return_variance_by_bucket": buckets,
