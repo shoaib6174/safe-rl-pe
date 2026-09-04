@@ -23,9 +23,11 @@ unchanged):
 
 from __future__ import annotations
 
+import gymnasium as gym
 import numpy as np
 
 from pe2.config import EnvConfig
+from pe2.exploitability import SingleAgentWrapper
 from pe2.sensing import is_visible
 
 
@@ -69,3 +71,90 @@ class SearchStalenessTracker:
         staleness = np.clip(steps_since / self.t_stale, 0.0, 1.0)
         self.last_observed[seen] = current_step
         return float(staleness.mean())
+
+
+def _nearest_obstacle_surface(xy: np.ndarray, obstacles: list[dict]) -> float:
+    if not obstacles:
+        return 0.0
+    return float(
+        min(np.hypot(xy[0] - o["x"], xy[1] - o["y"]) - o["radius"] for o in obstacles)
+    )
+
+
+class DenseRewardWrapper(gym.Wrapper):
+    """Training-only dense reward on top of SingleAgentWrapper (T0.2)."""
+
+    def __init__(
+        self,
+        env: SingleAgentWrapper,
+        *,
+        w_vis: float = 0.0,
+        w_search: float = 0.0,
+        w_evis: float = 0.0,
+        w_pbrs: float = 0.0,
+        gamma: float = 0.999,
+        grid_size: int = 10,
+        t_stale: int = 50,
+    ):
+        super().__init__(env)
+        if w_evis > 0 and w_pbrs == 0:
+            raise ValueError(
+                "evader visibility reward is a known plateau (lessons §5b); "
+                "enable it only with the PBRS obstacle potential (w_pbrs > 0)"
+            )
+        self.w_vis, self.w_search, self.w_evis, self.w_pbrs = (
+            w_vis,
+            w_search,
+            w_evis,
+            w_pbrs,
+        )
+        self.gamma = gamma
+        self.tracker = (
+            SearchStalenessTracker(env.cfg, grid_size, t_stale) if w_search else None
+        )
+
+    # ---- helpers on the learning role's TRUE state (training-only: the
+    # policy never sees these; the reward may) ----
+    def _own_pose(self) -> np.ndarray:
+        e = self.env.env
+        return e.pursuer_pose if self.env.role == "pursuer" else e.evader_pose
+
+    def _visible(self) -> bool:
+        return bool(self.env._last_joint_obs[self.env.role][6] > 0.5)
+
+    def _phi(self) -> float:
+        return -_nearest_obstacle_surface(self._own_pose()[:2], self.env.env.obstacles)
+
+    def reset(self, **kwargs):
+        out = self.env.reset(**kwargs)
+        if self.tracker is not None:
+            self.tracker.reset()
+        return out
+
+    def step(self, action):
+        phi = self._phi() if self.w_pbrs else 0.0
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        dense = 0.0
+        visible = self._visible()
+        if self.w_vis:
+            dense += self.w_vis * float(visible)
+        if self.tracker is not None:
+            dense += self.w_search * self.tracker.observe_and_reward(
+                self._own_pose(), self.env.env.obstacles, self.env.env.current_step
+            )
+        if self.w_evis:
+            dense += self.w_evis * (-1.0 if visible else 1.0)
+        if self.w_pbrs:
+            dense += self.w_pbrs * (self.gamma * self._phi() - phi)
+        return obs, reward + dense, terminated, truncated, info
+
+
+def signal_nondegeneracy(rewards: list[float]) -> dict:
+    """T0.2 plateau check: a dense signal must vary (std > 0) and be neither
+    always-on nor never-on (0.05 < frac_positive < 0.95) over a rollout."""
+    r = np.asarray(rewards, dtype=float)
+    return {
+        "frac_positive": float((r > 0).mean()) if r.size else 0.0,
+        "std": float(r.std()) if r.size else 0.0,
+        "mean": float(r.mean()) if r.size else 0.0,
+    }
