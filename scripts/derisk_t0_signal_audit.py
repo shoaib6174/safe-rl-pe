@@ -2,6 +2,11 @@
 env steps in BOTH the stochastic (training-time) and deterministic regimes
 and writes results/derisk/t0_signal_audit.{json,png}.
 
+`signal_audit` seeds torch's global generator from SEED0 at the start of
+each regime and records it as `torch_seed`, so the stochastic regime — the
+training-time one the kill rule is about — is reproducible from the seed
+this file records rather than from the seed baked into the clone's zip.
+
 Usage: ./venv/bin/python scripts/derisk_t0_signal_audit.py [--role pursuer] [--min-steps 1000000]
 """
 
@@ -52,7 +57,8 @@ def main() -> None:
         print(
             f"[{key}] steps={rep['total_steps']} episodes={rep['n_episodes']} "
             f"captures={rep['captures']} positives/1M={rep['positives_per_1M']:.1f} "
-            f"visible={rep['visible_fraction']:.3f} var(G)={rep['return_variance_overall']:.4f}",
+            f"visible={rep['visible_fraction']:.3f} var(G)={rep['return_variance_overall']:.4f} "
+            f"torch_seed={rep['torch_seed']}",
             flush=True,
         )
     report["kill_rule"] = {

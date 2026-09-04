@@ -258,3 +258,40 @@ class TestTrainingCaptureCounter:
         # fire the kill rule ("signal too sparse") having collected nothing.
         assert counter.positives_per_1M is None
         assert counter.segments == []
+
+
+class TestStochasticRepeat:
+    """The STOCHASTIC regime is the training-time regime the kill rule speaks
+    about, so its number must be reproducible from the seed the report
+    records. `TestSignalAudit.test_deterministic_repeat` cannot show this:
+    its shim ignores the `deterministic` flag, so it never draws from the
+    tensor library's global generator the way SB3's `predict` does.
+    """
+
+    def test_stochastic_repeat_is_identical(self):
+        torch = pytest.importorskip("torch")
+
+        class _TorchNoisy:
+            """model.predict shim that is GENUINELY stochastic: off
+            `deterministic=False` it draws from torch's global generator,
+            exactly as SB3's squashed-Gaussian SAC actor does."""
+
+            def predict(self, obs, deterministic=True):
+                if deterministic:
+                    return np.array([1.0, 0.0], dtype=np.float32), None
+                return (2.0 * torch.rand(2) - 1.0).numpy().astype(np.float32), None
+
+        # not vacuous: the shim really does move with the global generator.
+        torch.manual_seed(1)
+        first, _ = _TorchNoisy().predict(None, deterministic=False)
+        torch.manual_seed(2)
+        second, _ = _TorchNoisy().predict(None, deterministic=False)
+        assert not np.array_equal(first, second)
+
+        kw = {"min_steps": 2000, "seed0": 790000, "deterministic": False}
+        a = signal_audit(_TorchNoisy(), CFG, "pursuer", GreedyEvader, **kw)
+        b = signal_audit(_TorchNoisy(), CFG, "pursuer", GreedyEvader, **kw)
+        assert a == b
+        # and the report must SAY what was seeded: a number whose provenance
+        # is not in the file is not a reproducible measurement.
+        assert a["torch_seed"] == 790000

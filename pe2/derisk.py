@@ -25,6 +25,35 @@ from pe2.config import EnvConfig
 from pe2.exploitability import SingleAgentWrapper
 
 
+def seed_torch(seed: int) -> int | None:
+    """Seed torch's GLOBAL generator and return the seed that was applied.
+
+    `model.predict(deterministic=False)` samples the squashed Gaussian from
+    torch's global generator, so the stochastic regime — which is the
+    TRAINING-TIME regime the kill rule speaks about — is otherwise a
+    measurement with no reproducible provenance. Two `signal_audit` calls
+    on the same model at the same `seed0` returned visible fractions 0.0348
+    and 0.0258 before this existed.
+
+    A run could look reproducible anyway, by accident: `SAC.load` restores
+    the `seed` stored in the zip and re-applies it through `_setup_model`,
+    so a fresh process that loads a clone and audits it once lands on the
+    same numbers. That seed belongs to whoever trained the clone, is not
+    recorded in the audit's report, and stops governing the moment the
+    regimes are reordered, a second audit runs in the same process, or the
+    clone is retrained. The audit's own `seed0` must be the authority.
+
+    Returns None only when torch is absent, in which case no SB3 policy can
+    be running either and nothing stochastic needed seeding.
+    """
+    try:
+        import torch  # lazy: optional dependency, as everywhere else in pe2
+    except ImportError:
+        return None
+    torch.manual_seed(seed)
+    return seed
+
+
 def mc_returns(length: int, terminal_reward: float, gamma: float) -> list[float]:
     """Monte-Carlo return of every step of a terminal-only episode:
     G_t = gamma**(length - t) * R for t = 0..length-1."""
@@ -42,7 +71,13 @@ def signal_audit(
     deterministic: bool = False,
     bucket: int = 200,
 ) -> dict:
-    """Roll `model` (anything with .predict) until >= min_steps env steps."""
+    """Roll `model` (anything with .predict) until >= min_steps env steps.
+
+    Seeds torch's global generator from `seed0` before the first rollout —
+    once per call, i.e. once per regime — so the stochastic regime's number
+    is reproducible from the seed the report records (see `seed_torch`).
+    """
+    torch_seed = seed_torch(seed0)
     wrapper = SingleAgentWrapper(cfg, role, opponent_factory)
     total_steps = 0
     visible_steps = 0
@@ -91,6 +126,10 @@ def signal_audit(
     return {
         "role": role,
         "seed0": seed0,
+        # what was seeded, so the recorded seed is a claim a reader can check:
+        # the env stream is seed0 + episode index, torch's global generator is
+        # seed0 itself (None only if torch is not installed).
+        "torch_seed": torch_seed,
         "deterministic": deterministic,
         "gamma": gamma,
         "total_steps": total_steps,
