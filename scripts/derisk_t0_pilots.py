@@ -28,6 +28,7 @@ import pathlib
 import textwrap
 
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -78,7 +79,71 @@ KILL_POSITIVES_PER_1M = 50
 # T0.2 plateau gate: rollout stream (790000+, the audit's family) offset off
 # the audit's own episodes so the two diagnostics do not share episodes.
 NONDEG_SEED0 = 790500
-NONDEG_MIN_STEPS = 6000
+# Plateau-gate budget, in whole EPISODES.
+#
+# It was 6,000 steps — 5 to 7 episodes — and at that budget the gate was a
+# coin flip rather than a check on the reward: run at five disjoint seeds in
+# this family it aborts the whole tier on two of them (vis positive fraction
+# 0.0711 / 0.0282 / 0.0612 / 0.0767 / 0.0110 against the 0.05 band edge).
+# The `vis` term is strongly autocorrelated WITHIN an episode — the pursuer
+# either holds the evader in view for a run of steps or does not — so the
+# sampling unit is the episode, not the step (per-episode positive fraction
+# 0.157, sd 0.300 over 2,500 episodes), and a 6-episode sample says almost
+# nothing.
+#
+# 500 episodes is ~513k clone steps, ~5-11 min depending on device, against
+# the multi-hour arm it gates. What it buys: the episode-level bootstrap
+# interval is then ~+/-0.008 wide, so the gate DECIDES any term whose true
+# positive fraction is outside roughly [0.058, 0.942] and, via
+# `all_decisive`, refuses to claim a verdict for one that is not.
+#
+# It does NOT decide the SHIPPED `vis` term, and no affordable budget does.
+# Measured over 2,500 episodes / 2,566,786 clone steps at five disjoint
+# seeds (790500, 791500, 792500, 793500, 794500; per-seed positive fraction
+# 0.0520 / 0.0529 / 0.0574 / 0.0509 / 0.0509), the term's positive fraction
+# is 0.0528 with bootstrap 95% CI [0.0493, 0.0563]: it sits ON the 0.05
+# edge, 5.6% above it. Extrapolating the bootstrap, the lower bound first
+# clears 0.05 only at ~4,000 episodes (4.1M steps, ~35 min, twenty times the
+# training budget of the arm this gates) and even 8,000 episodes buys a
+# margin of 0.0009. The band was NOT widened to make it pass: the gate
+# reports the term undecided and stops the run, because whether a step-wise
+# positive-fraction floor is the right check for a term that fires in bursts
+# is a pre-registration question, not a threshold to relax.
+NONDEG_EPISODES = 500
+NONDEG_BOOTSTRAP = 400
+# A verdict is claimed only when the bootstrap reproduces it in at least
+# this share of resamples (or contradicts it in at least that share).
+DECISIVE_FRACTION = 0.975
+
+
+def gate_decisiveness(per_episode, seed, n_resamples=None) -> dict[str, float]:
+    """Share of episode-level bootstrap resamples in which each term passes.
+
+    `per_episode` is one `{term: [per-step values]}` dict per episode. The
+    resampling unit is the WHOLE EPISODE, not the step: within an episode
+    the dense terms are strongly autocorrelated (a visibility term fires in
+    runs, not independently), so a step-level interval understates the
+    uncertainty by an order of magnitude, while episodes are independent by
+    construction — each is reset from its own seed.
+
+    A term whose share is neither ~0 nor ~1 has a verdict decided by the
+    sample rather than by the reward, and the runner refuses to act on it
+    (see `DECISIVE_FRACTION` and `main`). The per-term criteria themselves
+    are untouched: each resample is scored by the same
+    `nondegeneracy_report` the point estimate uses.
+    """
+    rng = np.random.default_rng(seed)
+    n_resamples = NONDEG_BOOTSTRAP if n_resamples is None else n_resamples
+    names = sorted({n for ep in per_episode for n in ep})
+    arrays = {n: [np.asarray(ep[n], dtype=float) for ep in per_episode] for n in names}
+    hits = {n: 0 for n in names}
+    for _ in range(n_resamples):
+        idx = rng.integers(0, len(per_episode), size=len(per_episode))
+        sample = {n: np.concatenate([arrays[n][i] for i in idx]) for n in names}
+        scored = nondegeneracy_report(sample)
+        for n in names:
+            hits[n] += bool(scored["terms"][n]["passes"])
+    return {n: hits[n] / n_resamples for n in names}
 
 
 def nondegeneracy_gate(cfg, device) -> dict:
@@ -89,6 +154,10 @@ def nondegeneracy_gate(cfg, device) -> dict:
     results — the record then shows the gate was applied to what actually
     trains, not to one term in a test. Rolled with the gated clone, which
     is the policy the arm starts from, in the stochastic training regime.
+
+    Reports each term's verdict AND whether that verdict is decisive under
+    an episode-level bootstrap, because this gate is a hard stop and a stop
+    off sampling noise manufactures a false finding about the reward.
     """
     from stable_baselines3 import SAC  # lazy: optional dependency
 
@@ -105,27 +174,44 @@ def nondegeneracy_gate(cfg, device) -> dict:
         w_vis=W_VIS,
         w_search=W_SEARCH,
     )
-    terms: dict[str, list[float]] = {}
-    steps = ep = 0
-    while steps < NONDEG_MIN_STEPS:
+    per_episode: list[dict[str, list[float]]] = []
+    steps = 0
+    for ep in range(NONDEG_EPISODES):
         obs, _ = w.reset(seed=NONDEG_SEED0 + ep)
-        ep += 1
+        ep_terms: dict[str, list[float]] = {}
         while True:
             action, _ = model.predict(obs, deterministic=False)
             obs, _r, terminated, truncated, info = w.step(action)
             steps += 1
             for name, value in info["dense_terms"].items():
-                terms.setdefault(name, []).append(value)
+                ep_terms.setdefault(name, []).append(value)
             if terminated or truncated:
                 break
+        per_episode.append(ep_terms)
+    terms: dict[str, list[float]] = {}
+    for ep_terms in per_episode:
+        for name, values in ep_terms.items():
+            terms.setdefault(name, []).extend(values)
     report = nondegeneracy_report(terms)
+    shares = gate_decisiveness(per_episode, NONDEG_SEED0)
+    for name, t in report["terms"].items():
+        share = shares[name]
+        t["bootstrap_pass_share"] = share
+        t["decisive"] = share >= DECISIVE_FRACTION or share <= 1.0 - DECISIVE_FRACTION
     report |= {
+        "all_decisive": all(t["decisive"] for t in report["terms"].values()),
+        "bootstrap": {
+            "unit": "episode",
+            "n_resamples": NONDEG_BOOTSTRAP,
+            "seed": NONDEG_SEED0,
+            "decisive_share": DECISIVE_FRACTION,
+        },
         "config": {"w_vis": W_VIS, "w_search": W_SEARCH},
         "rollout": {
             "policy": str(CLONE),
             "deterministic": False,
             "steps": steps,
-            "episodes": ep,
+            "episodes": len(per_episode),
             "seed0": NONDEG_SEED0,
             "torch_seed": NONDEG_SEED0,
         },
@@ -136,7 +222,9 @@ def nondegeneracy_gate(cfg, device) -> dict:
         print(
             f"[nondeg] {name:7s} kind={t['kind']:10s} "
             f"frac_positive={t['frac_positive']:.3f} frac_modal={t['frac_modal']:.3f} "
-            f"std={t['std']:.3g} passes={t['passes']}",
+            f"std={t['std']:.3g} passes={t['passes']} "
+            f"bootstrap_pass_share={t['bootstrap_pass_share']:.3f} "
+            f"decisive={t['decisive']}",
             flush=True,
         )
     return report
@@ -422,6 +510,27 @@ def main() -> None:
     if "PA" in args.arms:
         # A dense reward with a flat region is rejected BEFORE use (T0.2).
         gate = nondegeneracy_gate(cfg, args.device)
+        # An undecided verdict is checked FIRST: a term the bootstrap cannot
+        # place is neither a pass to train on nor a finding to report, and
+        # calling it a finding is how a hard stop manufactures one.
+        if not gate["all_decisive"]:
+            undecided = [n for n, t in gate["terms"].items() if not t["decisive"]]
+            raise SystemExit(
+                "T0.2 plateau gate is UNDECIDED on the shipped dense "
+                f"configuration for {undecided} (see "
+                f"{OUT}/t0_nondegeneracy.json): over {NONDEG_EPISODES} "
+                "episodes the episode-level bootstrap does not reproduce the "
+                "point verdict, so the verdict is about the sample and not "
+                "about the reward. Do NOT re-roll the seed and do NOT widen "
+                "the band. Measured over 2500 episodes / 2.57M clone steps "
+                "at five disjoint seeds, the vis term's positive fraction is "
+                "0.0528 (bootstrap 95% CI [0.0493, 0.0563]) against a band "
+                "edge of 0.05 — it sits ON the edge, and the interval's "
+                "lower bound first clears 0.05 only at ~4000 episodes, "
+                "twenty times the training budget of the arm this gates. "
+                "Resolve it by changing the term or by amending the "
+                "criterion for it, and pre-register the amendment."
+            )
         if not gate["all_pass"]:
             raise SystemExit(
                 "T0.2 plateau gate FAILED on the shipped dense configuration "
