@@ -82,7 +82,14 @@ def _nearest_obstacle_surface(xy: np.ndarray, obstacles: list[dict]) -> float:
 
 
 class DenseRewardWrapper(gym.Wrapper):
-    """Training-only dense reward on top of SingleAgentWrapper (T0.2)."""
+    """Training-only dense reward on top of SingleAgentWrapper (T0.2).
+
+    `step` returns the combined reward (env terminal + dense) as the actual
+    reward, since that is what training must optimize, but also reports the
+    dense term alone under `info["dense_reward"]` so a non-degeneracy check
+    can measure the dense signal in isolation instead of being contaminated
+    by the rare terminal +/-1.
+    """
 
     def __init__(
         self,
@@ -146,6 +153,7 @@ class DenseRewardWrapper(gym.Wrapper):
             dense += self.w_evis * (-1.0 if visible else 1.0)
         if self.w_pbrs:
             dense += self.w_pbrs * (self.gamma * self._phi() - phi)
+        info["dense_reward"] = dense
         return obs, reward + dense, terminated, truncated, info
 
 

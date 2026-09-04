@@ -150,17 +150,41 @@ class TestDenseRewardWrapper:
         assert terminated
         assert r >= 1.0
 
+    def test_dense_reward_key_isolates_the_dense_term(self):
+        # info["dense_reward"] must carry the dense term ALONE, distinct
+        # from the combined reward once a terminal outcome mixes in — this
+        # is what signal_nondegeneracy must read instead of the raw reward,
+        # or a rollout with a nonzero capture rate would contaminate it.
+        cfg = EnvConfig(n_obstacles=0)
+        w = DenseRewardWrapper(
+            SingleAgentWrapper(cfg, "pursuer", GreedyEvader), w_vis=0.1
+        )
+        w.reset(seed=0)
+        _place(w.env, (0.0, 0.0, 0.0), (2.0, 0.0, 0.0))
+        _, r, _, _, info = w.step(np.array([-1.0, 0.0]))  # visible, no terminal: agree
+        assert r == pytest.approx(0.1, abs=1e-9)
+        assert info["dense_reward"] == pytest.approx(r, abs=1e-9)
+
+        w.reset(seed=0)
+        _place(w.env, (0.0, 0.0, 0.0), (0.2, 0.0, 0.0))  # adjacent: captures this step
+        _, r, terminated, _, info = w.step(np.array([1.0, 0.0]))
+        assert terminated
+        assert r == pytest.approx(1.0 + info["dense_reward"], abs=1e-9)
+        assert info["dense_reward"] != pytest.approx(r, abs=1e-9)
+
     def test_nondegeneracy_on_a_real_rollout(self):
         # T0.2 plateau check, run for real: the FOV-limited pursuer rolled
         # against the greedy evader must see the opponent on SOME but not
-        # ALL steps, so the visibility term is a live signal.
+        # ALL steps, so the visibility term is a live signal. Reads the
+        # isolated dense term from info, not the combined reward, so a rare
+        # terminal +/-1 cannot contaminate the check.
         from pe2.scripted import FovLimitedPursuer
 
         cfg = EnvConfig()
         w = DenseRewardWrapper(
             SingleAgentWrapper(cfg, "pursuer", GreedyEvader), w_vis=0.1
         )
-        rewards = []
+        dense_rewards = []
         for ep in range(3):
             _obs, _ = w.reset(seed=790100 + ep)
             teacher = FovLimitedPursuer()
@@ -170,10 +194,10 @@ class TestDenseRewardWrapper:
                 a = np.array(
                     [2.0 * v / cfg.v_max - 1.0, om / cfg.omega_max], dtype=np.float32
                 )
-                _obs, r, term, trunc, _ = w.step(a)
-                rewards.append(r)
+                _obs, _r, term, trunc, info = w.step(a)
+                dense_rewards.append(info["dense_reward"])
                 if term or trunc:
                     break
-        nd = signal_nondegeneracy(rewards)
+        nd = signal_nondegeneracy(dense_rewards)
         assert 0.05 < nd["frac_positive"] < 0.95
         assert nd["std"] > 0.0
