@@ -23,10 +23,17 @@ SB3 for adding a term to the actor loss — the loss is assembled inside
 module, deletable in a single `rm`. To re-verify the copy against a future
 SB3, diff this method against `sac.py` and check that only the `# ANCHOR`
 lines differ. (The copy is verbatim modulo `ruff format` line wrapping.)
+That check is AUTOMATED and enforced on every test run — see
+`TestLibraryCopyIsFaithful` in tests/pe2/test_anchored_sac.py, which strips
+the marked lines and asserts what remains parses to the installed SAC.train.
+pyproject pins no SB3 upper bound, so that test is what stops an upgrade
+from silently confounding the pilot race.
 
-With `beta == 0.0` (or no anchor set) the ANCHOR block is skipped entirely,
-so the computation graph and the RNG consumption are bit-identical to SB3's
-own SAC — the pilot's beta=0 control arm IS the library.
+At `beta == 0.0` the KL is still MEASURED and logged (the control arm's real
+drift is the whole point of the diagnosis) but not added to the loss, and the
+actor's forward pass for it runs under `no_grad`. So the beta=0 arm remains
+bit-identical to SB3's own SAC — verified by
+`test_beta_zero_is_bit_identical_to_plain_sac`.
 """
 
 from __future__ import annotations
@@ -61,7 +68,9 @@ def gaussian_kl(mean, log_std, mean_ref, log_std_ref):
 class KLAnchoredSAC(SAC):
     """SAC whose actor loss carries `beta * KL(pi_theta || pi_anchor)`.
 
-    `beta = 0` and/or an unset anchor reduce this to plain SB3 SAC.
+    `beta = 0` (or an unset anchor) reduces this to plain SB3 SAC. With an
+    anchor set, `beta = 0` still REPORTS `train/anchor_kl` — it just does not
+    price it — so the control arm's drift is measurable.
     """
 
     def __init__(self, *args, beta: float = 1.0, **kwargs):
@@ -73,6 +82,11 @@ class KLAnchoredSAC(SAC):
             # gaussian_kl would compute a different quantity without
             # saying so. Refuse loudly instead of reporting a wrong KL.
             raise ValueError("KLAnchoredSAC does not support use_sde=True")
+        if beta < 0.0:
+            # The loss is only amended when beta > 0, so a negative weight
+            # would train as plain SAC while the run reported itself as an
+            # anchored arm. A mis-signed ablation must fail, not mislead.
+            raise ValueError(f"beta must be >= 0, got {beta!r}")
         self.beta = beta
         self.anchor = None
 
@@ -194,17 +208,27 @@ class KLAnchoredSAC(SAC):
 
             # ANCHOR: price leaving the clone manifold. KL between the
             # ANCHOR: pre-tanh Gaussians == KL between the squashed policies.
-            if self.anchor is not None and self.beta > 0.0:  # ANCHOR
-                mean, log_std, _ = self.actor.get_action_dist_params(  # ANCHOR
-                    replay_data.observations  # ANCHOR
-                )  # ANCHOR
+            # ANCHOR: MEASURED whenever an anchor exists — the beta=0 control
+            # ANCHOR: is the arm whose drift the diagnosis is about, so it must
+            # ANCHOR: report its real drift, not a fabricated zero — but only
+            # ANCHOR: PRICED into the loss when beta > 0. At beta=0 the actor
+            # ANCHOR: pass runs under no_grad, so it adds no gradient, draws no
+            # ANCHOR: randomness, and (no BatchNorm in the SAC actor) mutates no
+            # ANCHOR: module state: the arm stays bit-identical to plain SAC.
+            if self.anchor is not None:  # ANCHOR
+                priced = self.beta > 0.0  # ANCHOR
+                with th.set_grad_enabled(priced):  # ANCHOR
+                    mean, log_std, _ = self.actor.get_action_dist_params(  # ANCHOR
+                        replay_data.observations  # ANCHOR
+                    )  # ANCHOR
                 with th.no_grad():  # ANCHOR
                     mean_a, log_std_a, _ = self.anchor.get_action_dist_params(  # ANCHOR
                         replay_data.observations  # ANCHOR
                     )  # ANCHOR
                 kl = gaussian_kl(mean, log_std, mean_a, log_std_a).mean()  # ANCHOR
-                actor_loss = actor_loss + self.beta * kl  # ANCHOR
                 anchor_kls.append(kl.item())  # ANCHOR
+                if priced:  # ANCHOR
+                    actor_loss = actor_loss + self.beta * kl  # ANCHOR
             actor_losses.append(actor_loss.item())
 
             # Optimize the actor
@@ -229,7 +253,6 @@ class KLAnchoredSAC(SAC):
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
         # ANCHOR: recorded unconditionally so the key exists in every arm.
-        self.logger.record(  # ANCHOR
-            "train/anchor_kl", float(np.mean(anchor_kls)) if anchor_kls else 0.0
-        )  # ANCHOR
+        anchor_kl = float(np.mean(anchor_kls)) if anchor_kls else 0.0  # ANCHOR
+        self.logger.record("train/anchor_kl", anchor_kl)  # ANCHOR
         # ---- END SB3 2.7.1 SAC.train ----

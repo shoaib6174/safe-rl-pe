@@ -1,6 +1,9 @@
 """Tests for pe2.anchored_sac — pilot P-B (KL anchor to the frozen clone)."""
 
+import ast
 import copy
+import inspect
+import textwrap
 
 import numpy as np
 import pytest
@@ -134,12 +137,17 @@ class TestKLAnchoredSAC:
     def test_large_beta_keeps_the_actor_near_the_anchor(self):
         # Same replay data, same seed: after N updates the actor with a huge
         # anchor weight must stay strictly closer to the clone than beta=0.
+        # SB3's seeding does NOT reach the observation space, so the probe
+        # batch is seeded explicitly — otherwise the two arms are measured on
+        # different draws and the strict inequality is only probabilistic.
         def drift(beta):
             m = _model(beta=beta, seed=3)
             m.learn(total_timesteps=64)
             m.train(gradient_steps=30, batch_size=32)
+            space = m.env.envs[0].observation_space
+            space.seed(20260904)
             obs = torch.as_tensor(
-                np.stack([m.env.envs[0].observation_space.sample() for _ in range(64)]),
+                np.stack([space.sample() for _ in range(64)]),
                 dtype=torch.float32,
             )
             with torch.no_grad():
@@ -163,6 +171,37 @@ class TestKLAnchoredSAC:
         with pytest.raises(ValueError, match="use_sde"):
             _model(beta=1.0, use_sde=True)
 
+    def test_rejects_negative_beta(self):
+        # A negative weight would silently disable the term (the loss is only
+        # amended when beta > 0), so an arm labelled "anchored" would train as
+        # plain SAC. A mis-signed ablation must fail loudly, not quietly.
+        with pytest.raises(ValueError, match="beta"):
+            _model(beta=-1.0)
+
+    def test_beta_zero_logs_the_real_drift_not_a_fabricated_zero(self):
+        # The control arm is the arm whose drift the diagnosis is ABOUT. If it
+        # logged 0.0 the series would read as "never left the clone", the exact
+        # opposite of the finding. beta=0 must still MEASURE the divergence.
+        m = _model(beta=0.0)
+        m.learn(total_timesteps=64)
+        m.train(gradient_steps=30, batch_size=32)
+        logged = m.logger.name_to_value["train/anchor_kl"]
+        assert logged > 0.0, "beta=0 reported a fabricated zero drift"
+
+        # and the logged number must be the actual actor-vs-anchor divergence,
+        # not some other quantity: recompute it on a fresh probe batch and
+        # require the same order of magnitude.
+        space = m.env.envs[0].observation_space
+        space.seed(20260904)
+        obs = torch.as_tensor(
+            np.stack([space.sample() for _ in range(64)]), dtype=torch.float32
+        )
+        with torch.no_grad():
+            mean, log_std, _ = m.actor.get_action_dist_params(obs)
+            mean_a, log_std_a, _ = m.anchor.get_action_dist_params(obs)
+            measured = gaussian_kl(mean, log_std, mean_a, log_std_a).mean().item()
+        assert 0.1 < logged / measured < 10.0, (logged, measured)
+
     def test_no_anchor_set_still_trains(self):
         # Anchor is optional: an un-anchored model must behave like plain SAC
         # rather than crash, and report a zero KL.
@@ -171,6 +210,57 @@ class TestKLAnchoredSAC:
         m.learn(total_timesteps=48)
         m.train(gradient_steps=2, batch_size=16)
         assert m.logger.name_to_value["train/anchor_kl"] == 0.0
+
+
+def _train_method(path, cls_name):
+    """The `train` FunctionDef of `cls_name` in `path`, plus its source lines."""
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines(keepends=True)
+    tree = ast.parse("".join(lines))
+    for cls in tree.body:
+        if isinstance(cls, ast.ClassDef) and cls.name == cls_name:
+            for fn in cls.body:
+                if isinstance(fn, ast.FunctionDef) and fn.name == "train":
+                    return fn, lines
+    raise AssertionError(f"no {cls_name}.train in {path}")
+
+
+class TestLibraryCopyIsFaithful:
+    """The override is a copied library method; nothing else pins the version.
+
+    pyproject declares `stable-baselines3` with NO upper bound and CI installs
+    through it, so an upgrade could change SAC.train underneath this copy while
+    every other pilot arm picks up the new one. The arms would then differ by
+    more than the anchor term and NOTHING would fail. This is that tripwire.
+    """
+
+    def test_train_is_the_installed_sac_train_plus_only_marked_lines(self):
+        import stable_baselines3
+        from stable_baselines3.sac.sac import SAC as InstalledSAC
+
+        import pe2.anchored_sac
+
+        lib_fn, _ = _train_method(inspect.getsourcefile(InstalledSAC), "SAC")
+        mine_fn, mine_lines = _train_method(
+            inspect.getsourcefile(pe2.anchored_sac), "KLAnchoredSAC"
+        )
+
+        # The module docstring promises a future reader that diffing this
+        # method against sac.py shows ONLY `# ANCHOR` lines. Test exactly that
+        # promise: delete every marked line and what remains must BE the
+        # library's method — same body, same signature, same name.
+        seg = mine_lines[mine_fn.lineno - 1 : mine_fn.end_lineno]
+        stripped = [ln for ln in seg if "# ANCHOR" not in ln]
+        assert len(stripped) < len(seg), "no ANCHOR-marked lines found at all"
+        rebuilt = ast.parse(textwrap.dedent("".join(stripped))).body[0]
+
+        assert ast.dump(rebuilt) == ast.dump(lib_fn), (
+            "KLAnchoredSAC.train no longer matches the installed "
+            f"stable_baselines3 {stable_baselines3.__version__} SAC.train once "
+            "the # ANCHOR lines are removed. Either an addition is unmarked, "
+            "or SB3 was upgraded and the copy must be re-taken from the new "
+            "source (see the pe2.anchored_sac module docstring)."
+        )
 
 
 if __name__ == "__main__":
