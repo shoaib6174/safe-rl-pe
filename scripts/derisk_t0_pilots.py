@@ -33,6 +33,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from stable_baselines3.common.callbacks import CallbackList
 
+from pe2.anchored_sac import AnchorKLProbe, anchor_kl_grew
 from pe2.config import EnvConfig
 from pe2.derisk import (
     CLONE_CI_LO,
@@ -40,6 +41,7 @@ from pe2.derisk import (
     TrainingCaptureCounter,
     control_collapsed,
     pilot_passes,
+    start_is_adequate,
 )
 from pe2.eval import win_count
 from pe2.exploitability import (
@@ -59,7 +61,16 @@ CLONE = pathlib.Path("results/visual_gates/step_05/sac_bc_pursuer.zip")
 EVAL_SEED0 = 780000  # disjoint from demo (750000+) and audit (790000+) streams
 DEMO_SEED0 = 750000
 DEMO_EPISODES = 300  # named once: the call and the recorded row cannot disagree
-SEEDS = {"PA": 7, "PB": 8, "PC": 9, "CTRL": 10}
+# One seed for the three OFF-POLICY arms: the training seed drives critic
+# initialisation, exploration noise and the training env's episode stream, so
+# a seed per arm confounds the mechanism with between-seed variance — measured
+# at 0.010-0.280 across weight seeds under an identical protocol in this
+# project. Paired, P-A/P-B/CTRL differ only in mechanism. P-C is a different
+# algorithm family (PPO: no replay, no critic warm-up, its own clone) and
+# cannot be paired with them, so it keeps its own seed. This narrows the
+# pre-registered seeds 7/8/9/10 and is recorded in the S121 worklog.
+OFF_POLICY_SEED = 7
+SEEDS = {"PA": OFF_POLICY_SEED, "PB": OFF_POLICY_SEED, "PC": 9, "CTRL": OFF_POLICY_SEED}
 W_VIS, W_SEARCH, BETA = 0.1, 1e-4, 1.0
 KILL_POSITIVES_PER_1M = 50
 
@@ -87,7 +98,14 @@ def run_arm(arm, cfg, timesteps, warmup, every, eval_n, device):
     # every=50k the phase-A/phase-B boundary IS a snapshot boundary; the row
     # records `critic_warmup` so a reader can locate it for other settings.
     counter = TrainingCaptureCounter(snapshot_every=every)
-    cb = CallbackList([pr.callback, counter.callback])
+    callbacks = [pr.callback, counter.callback]
+    if arm == "PB":
+        # AFTER the probe and on the same schedule: it stamps the row the
+        # probe has just appended. Without it the anchored arm's divergence
+        # is computed at every gradient step and discarded, and "did not
+        # collapse" cannot be told apart from "the anchor froze the actor".
+        callbacks.append(AnchorKLProbe(pr.rows, every).callback)
+    cb = CallbackList(callbacks)
     seed = SEEDS[arm]
     # One source of truth for what each arm's warm-up ACTUALLY is, so the
     # recorded row cannot disagree with the call. CTRL is the naive D78
@@ -180,6 +198,7 @@ def run_arm(arm, cfg, timesteps, warmup, every, eval_n, device):
         raise SystemExit(f"unknown arm {arm}")
     rows = pr.rows
     rate = counter.positives_per_1M
+    verdict = pilot_passes(rows)
     result = {
         "arm": arm,
         "seed": seed,
@@ -188,7 +207,7 @@ def run_arm(arm, cfg, timesteps, warmup, every, eval_n, device):
         "eval_n": eval_n,
         "eval_seed0": EVAL_SEED0,
         "checkpoints": rows,
-        "pass": pilot_passes(rows),
+        "pass": verdict,
         "training": dict(
             counter.state,
             positives_per_1M=rate,
@@ -196,7 +215,26 @@ def run_arm(arm, cfg, timesteps, warmup, every, eval_n, device):
         ),
     }
     if arm == "PC":
+        # The starting rate was already measured on the right seeds; here it
+        # is USED. When its Wilson upper bound is below the bound the arm is
+        # judged against, neither a pass nor a failure is about the horizon
+        # hypothesis, so the verdict is forced to undetermined with the
+        # reason in words — the pattern control_collapsed already uses.
+        adequate, why = start_is_adequate(bc_start["k"], bc_start["n"])
+        bc_start["adequate"] = adequate
+        bc_start["reason"] = why
         result["bc_start"] = bc_start
+        if adequate is None:
+            result["pass"] = verdict = None
+            result["pass_reason"] = why
+            print(f"[PC] verdict forced to undetermined: {why}", flush=True)
+    if arm == "PB":
+        # The anchored arm passes the "does not collapse" rule by not moving.
+        # Report whether the divergence GREW alongside the verdict, so a pass
+        # that is really a preserved clone cannot be read as a survivor.
+        grew, kl_why = anchor_kl_grew(rows)
+        result["anchor"] = {"beta": BETA, "kl_grew": grew, "kl_reason": kl_why}
+        print(f"[PB] {kl_why}", flush=True)
     # The kill rule needs a rate; with no rollouts there is none, and a
     # verdict off nothing would read as "the signal is too sparse".
     if arm == "PA" and rate is not None:
@@ -235,7 +273,7 @@ def summarize(results, every, eval_n, complete):
         "probe_every": every,
         "eval_n": eval_n,
         "survivors": (
-            [a for a, r in results.items() if a != "CTRL" and r["pass"]]
+            [a for a, r in results.items() if a != "CTRL" and r["pass"] is True]
             if verdict is True
             else None
         ),
@@ -260,7 +298,8 @@ def write_figure(results, summary, eval_n) -> None:
         # No pass/fail wording when the harness is unvalidated: the figure is
         # the artifact most likely to end up in a slide, and it must not say
         # an arm passed when the digest is refusing to name survivors.
-        label = f"{arm} ({'pass' if r['pass'] else 'fail'})" if validated else arm
+        word = {True: "pass", False: "fail", None: "undetermined"}[r["pass"]]
+        label = f"{arm} ({word})" if validated else arm
         ax.plot(
             [c["steps"] for c in r["checkpoints"]],
             [c["win_rate"] for c in r["checkpoints"]],
@@ -319,8 +358,13 @@ def main() -> None:
             arm, cfg, args.timesteps, args.warmup, args.every, args.eval_n, args.device
         )
         # Flush after EVERY arm: these runs take hours, and a failure in the
-        # last arm must not discard the ones that already finished.
-        write_summary(summarize(results, args.every, args.eval_n, complete=False))
+        # last arm must not discard the ones that already finished. The FIGURE
+        # is rewritten too — it is the artifact most likely to be read on its
+        # own, and leaving a stale unstamped one beside an in-progress summary
+        # is the hazard the "not validated" stamp exists to close.
+        partial = summarize(results, args.every, args.eval_n, complete=False)
+        write_summary(partial)
+        write_figure(results, partial, args.eval_n)
 
     summary = summarize(results, args.every, args.eval_n, complete=True)
     write_summary(summary)

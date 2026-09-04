@@ -236,6 +236,40 @@ def control_collapsed(
     )
 
 
+def start_is_adequate(
+    k: int, n: int, threshold: float = CLONE_CI_LO
+) -> tuple[bool | None, str]:
+    """Can an arm that starts from its OWN clone be judged against `threshold`?
+
+    Returns `(verdict, reason)`, verdict in {True, None}, in the same shape
+    `control_collapsed` uses. P-A/P-B/CTRL all start from the GATED clone,
+    whose 0.185 [0.137, 0.245] is where `threshold` came from. P-C starts
+    from a freshly trained PPO clone of unknown quality and is judged
+    against the same number. If the Wilson UPPER bound on that starting
+    rate is already below `threshold`, the arm could not have cleared the
+    bound however well the mechanism worked, so its failure says nothing
+    about the horizon hypothesis and must not be reported as refuting it.
+
+    `None` means "cannot be judged", never a bare null: the reason says so
+    in words, and the caller forces the arm's verdict to undetermined.
+    """
+    from pe2.eval import wilson_ci
+
+    lo, hi = wilson_ci(k, n)
+    if hi < threshold:
+        return None, (
+            f"starting win rate {k}/{n} = {k / n:.3f} (Wilson [{lo:.3f}, "
+            f"{hi:.3f}]) has an upper bound below {threshold}: this arm never "
+            "had a competent starting point, so neither its pass nor its "
+            "failure is evidence about the mechanism it tests"
+        )
+    return True, (
+        f"starting win rate {k}/{n} = {k / n:.3f} (Wilson [{lo:.3f}, "
+        f"{hi:.3f}]) reaches {threshold}: the start is consistent with "
+        "clearing the bound, so the arm's verdict is about the mechanism"
+    )
+
+
 class TrainingCaptureCounter:
     """SB3 callback: count training episodes ending in capture, and env
     steps, so the T0.1 kill rule (positives per 1M) can be read off the P-A

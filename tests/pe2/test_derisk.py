@@ -15,6 +15,7 @@ from pe2.derisk import (
     mc_returns,
     pilot_passes,
     signal_audit,
+    start_is_adequate,
 )
 from pe2.exploitability import SingleAgentWrapper
 from pe2.scripted import GreedyEvader
@@ -295,3 +296,34 @@ class TestStochasticRepeat:
         # and the report must SAY what was seeded: a number whose provenance
         # is not in the file is not a reproducible measurement.
         assert a["torch_seed"] == 790000
+
+
+class TestStartIsAdequate:
+    """P-C starts from its OWN clone of unknown quality yet is judged against
+    a bound derived from a DIFFERENT clone. Measuring the start and then not
+    using it is how a weak start gets reported as a refuted hypothesis."""
+
+    def test_a_start_separated_below_the_bound_is_undetermined(self):
+        # 4/200 = 0.020, Wilson [0.008, 0.050]: the upper bound 0.050 is
+        # below 0.137, so this arm could not reach the bound even if the
+        # mechanism were perfect and nothing about it can be concluded.
+        verdict, why = start_is_adequate(4, 200)
+        assert verdict is None
+        assert "0.050" in why and "0.137" in why
+
+    def test_a_start_whose_interval_reaches_the_bound_is_judgeable(self):
+        # 20/200 = 0.100, Wilson [0.066, 0.149]: 0.149 >= 0.137, so the
+        # start is consistent with clearing the bound and the arm's verdict
+        # carries information about the mechanism.
+        verdict, why = start_is_adequate(20, 200)
+        assert verdict is True
+        assert "0.149" in why
+
+    def test_the_gated_clone_itself_is_judgeable(self):
+        # 37/200 = 0.185 is the gated clone, whose CI-lo IS the bound.
+        assert start_is_adequate(37, 200)[0] is True
+
+    def test_reason_is_always_words(self):
+        for k in (0, 4, 20, 37):
+            _, why = start_is_adequate(k, 200)
+            assert isinstance(why, str) and len(why) > 20
