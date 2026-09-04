@@ -89,6 +89,10 @@ class KLAnchoredSAC(SAC):
             raise ValueError(f"beta must be >= 0, got {beta!r}")
         self.beta = beta
         self.anchor = None
+        # Last measured divergence from the clone, exported for the probe
+        # (see AnchorKLProbe). None means "not measured" — no anchor, or no
+        # gradient step yet — which is not the same as a measured 0.0.
+        self.last_anchor_kl: float | None = None
 
     def set_anchor(self, actor) -> None:
         """Freeze a deep copy of `actor` as the reference policy.
@@ -255,4 +259,89 @@ class KLAnchoredSAC(SAC):
         # ANCHOR: recorded unconditionally so the key exists in every arm.
         anchor_kl = float(np.mean(anchor_kls)) if anchor_kls else 0.0  # ANCHOR
         self.logger.record("train/anchor_kl", anchor_kl)  # ANCHOR
+        # ANCHOR: also exported on the model. The logger's name_to_value is
+        # ANCHOR: cleared by Logger.dump(), which SB3 calls on its own episode
+        # ANCHOR: schedule, so a reader on the probe schedule can find the key
+        # ANCHOR: missing; this attribute cannot be cleared underneath it.
+        self.last_anchor_kl = anchor_kl if anchor_kls else None  # ANCHOR
         # ---- END SB3 2.7.1 SAC.train ----
+
+
+class AnchorKLProbe:
+    """SB3 callback: stamp the live anchor divergence onto the probe row
+    written at the same step, as `row["anchor_kl"]`.
+
+    WHY THIS EXISTS. The pre-registered pass rule for the pilots is "does
+    not collapse". An actor the anchor has PINNED to the clone satisfies
+    that by not moving: it sits at the clone's rate at every probe and is
+    reported as a survivor, sending the next phase to spend weeks on an
+    expensive way to preserve a clone. `train/anchor_kl` is the one number
+    that separates "the anchor stopped harmful drift" from "the anchor
+    froze the policy", and it was computed at every gradient step and then
+    discarded — `finetune_br_anchored` configures no logger output and the
+    runner drops the returned model.
+
+    Reads `model.last_anchor_kl`, NOT `model.logger.name_to_value`:
+    `Logger.dump()` clears name_to_value and SB3 dumps on its own episode
+    schedule, so a probe-schedule read would silently record a hole exactly
+    on the steps where a dump landed first. The attribute is set by the
+    same line that records the log value.
+
+    Wiring: place AFTER the `CheckpointEvalProbe` callback in the
+    `CallbackList` and give it the SAME `every` — it stamps the row that
+    probe has just appended. Both conditions are enforced (RuntimeError),
+    because a silently unstamped row is exactly the failure this closes.
+    """
+
+    def __init__(self, rows: list[dict], every: int):
+        from stable_baselines3.common.callbacks import BaseCallback  # lazy
+
+        class _CB(BaseCallback):
+            def _on_step(inner) -> bool:
+                if inner.num_timesteps % every != 0:
+                    return True
+                if not rows or rows[-1].get("steps") != inner.num_timesteps:
+                    raise RuntimeError(
+                        "AnchorKLProbe found no probe row at "
+                        f"{inner.num_timesteps} steps (last row: "
+                        f"{rows[-1] if rows else None}). It must run AFTER "
+                        "the CheckpointEvalProbe callback and share its "
+                        "`every`, or the anchored arm is judged with no "
+                        "divergence readout."
+                    )
+                rows[-1]["anchor_kl"] = inner.model.last_anchor_kl
+                return True
+
+        self.rows = rows
+        self.callback = _CB()
+
+
+def anchor_kl_grew(rows: list[dict]) -> tuple[bool | None, str]:
+    """Did the anchored arm's divergence from the clone GROW across probes?
+
+    Returns `(verdict, reason)` in the shape `pe2.derisk.control_collapsed`
+    uses. A pass for the anchored arm means "did not collapse"; without
+    growth the arm has PRESERVED the clone rather than stopped drift, and
+    its win rate is the clone's, not evidence that anchored RL learns.
+    `None` means the question cannot be answered (fewer than two
+    measurements), never a bare null.
+    """
+    kls = [(r["steps"], r["anchor_kl"]) for r in rows if r.get("anchor_kl") is not None]
+    if len(kls) < 2:
+        return None, (
+            "anchor divergence undetermined: fewer than two probes carry a "
+            f"measurement ({len(kls)} of {len(rows)} rows), so there is "
+            "nothing to compare and neither growth nor pinning can be claimed"
+        )
+    (s0, k0), (s1, k1) = kls[0], kls[-1]
+    if k1 > k0:
+        return True, (
+            f"anchor divergence grew {k0:.4g} @{s0} -> {k1:.4g} @{s1}: the "
+            "actor moved off the clone, so the arm's win rate is not merely "
+            "the clone's preserved"
+        )
+    return False, (
+        f"anchor divergence did NOT grow ({k0:.4g} @{s0} -> {k1:.4g} @{s1}): "
+        "the anchor has preserved the clone rather than stopped drift, so a "
+        "pass here is not evidence that anchored fine-tuning learns"
+    )

@@ -265,3 +265,120 @@ class TestLibraryCopyIsFaithful:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestAnchorKlIsExported:
+    """The anchor divergence is the one number that separates 'the anchor
+    stopped harmful drift' from 'the anchor froze the policy'. Under a
+    'does not collapse' pass rule, a frozen actor passes by not moving, so
+    this number has to leave `train()` and reach the results file."""
+
+    def test_last_anchor_kl_matches_the_logged_value(self):
+        m = _model(beta=1.0)
+        m.learn(total_timesteps=48)
+        m.train(gradient_steps=2, batch_size=16)
+        assert m.last_anchor_kl == pytest.approx(
+            m.logger.name_to_value["train/anchor_kl"]
+        )
+        assert m.last_anchor_kl > 0.0
+
+    def test_no_anchor_means_no_number_rather_than_zero(self):
+        # A model with no anchor measured nothing; reporting 0.0 would read
+        # as "the actor never left the clone", the opposite of no data.
+        m = _model(beta=1.0)
+        m.anchor = None
+        assert m.last_anchor_kl is None
+        m.learn(total_timesteps=48)
+        m.train(gradient_steps=2, batch_size=16)
+        assert m.last_anchor_kl is None
+
+
+class TestAnchorKLProbe:
+    def test_stamps_the_row_written_at_the_same_step(self):
+        from stable_baselines3.common.callbacks import BaseCallback, CallbackList
+
+        from pe2.anchored_sac import AnchorKLProbe
+
+        rows: list[dict] = []
+        every = 32
+
+        class _FakeProbe(BaseCallback):
+            """Stands in for CheckpointEvalProbe: appends a row on the same
+            schedule, and runs BEFORE the anchor probe in the list."""
+
+            def _on_step(inner) -> bool:
+                if inner.num_timesteps % every == 0:
+                    rows.append({"steps": inner.num_timesteps})
+                return True
+
+        m = _model(beta=1.0, seed=5)  # learning_starts=32, train_freq=1
+        m.learn(
+            total_timesteps=64,
+            callback=CallbackList([_FakeProbe(), AnchorKLProbe(rows, every).callback]),
+        )
+        assert [r["steps"] for r in rows] == [32, 64]
+        # At 32 steps no gradient step has run yet (learning_starts=32), so
+        # there is no measurement — None, not a fabricated 0.0. By 64 the
+        # actor has been updated and the divergence is a real number.
+        assert rows[0]["anchor_kl"] is None
+        assert isinstance(rows[1]["anchor_kl"], float)
+        assert rows[1]["anchor_kl"] >= 0.0
+
+    def test_refuses_when_no_probe_row_was_written(self):
+        # Wiring guard: placed BEFORE the probe (or given a different
+        # `every`) it would stamp a stale row or none at all, and the arm
+        # would silently be judged with no divergence readout.
+        from stable_baselines3.common.callbacks import BaseCallback, CallbackList
+
+        from pe2.anchored_sac import AnchorKLProbe
+
+        rows: list[dict] = []
+
+        class _LateProbe(BaseCallback):
+            def _on_step(inner) -> bool:
+                if inner.num_timesteps % 32 == 0:
+                    rows.append({"steps": inner.num_timesteps})
+                return True
+
+        m = _model(beta=1.0, seed=6)
+        with pytest.raises(RuntimeError, match="probe row"):
+            m.learn(
+                total_timesteps=64,
+                callback=CallbackList([AnchorKLProbe(rows, 32).callback, _LateProbe()]),
+            )
+
+
+class TestAnchorKlGrew:
+    def test_growth_is_reported_with_words(self):
+        from pe2.anchored_sac import anchor_kl_grew
+
+        rows = [
+            {"steps": 50_000, "anchor_kl": 0.0},  # phase A: actor frozen
+            {"steps": 100_000, "anchor_kl": 0.4},
+            {"steps": 200_000, "anchor_kl": 1.7},
+        ]
+        grew, why = anchor_kl_grew(rows)
+        assert grew is True
+        assert "0" in why and "1.7" in why
+
+    def test_a_pinned_actor_is_reported_as_not_grown(self):
+        # The failure this exists for: the anchor holds the actor ON the
+        # clone, the arm never collapses, and "pass" would mean "preserved
+        # the clone at the price of an anchored fine-tune".
+        from pe2.anchored_sac import anchor_kl_grew
+
+        rows = [
+            {"steps": 100_000, "anchor_kl": 1e-6},
+            {"steps": 200_000, "anchor_kl": 1e-6},
+        ]
+        grew, why = anchor_kl_grew(rows)
+        assert grew is False
+        assert "preserved the clone" in why
+
+    def test_fewer_than_two_measurements_is_undetermined(self):
+        from pe2.anchored_sac import anchor_kl_grew
+
+        for rows in ([], [{"steps": 100_000, "anchor_kl": 0.5}], [{"steps": 1}]):
+            grew, why = anchor_kl_grew(rows)
+            assert grew is None
+            assert isinstance(why, str) and len(why) > 20
