@@ -13,7 +13,6 @@ from pe2.shield import (
     NoOpShield,
     _boundary_constraints,
     _obstacle_constraint,
-    _solve_qp_2d,
     compute_vcp,
 )
 
@@ -118,49 +117,78 @@ class TestVCPMath:
         assert [c.kind for c in cons] == ["boundary"] * 8 + ["obstacle"] * 4
 
 
-class TestExactQP:
-    def test_unconstrained_nominal_passes_through(self):
-        u, feasible = _solve_qp_2d(0.5, 0.5, [], 1.0, 2.84, 150.0, 1.0)
-        assert feasible
-        assert np.allclose(u, [0.5, 0.5])
+def _linear_optimum(v_nom, w_nom, rows, v_max, omega_max, w_v, w_omega):
+    """Test helper: exact optimum of the LINEAR program over the candidates.
+
+    The shield itself judges candidates by the exact one-step barrier
+    (Task 4); this helper only checks that the enumeration still contains
+    the vertex the convex 2-D QP would pick (D85).
+    """
+    from pe2.shield import _qp_candidates
+
+    cands = _qp_candidates(v_nom, w_nom, rows, v_max, omega_max, w_v, w_omega)
+    ok = [
+        u
+        for u in cands
+        if all(c0 * u[0] + c1 * u[1] >= c2 - 1e-12 for c0, c1, c2 in rows)
+    ]
+    if not ok:
+        return None
+    return min(
+        ok, key=lambda u: w_v * (u[0] - v_nom) ** 2 + w_omega * (u[1] - w_nom) ** 2
+    )
+
+
+class TestCandidates:
+    def test_nominal_and_zero_are_always_present(self):
+        from pe2.shield import _qp_candidates
+
+        cands = _qp_candidates(0.5, 0.5, [], 1.0, 2.84, 150.0, 1.0)
+        assert np.array_equal(cands[0], [0.5, 0.5])
+        assert np.array_equal(cands[1], [0.0, 0.0])
+
+    def test_every_candidate_is_inside_the_box(self):
+        from pe2.shield import _qp_candidates
+
+        rows = [(-0.06, -0.003, -0.04), (1.0, 1.0, 2.0), (1.0, -1.0, 2.0)]
+        cands = _qp_candidates(3.0, -9.0, rows, 1.0, 2.84, 150.0, 1.0)
+        assert cands.dtype == np.float64 and cands.shape[1] == 2
+        assert (cands[:, 0] >= 0.0).all() and (cands[:, 0] <= 1.0).all()
+        assert (np.abs(cands[:, 1]) <= 2.84).all()
 
     def test_single_constraint_hand_computed(self):
         # dt*a_v = -0.05, dt*a_omega = 0, c2 = -0.01 -> v <= 0.2.
-        u, feasible = _solve_qp_2d(
-            1.0, 0.0, [(-0.05, 0.0, -0.01)], 1.0, 2.84, 150.0, 1.0
-        )
-        assert feasible
+        u = _linear_optimum(1.0, 0.0, [(-0.05, 0.0, -0.01)], 1.0, 2.84, 150.0, 1.0)
         assert u[0] == pytest.approx(0.2)
         assert u[1] == pytest.approx(0.0, abs=1e-9)
 
-    def test_infeasible_rows_reported(self):
-        # v >= 10 and v <= -10 simultaneously: impossible.
-        _, feasible = _solve_qp_2d(
-            0.0, 0.0, [(1.0, 0.0, 10.0), (-1.0, 0.0, 10.0)], 1.0, 2.84, 150.0, 1.0
+    def test_infeasible_rows_leave_no_linear_candidate(self):
+        assert (
+            _linear_optimum(
+                0.0, 0.0, [(1.0, 0.0, 10.0), (-1.0, 0.0, 10.0)], 1.0, 2.84, 150.0, 1.0
+            )
+            is None
         )
-        assert not feasible
 
     def test_vertex_optimum_two_constraints(self):
-        # v + w >= 2 and v - w >= 2 with nominal (0,0), equal weights:
-        # optimum is the vertex (2, 0).
-        u, feasible = _solve_qp_2d(
+        u = _linear_optimum(
             0.0, 0.0, [(1.0, 1.0, 2.0), (1.0, -1.0, 2.0)], 5.0, 5.0, 1.0, 1.0
         )
-        assert feasible
         assert u[0] == pytest.approx(2.0)
         assert u[1] == pytest.approx(0.0, abs=1e-9)
 
     def test_anisotropic_weight_prefers_steering(self):
-        # Same constraint as the off-axis obstacle case: -1.2v - 0.06w >= -0.8
-        # scaled by dt=0.05 -> (-0.06, -0.003, -0.04). With w_v=150 >> w_omega=1
-        # the projection must turn far more than it brakes.
-        u, feasible = _solve_qp_2d(
-            1.0, 0.0, [(-0.06, -0.003, -0.04)], 1.0, 2.84, 150.0, 1.0
-        )
-        assert feasible
+        u = _linear_optimum(1.0, 0.0, [(-0.06, -0.003, -0.04)], 1.0, 2.84, 150.0, 1.0)
         assert -0.06 * u[0] - 0.003 * u[1] >= -0.04 - 1e-9
-        assert abs(u[1]) > 1.0  # big steering correction
-        assert u[0] > 0.7  # little braking
+        assert abs(u[1]) > 1.0 and u[0] > 0.7
+
+    def test_enumeration_is_deterministic(self):
+        from pe2.shield import _qp_candidates
+
+        rows = [(-0.06, -0.003, -0.04), (1.0, 1.0, 2.0)]
+        a = _qp_candidates(0.7, 0.1, rows, 1.0, 2.84, 150.0, 1.0)
+        b = _qp_candidates(0.7, 0.1, rows, 1.0, 2.84, 150.0, 1.0)
+        assert np.array_equal(a, b)
 
 
 class TestCBFShieldFilter:

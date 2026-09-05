@@ -57,7 +57,6 @@ import numpy as np
 from pe2.config import EnvConfig
 from pe2.env import wrap_angle
 
-FEAS_TOL = 1e-9  # feasibility slack for the exact QP (float noise only)
 INTERVENTION_ATOL = 1e-4  # |Δu| above this counts as an intervention (root convention)
 HEAD_ON_TIE_TOL = 1e-9  # |error| within this of pi counts as an exact head-on tie
 STALL_V_FRAC = 0.05  # executed speed <= this fraction of v_max counts as stopped
@@ -175,7 +174,7 @@ def _body_obstacle_constraint(
     return Constraint(float(h), float(a_v), 0.0, "obstacle", float(h), True, 1.0)
 
 
-def _solve_qp_2d(
+def _qp_candidates(
     v_nom: float,
     w_nom: float,
     rows: list[tuple[float, float, float]],
@@ -183,42 +182,27 @@ def _solve_qp_2d(
     omega_max: float,
     w_v: float,
     w_omega: float,
-) -> tuple[np.ndarray, bool]:
-    """Exact 2-D weighted least-squares projection onto {c0·v + c1·ω ≥ c2} ∩ box.
-
-    Enumerates every candidate the convex optimum could be (D85). Returns
-    (u, feasible); feasible=False means no point satisfies all rows + box.
+) -> np.ndarray:
+    """Every point the weighted projection onto {c0·v + c1·ω ≥ c2} ∩ box could
+    pick (D85): nominal, weighted projection onto each line, pairwise line
+    intersections, line ∩ box-edge, box corners — plus `u = 0`, which is the
+    action that keeps every hard row bit-identical (spec B4) and must always
+    be on the table. Returns a (K, 2) float64 array, every row inside the box,
+    in a deterministic order. The rows are only used to LOCATE candidates; the
+    exact one-step check in `CBFShield` decides which are admissible.
     """
     box = [(0.0, v_max), (-omega_max, omega_max)]
 
-    def objective(u: np.ndarray) -> float:
-        return w_v * (u[0] - v_nom) ** 2 + w_omega * (u[1] - w_nom) ** 2
+    def clip_box(v: float, w: float) -> list[float]:
+        return [float(np.clip(v, *box[0])), float(np.clip(w, *box[1]))]
 
-    def feasible(u: np.ndarray) -> bool:
-        if u[0] < box[0][0] - FEAS_TOL or u[0] > box[0][1] + FEAS_TOL:
-            return False
-        if u[1] < box[1][0] - FEAS_TOL or u[1] > box[1][1] + FEAS_TOL:
-            return False
-        return all(c0 * u[0] + c1 * u[1] >= c2 - FEAS_TOL for c0, c1, c2 in rows)
-
-    def clip_box(u: np.ndarray) -> np.ndarray:
-        return np.array(
-            [np.clip(u[0], *box[0]), np.clip(u[1], *box[1])], dtype=np.float64
-        )
-
-    candidates = [clip_box(np.array([v_nom, w_nom]))]
-
-    # Weighted projection of the nominal onto each constraint line.
+    cands = [clip_box(v_nom, w_nom), [0.0, 0.0]]
     for c0, c1, c2 in rows:
         denom = c0 * c0 / w_v + c1 * c1 / w_omega
         if denom < 1e-18:
             continue
         lam = (c0 * v_nom + c1 * w_nom - c2) / denom
-        candidates.append(
-            clip_box(np.array([v_nom - lam * c0 / w_v, w_nom - lam * c1 / w_omega]))
-        )
-
-    # Pairwise line intersections (QP vertices).
+        cands.append(clip_box(v_nom - lam * c0 / w_v, w_nom - lam * c1 / w_omega))
     for i in range(len(rows)):
         for j in range(i + 1, len(rows)):
             c0i, c1i, c2i = rows[i]
@@ -226,29 +210,20 @@ def _solve_qp_2d(
             det = c0i * c1j - c0j * c1i
             if abs(det) < 1e-12:
                 continue
-            v = (c2i * c1j - c2j * c1i) / det
-            w = (c0i * c2j - c0j * c2i) / det
-            candidates.append(clip_box(np.array([v, w])))
-
-    # Line ∩ box-edge intersections.
+            cands.append(
+                clip_box((c2i * c1j - c2j * c1i) / det, (c0i * c2j - c0j * c2i) / det)
+            )
     for c0, c1, c2 in rows:
-        for v_edge in (box[0][0], box[0][1]):
+        for v_edge in box[0]:
             if abs(c1) > 1e-12:
-                candidates.append(clip_box(np.array([v_edge, (c2 - c0 * v_edge) / c1])))
-        for w_edge in (box[1][0], box[1][1]):
+                cands.append(clip_box(v_edge, (c2 - c0 * v_edge) / c1))
+        for w_edge in box[1]:
             if abs(c0) > 1e-12:
-                candidates.append(clip_box(np.array([(c2 - c1 * w_edge) / c0, w_edge])))
-
-    # Box corners.
-    for v_c in (box[0][0], box[0][1]):
-        for w_c in (box[1][0], box[1][1]):
-            candidates.append(np.array([v_c, w_c]))
-
-    feasible_candidates = [u for u in candidates if feasible(u)]
-    if not feasible_candidates:
-        return clip_box(np.array([v_nom, w_nom])), False
-    best = min(feasible_candidates, key=objective)
-    return best, True
+                cands.append(clip_box((c2 - c1 * w_edge) / c0, w_edge))
+    for v_c in box[0]:
+        for w_c in box[1]:
+            cands.append([v_c, w_c])
+    return np.asarray(cands, dtype=np.float64)
 
 
 class CBFShield:
@@ -448,15 +423,7 @@ class CBFShield:
     def _solve(
         self, v_nom: float, w_nom: float, cons: list[Constraint], v_max: float
     ) -> tuple[np.ndarray, bool]:
-        return _solve_qp_2d(
-            v_nom,
-            w_nom,
-            self._dcbf_rows(cons),
-            v_max,
-            self.cfg.omega_max,
-            self.w_v,
-            self.w_omega,
-        )
+        raise NotImplementedError("replaced in Task 5")
 
 
 class NoOpShield(CBFShield):
