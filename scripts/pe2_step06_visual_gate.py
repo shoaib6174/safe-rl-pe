@@ -67,20 +67,18 @@ SHIELDED_ROLE = "pursuer"
 SLIDE_BAND = 0.30  # obstacle clearance (m) counted as "along the boundary"
 MIN_SLIDE_STEPS = 15  # 0.75 s of continuous sliding
 
-# Episodes are picked from the pre-registered streams (main 760000+, probe
-# 770000+) for illustrative value; every number they produce is still
+# Episodes are picked from the pre-registered streams (main 800000+, probe
+# 810000+) for illustrative value; every number they produce is still
 # cross-checked against that seed's row in the gate JSON.
+# Filled in Task 8 from the v2 streams (800000+/810000+) after the gate run,
+# by the same criteria as v1 (a capture with a >= MIN_SLIDE_STEPS
+# contact-free slide and a visible intervention rate); the seeds and the
+# reason are recorded in the JSON.
 GATE_EPISODES = [
     # (label, arm name in step_06_gate.json, evader class, seed)
-    # 770083: probe stream — capture at 201 steps after a 59-step contact-free
-    # slide around an obstacle, 18.9% of steps intervened (C1, C2, C3).
-    ("probe_slide", "shielded_probe", ObstacleHuggingEvader, 770083),
-    # 770094: probe stream — capture at 189 steps, 41-step slide, 20.1%
-    # intervened; a second probe geometry so C1 is not read off one map.
-    ("probe_capture", "shielded_probe", ObstacleHuggingEvader, 770094),
-    # 760045: main stream — capture at 151 steps with a 60-step slide and
-    # 25.2% intervention, i.e. the G1/G2 matchup shown under the same overlay.
-    ("main_capture", "shielded_main", GreedyEvader, 760045),
+    ("probe_slide", "shielded_probe", ObstacleHuggingEvader, None),
+    ("probe_capture", "shielded_probe", ObstacleHuggingEvader, None),
+    ("main_capture", "shielded_main", GreedyEvader, None),
 ]
 
 
@@ -92,16 +90,23 @@ def intervention_clearance_bound(
 ) -> float:
     """Largest clearance (m) at which any DCBF row can possibly bind.
 
-    A row only binds if the nominal action violates it:
-        dt * (a_v * v + a_omega * omega) + gamma * h < 0
-    and over the action box dt*(a_v v + a_omega omega) is at worst
-    -dt * (|a_v|_max * v_max + |a_omega|_max * omega_max).
+    A row can bind only if the nominal action fails the EXACT one-step check
+    (`CBFShield.progress` < 0, not a linearised row): h_i(x+) < (1-gamma) *
+    h_i(x). Over one step the body moves at most v_max*dt and the VCP moves
+    at most dt*(v_max + d*omega_max) (chord <= arc), so
+        h_i(x+) - h_i(x) >= -(that reach)
+    for every metre row, and
+        h_i(x+) - h_i(x) >= -2*dist*reach
+    for the m^2 obstacle row (h = dist^2 - r_eff^2, so a step of at most
+    `reach` in the VCP position changes dist^2 by at most 2*dist*reach).
+    Binding therefore needs gamma*h below that same reach-scale term, which
+    is the identical bound computed below. The body (hard) rows bind only
+    below dt*v_max/gamma = 0.25 m, which is inside the VCP-row bound below,
+    so they never govern it.
 
-    Boundary rows have |a_v| <= 1 and |a_omega| <= d, with h already a
-    clearance in metres, so they can only bind below
+    Boundary VCP rows can only bind below
         dt * (v_max + d * omega_max) / gamma.
-    Obstacle rows have |a_v| <= 2*dist and |a_omega| <= 2*d*dist with
-    h = dist^2 - r_eff^2, so they can only bind while
+    Obstacle VCP rows can only bind while
         dist < (K + sqrt(K^2 + 4 r_eff^2)) / 2,  K = 2*dt*(v_max + d*om)/gamma,
     i.e. below a clearance of that dist minus r_eff.
 
@@ -118,16 +123,11 @@ def intervention_clearance_bound(
     return float(bound)
 
 
-def nominal_violates_a_row(shield, cons, v_nom: float, w_nom: float) -> bool:
-    """True iff the nominal action breaks at least one DCBF row.
-
-    Re-derived from `shield._dcbf_rows(cons)` — the same rows the QP solved —
-    so C1 compares the filter's OUTPUT against the constraint definition
-    rather than against another copy of the filter.
-    """
-    return any(
-        c0 * v_nom + c1 * w_nom < c2 - 1e-9 for c0, c1, c2 in shield._dcbf_rows(cons)
-    )
+def nominal_violates_a_row(shield, state, obstacles, v_nom: float, w_nom: float) -> bool:
+    """True iff the nominal action fails the exact one-step check of at least
+    one row — re-derived from `CBFShield.progress`, the constraint DEFINITION,
+    not from another copy of the filter (C1)."""
+    return bool((shield.progress(state, obstacles, np.array([v_nom, w_nom])) < 0.0).any())
 
 
 def longest_run(flags: list[bool]) -> int:
@@ -170,7 +170,8 @@ def play(cfg, evader_cls, seed: int, shield, renderer, overlay, live, label: str
     while True:
         v_p, w_p = pursuer.act(obs["pursuer"], env)
         v_e, w_e = evader.act(obs["evader"], env)
-        cons = shield.constraints(env.pursuer_pose, env.obstacles)
+        state_before = np.array(env.pursuer_pose)
+        cons = shield.constraints(state_before, env.obstacles)
         obstacle_clearance = min(
             (c.clearance for c in cons if c.kind == "obstacle"), default=float("inf")
         )
@@ -178,7 +179,9 @@ def play(cfg, evader_cls, seed: int, shield, renderer, overlay, live, label: str
             float(np.clip(v_p, 0.0, cfg.v_max)),
             float(np.clip(w_p, -cfg.omega_max, cfg.omega_max)),
         )
-        nominal_infeasible = nominal_violates_a_row(shield, cons, *nominal)
+        nominal_infeasible = nominal_violates_a_row(
+            shield, state_before, env.obstacles, *nominal
+        )
         (v_p, w_p), sinfo = shield.filter(
             (v_p, w_p), env.pursuer_pose, env.obstacles, v_max=cfg.v_max
         )
@@ -248,6 +251,9 @@ def main() -> None:
         help="re-render into a temp file and print the checksum only",
     )
     args = parser.parse_args()
+
+    if any(seed is None for _, _, _, seed in GATE_EPISODES):
+        raise SystemExit("GATE_EPISODES not yet chosen — see Task 8")
 
     if not GATE_JSON.exists():
         sys.exit(f"missing {GATE_JSON} — run scripts/pe2_step06_gate.py first")

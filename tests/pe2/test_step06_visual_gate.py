@@ -80,23 +80,28 @@ class TestInterventionClearanceBound:
 class TestNominalViolatesARow:
     def test_head_on_wall_at_a_feasible_clearance(self):
         # x = 4.49 heading +x -> VCP 4.59, east-wall h = 4.85 - 4.59 = 0.26.
-        # Row: dt*a_v*v + gamma*h = 0.05*(-1)*1.0 + 0.2*0.26 = +0.002 >= 0.
+        # The exact one-step check (re-derived from CBFShield.progress) agrees
+        # with the linearised estimate here: dt*a_v*v + gamma*h =
+        # 0.05*(-1)*1.0 + 0.2*0.26 = +0.002 >= 0, so the row is not violated.
         shield = CBFShield(CFG)
-        cons = shield.constraints(np.array([4.49, 0.0, 0.0]), [])
-        assert VG.nominal_violates_a_row(shield, cons, 1.0, 0.0) is False
+        state = np.array([4.49, 0.0, 0.0])
+        assert VG.nominal_violates_a_row(shield, state, [], 1.0, 0.0) is False
 
     def test_head_on_wall_inside_the_binding_clearance(self):
-        # x = 4.54 -> VCP 4.64, h = 0.21: 0.05*(-1)*1.0 + 0.2*0.21 = -0.008.
+        # x = 4.54 -> VCP 4.64, h = 0.21: 0.05*(-1)*1.0 + 0.2*0.21 = -0.008,
+        # so the linearised estimate already violates and the exact check
+        # (verified numerically) agrees.
         shield = CBFShield(CFG)
-        cons = shield.constraints(np.array([4.54, 0.0, 0.0]), [])
-        assert VG.nominal_violates_a_row(shield, cons, 1.0, 0.0) is True
+        state = np.array([4.54, 0.0, 0.0])
+        assert VG.nominal_violates_a_row(shield, state, [], 1.0, 0.0) is True
 
     def test_braking_to_zero_makes_the_same_state_feasible(self):
-        # At v = 0, omega = 0 every row reduces to gamma*h >= 0, which holds
-        # wherever h > 0 — so the same state is feasible for a stopped robot.
+        # At v = 0, omega = 0 the successor state is unchanged and every row's
+        # h can only decay by (1-gamma), which stays >= 0 wherever h > 0 -- so
+        # the same state is feasible for a stopped robot.
         shield = CBFShield(CFG)
-        cons = shield.constraints(np.array([4.54, 0.0, 0.0]), [])
-        assert VG.nominal_violates_a_row(shield, cons, 0.0, 0.0) is False
+        state = np.array([4.54, 0.0, 0.0])
+        assert VG.nominal_violates_a_row(shield, state, [], 0.0, 0.0) is False
 
     def test_every_flagged_intervention_has_a_violated_row(self):
         # The C1 assertion in one line, in the direction C1 asserts: on the
@@ -108,12 +113,11 @@ class TestNominalViolatesARow:
         flagged = 0
         for x in np.linspace(-1.0, 0.6, 33):
             state = np.array([float(x), 0.0, 0.0])
-            cons = shield.constraints(state, obstacles)
             _, info = shield.filter((1.0, 0.0), state, obstacles)
             if info["method"] != "exact" or not info["intervention"]:
                 continue
             flagged += 1
-            assert VG.nominal_violates_a_row(shield, cons, 1.0, 0.0), (
+            assert VG.nominal_violates_a_row(shield, state, obstacles, 1.0, 0.0), (
                 f"intervened at x={x} with every DCBF row satisfied"
             )
         assert flagged > 0, "sweep never intervened — the check would be vacuous"

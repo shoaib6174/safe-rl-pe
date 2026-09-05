@@ -26,6 +26,11 @@ not amended.
   prescribes adding that position uncertainty to the obstacle radii in the
   CBF -- the measurement-robust CBF construction of D87.
 
+v2 (2026-09-05): criteria unchanged, seed streams fresh, shield redesigned --
+see `docs/pathway/step6_shield_v2_prereg_2026-09-05.md`. The violation
+definition is unchanged and magnitude-blind; the contact-depth census is
+reported, never gated.
+
 A violation is an ENV contact step (wall or obstacle) of the SHIELDED role,
 never a barrier sign (pre-registered violation semantics; D89 corrected the
 docstrings that claimed h < 0 coincides with contact -- the VCP leads the body
@@ -77,8 +82,8 @@ OUT_DIR = pathlib.Path("results/visual_gates/step_06")
 OUT_JSON = OUT_DIR / "step_06_gate.json"
 
 # --- pre-registered constants (D83 / D87). Do not tune. ---
-MAIN_SEED0 = 760000  # Step 6 main verify stream (seed contract extension)
-PROBE_SEED0 = 770000  # Step 6 adversarial probe stream
+MAIN_SEED0 = 800000  # v2 stream (v1's 760000+ consumed, spec Part C)
+PROBE_SEED0 = 810000
 N_EPISODES = 1000
 G2_CAPTURE_FACTOR = 0.5  # shielded CR >= 0.5 x unshielded CR
 G4_MIN_VIOLATION_EPISODE_RATE = 0.05  # negative control floor
@@ -196,6 +201,8 @@ def episode_row(log: dict) -> dict:
         "deadlock": sh["deadlock"],
         "pinned": sh["pinned"],
         "stalled_at_end": sh["stalled_at_end"],
+        "start_in_barrier_set": log["start_in_barrier_set"],
+        "start_hard_feasible": log["start_hard_feasible"],
     }
 
 
@@ -238,10 +245,24 @@ def reported_not_gated(summary: dict, is_control: bool) -> dict:
 # ------------------------------------------------------------------- sweeps
 
 
+def start_flags(cfg, shield, seed: int) -> dict:
+    """Whether the RESET state already satisfies every row / every hard row.
+
+    RC1 in the v2 spec: 1.45% of resets start with a VCP row < 0; the report
+    must be able to separate those episodes without re-running."""
+    env = PursuitEvasionEnv(cfg)
+    env.reset(seed=seed)
+    cons = shield.constraints(np.array(env.pursuer_pose), env.obstacles)
+    return {
+        "start_in_barrier_set": bool(all(c.h >= 0.0 for c in cons)),
+        "start_hard_feasible": bool(all(c.h >= 0.0 for c in cons if c.hard)),
+    }
+
+
 def run_sweep(cfg, pursuer_factory, evader_factory, shield, seed0: int, n: int) -> list:
     """N seeded shielded duels; one env reused, one shield reused (stateless)."""
     env = PursuitEvasionEnv(cfg)
-    return [
+    logs = [
         run_shielded_duel(
             env,
             pursuer_factory(),
@@ -252,6 +273,9 @@ def run_sweep(cfg, pursuer_factory, evader_factory, shield, seed0: int, n: int) 
         )
         for i in range(n)
     ]
+    for i, log in enumerate(logs):
+        log.update(start_flags(cfg, shield, seed0 + i))
+    return logs
 
 
 def contact_geometry(cfg, pose_before, action, obstacles: list[dict]) -> dict:
@@ -366,6 +390,8 @@ def forensic_replay(cfg, pursuer_factory, evader_factory, shield, seed: int) -> 
                             "clearance": c.clearance,
                             "a_v": c.a_v,
                             "a_omega": c.a_omega,
+                            "hard": c.hard,
+                            "scale": c.scale,
                         }
                         for c in cons
                     ],
@@ -549,6 +575,12 @@ def main() -> None:
             "capture_rate": s["capture_rate"],
             "timeout_rate": s["timeout_rate"],
             "reported_not_gated": reported_not_gated(s, arm["control"]),
+            "episodes_starting_outside_barrier_set": sum(
+                not log["start_in_barrier_set"] for log in logs[name]
+            ),
+            "episodes_starting_hard_infeasible": sum(
+                not log["start_hard_feasible"] for log in logs[name]
+            ),
             "episodes": [episode_row(log) for log in logs[name]],
         }
         print(
@@ -709,6 +741,7 @@ def main() -> None:
             "(D83 - written before any implementation, 2026-08-25)'; G5 per "
             "D87; reported-not-gated definitions per D89 and the S120 worklog"
         ),
+        "v2_spec": "docs/pathway/step6_shield_v2_prereg_2026-09-05.md",
         "gates": gates,
         "arms": arm_blocks,
         "violation_census": censuses,

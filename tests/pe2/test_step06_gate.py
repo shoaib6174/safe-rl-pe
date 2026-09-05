@@ -30,14 +30,34 @@ class TestPreRegisteredConstants:
     """The pre-registration fixes these; a diff here is a criterion change."""
 
     def test_seed_streams_and_episode_count(self):
-        assert GATE.MAIN_SEED0 == 760000
-        assert GATE.PROBE_SEED0 == 770000
+        assert GATE.MAIN_SEED0 == 800000
+        assert GATE.PROBE_SEED0 == 810000
         assert GATE.N_EPISODES == 1000
 
     def test_thresholds(self):
         assert GATE.G2_CAPTURE_FACTOR == 0.5
         assert GATE.G4_MIN_VIOLATION_EPISODE_RATE == 0.05
         assert GATE.ROBUST_DELTA == 0.05
+
+
+class TestStartFlags:
+    def test_flags_are_booleans_and_hard_implies_nothing_about_soft(self):
+        from pe2.shield import CBFShield
+
+        cfg = EnvConfig()
+        flags = GATE.start_flags(cfg, CBFShield(cfg), 800000)
+        assert set(flags) == {"start_in_barrier_set", "start_hard_feasible"}
+        assert isinstance(flags["start_in_barrier_set"], bool)
+        assert flags["start_hard_feasible"] is True  # δ = 0: the env guarantees it
+
+    def test_a_known_outside_start_is_flagged(self):
+        """Seed 760372 started with the VCP inside an obstacle in the v1 run
+        (robust_main first offence at step 1); at δ = 0.05 its BODY is inside."""
+        from pe2.shield import CBFShield
+
+        cfg = EnvConfig()
+        flags = GATE.start_flags(cfg, CBFShield(cfg, margin=0.05), 760372)
+        assert flags["start_hard_feasible"] is False
 
 
 class TestConfigFingerprint:
