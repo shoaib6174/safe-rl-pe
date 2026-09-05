@@ -18,18 +18,29 @@ intersections, line∩box-edge intersections, box corners — the optimum of a
 convex 2-D QP is always one of these. Exact, deterministic, and drops the
 scipy dependency (pe2's CI installs only numpy/gymnasium/matplotlib/imageio).
 
-3-tier fallback (root SafeActionResolver pattern, minus the unused Tier-1 SVM
-classifier): exact QP (all constraints) → relaxed QP (boundary only; obstacles
-are lowest priority) → backup controller (brake + turn away from nearest
-danger). A violation is defined at env level (wall/obstacle contact flags);
-this module only maintains h > 0.
+Each surface (wall or obstacle) contributes two rows. The `hard` row is the
+env's own contact predicate evaluated on the BODY (wall: x_lim − x; obstacle:
+hypot(body − centre) − r_eff), so h ≥ 0 there is bitwise equivalent to no
+contact at margin 0 — it is exact, not an early warning. The `soft` row is the
+virtual-control-point barrier evaluated d = 0.1 m ahead of the body, which
+supplies steering (uniform relative degree 1, unlike the body row) and
+reaches zero roughly d before the body touches anything.
 
-h > 0 is a CONSERVATIVE early warning, not a contact indicator. The barriers
-are evaluated at the virtual control point d = 0.1 m ahead of the body, so in
-the heading direction the barrier reaches zero roughly d BEFORE the body
-touches anything (on top of the agent_radius already folded into the
-constraint radii). h = 0 is therefore not the contact surface and h < 0 does
-not imply contact — only the env contact flags do.
+3-tier fallback (root SafeActionResolver pattern, minus the unused Tier-1 SVM
+classifier) selects from one candidate set that always includes every row,
+hard and soft alike: exact QP (all constraints) → relaxed QP (boundary only;
+obstacles are lowest priority) → backup controller (brake + turn away from
+nearest danger). Nothing is ever dropped from the candidate set ahead of a
+tier trying it. A violation is defined at env level (wall/obstacle contact
+flags); this module only maintains h > 0.
+
+h > 0 is a CONSERVATIVE early warning only for the SOFT rows — they are
+evaluated at the virtual control point d = 0.1 m ahead of the body, so in the
+heading direction the barrier reaches zero roughly d BEFORE the body touches
+anything (on top of the agent_radius already folded into the constraint
+radii); h = 0 there is not the contact surface and h < 0 does not imply
+contact. The HARD rows are exact: h = 0 is the contact surface and h < 0
+means the env's own contact predicate has fired.
 
 Units: `Constraint.h` is a barrier value whose units depend on the kind
 (obstacle barriers are m², boundary barriers are m), so it is a QP margin and
@@ -61,13 +72,15 @@ BACKUP_V_FRAC = 0.1  # backup-tier crawl speed, as a fraction of the effective v
 
 @dataclass
 class Constraint:
-    """One VCP-CBF constraint: h ≥ 0 safe; h_dot ≈ a_v·v + a_ω·ω.
+    """One barrier row: h ≥ 0 safe; linearised rate h_dot ≈ a_v·v + a_ω·ω.
 
-    `h` is the quadratic-program margin and its units depend on `kind`
-    (obstacle: m²; boundary: m) — it is NOT comparable across kinds and must
-    never be reported as a distance. `clearance` is the equivalent signed
-    distance in metres for every kind, computed by the constructor that knows
-    the geometry, and is the reportable quantity.
+    `hard` rows are the env's own contact predicates evaluated on the BODY
+    (wall: x_lim − x; obstacle: hypot(b − p) − r_eff), both in metres, so
+    h ≥ 0 ⟺ no contact, bitwise, at margin 0. Soft rows are the virtual-
+    control-point barriers that supply steering; their units follow `kind`
+    (obstacle m², boundary m). `scale` converts a row's progress to metres
+    (2·r_eff for the obstacle VCP row, 1 otherwise). `clearance` is the signed
+    distance in metres for every row and is the only reportable distance.
     """
 
     h: float
@@ -75,6 +88,8 @@ class Constraint:
     a_omega: float
     kind: str  # "obstacle" | "boundary"
     clearance: float  # signed distance to the constraint surface, metres
+    hard: bool
+    scale: float
 
 
 def compute_vcp(x: float, y: float, theta: float, d: float) -> tuple[float, float]:
@@ -97,7 +112,13 @@ def _obstacle_constraint(
     a_v = 2.0 * dx * cos_t + 2.0 * dy * sin_t
     a_omega = 2.0 * dx * (-d * sin_t) + 2.0 * dy * (d * cos_t)
     return Constraint(
-        float(h), float(a_v), float(a_omega), "obstacle", float(clearance)
+        float(h),
+        float(a_v),
+        float(a_omega),
+        "obstacle",
+        float(clearance),
+        False,
+        2.0 * eff_radius,
     )
 
 
@@ -112,7 +133,9 @@ def _boundary_constraints(
     def wall(h: float, a_v: float, a_omega: float) -> Constraint:
         # A boundary barrier is already a signed distance in metres, so the
         # clearance passes through unchanged.
-        return Constraint(float(h), float(a_v), float(a_omega), "boundary", float(h))
+        return Constraint(
+            float(h), float(a_v), float(a_omega), "boundary", float(h), False, 1.0
+        )
 
     return [
         wall(x_lim - qx, -cos_t, d * sin_t),
@@ -120,6 +143,36 @@ def _boundary_constraints(
         wall(y_lim - qy, -sin_t, -d * cos_t),
         wall(qy + y_lim, sin_t, d * cos_t),
     ]
+
+
+def _body_wall_constraints(
+    state: np.ndarray, x_lim: float, y_lim: float
+) -> list[Constraint]:
+    """Hard rows: the env's wall clip predicate (`x > x_max` etc.) as barriers."""
+    x, y, theta = float(state[0]), float(state[1]), float(state[2])
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+
+    def wall(h: float, a_v: float) -> Constraint:
+        return Constraint(float(h), float(a_v), 0.0, "boundary", float(h), True, 1.0)
+
+    return [
+        wall(x_lim - x, -cos_t),
+        wall(x + x_lim, cos_t),
+        wall(y_lim - y, -sin_t),
+        wall(y + y_lim, sin_t),
+    ]
+
+
+def _body_obstacle_constraint(
+    state: np.ndarray, obs_x: float, obs_y: float, eff_radius: float
+) -> Constraint:
+    """Hard row: the env's obstacle predicate (`hypot < r_obs + r_agent`)."""
+    x, y, theta = float(state[0]), float(state[1]), float(state[2])
+    dx, dy = x - obs_x, y - obs_y
+    dist = float(np.hypot(dx, dy))
+    h = dist - eff_radius
+    a_v = (dx * np.cos(theta) + dy * np.sin(theta)) / dist if dist > 0.0 else 0.0
+    return Constraint(float(h), float(a_v), 0.0, "obstacle", float(h), True, 1.0)
 
 
 def _solve_qp_2d(
@@ -238,25 +291,19 @@ class CBFShield:
         self._y_lim = half - cfg.agent_radius - margin
 
     def constraints(self, state: np.ndarray, obstacles: list[dict]) -> list[Constraint]:
-        """Obstacle (effective radius = obs + agent + margin) + 4 boundaries.
+        """Hard body rows, then soft VCP rows, walls first then obstacles.
 
-        With `margin = 0` (the default, and the arm gated by G1-G4) the
-        constraint surfaces coincide with the env's own contact surfaces. The
-        robust arm inflates every radius and shrinks every boundary limit by
-        `margin`, so each barrier reaches zero exactly `margin` metres of
-        clearance earlier — the measurement-robust CBF construction (D87).
+        Order is a contract: `successor_barriers` evaluates the same rows in
+        the same order on the predicted successor, and the two must agree
+        column for column. Effective radius = obs + agent + margin; boundary
+        limits already carry the margin (D87 robust arm).
         """
-        cons = _boundary_constraints(state, self._x_lim, self._y_lim, self.d)
+        cons = _body_wall_constraints(state, self._x_lim, self._y_lim)
+        cons += _boundary_constraints(state, self._x_lim, self._y_lim, self.d)
         for obs in obstacles:
-            cons.append(
-                _obstacle_constraint(
-                    state,
-                    obs["x"],
-                    obs["y"],
-                    obs["radius"] + self.cfg.agent_radius + self.margin,
-                    self.d,
-                )
-            )
+            r_eff = obs["radius"] + self.cfg.agent_radius + self.margin
+            cons.append(_body_obstacle_constraint(state, obs["x"], obs["y"], r_eff))
+            cons.append(_obstacle_constraint(state, obs["x"], obs["y"], r_eff, self.d))
         return cons
 
     def _dcbf_rows(self, cons: list[Constraint]) -> list[tuple[float, float, float]]:

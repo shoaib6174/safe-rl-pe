@@ -74,6 +74,49 @@ class TestVCPMath:
         assert cons[2].a_v == pytest.approx(0.0, abs=1e-12)
         assert cons[2].a_omega == pytest.approx(-0.1)
 
+    def test_body_obstacle_row_is_the_env_contact_predicate(self):
+        from pe2.shield import _body_obstacle_constraint
+
+        # Body at origin heading +x; obstacle at (1.0, 0), r_eff 0.5:
+        # h = hypot(1, 0) - 0.5 = 0.5 m, a_v = cos(angle to outward normal)
+        # = -1 (moving straight at it), a_omega = 0 (body row ignores heading).
+        c = _body_obstacle_constraint(np.array([0.0, 0.0, 0.0]), 1.0, 0.0, 0.5)
+        assert c.h == pytest.approx(0.5)
+        assert c.clearance == c.h
+        assert c.a_v == pytest.approx(-1.0)
+        assert c.a_omega == 0.0
+        assert c.kind == "obstacle" and c.hard is True and c.scale == 1.0
+
+    def test_body_wall_rows_ignore_heading(self):
+        from pe2.shield import _body_wall_constraints
+
+        rows = _body_wall_constraints(np.array([4.0, -1.0, 1.0]), 4.85, 4.85)
+        assert [r.h for r in rows] == pytest.approx([0.85, 8.85, 5.85, 3.85])
+        assert all(r.a_omega == 0.0 and r.hard and r.scale == 1.0 for r in rows)
+        assert rows[0].a_v == pytest.approx(-np.cos(1.0))
+
+    def test_vcp_rows_are_soft_with_obstacle_scale(self):
+        c = _obstacle_constraint(np.array([0.0, 0.0, 0.0]), 1.1, 0.0, 0.5, 0.1)
+        assert c.hard is False and c.scale == pytest.approx(1.0)  # 2 * r_eff
+        w = _boundary_constraints(np.array([0.0, 0.0, 0.0]), 4.85, 4.85, 0.1)
+        assert all((not r.hard) and r.scale == 1.0 for r in w)
+
+    def test_constraints_row_order_and_count(self):
+        shield = CBFShield(CFG)
+        obstacles = [
+            {"x": 2.0, "y": 0.0, "radius": 0.4},
+            {"x": -2.0, "y": 1.0, "radius": 0.3},
+        ]
+        cons = shield.constraints(np.array([0.0, 0.0, 0.0]), obstacles)
+        assert len(cons) == 12
+        assert [c.hard for c in cons] == [True] * 4 + [False] * 4 + [
+            True,
+            False,
+            True,
+            False,
+        ]
+        assert [c.kind for c in cons] == ["boundary"] * 8 + ["obstacle"] * 4
+
 
 class TestExactQP:
     def test_unconstrained_nominal_passes_through(self):
