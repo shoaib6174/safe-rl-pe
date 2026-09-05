@@ -1401,3 +1401,106 @@ class TestSummarizeShield:
         assert s["violation_steps"] == 0
         assert len(s["min_h_per_episode"]) == 3
         assert sum(s["tier_histogram"].values()) == s["n_steps"]
+
+
+class TestRobustMargin:
+    """D87 robust-margin arm (G5): every constraint radius and boundary limit
+    inflated by delta so the barrier reaches zero delta metres earlier.
+
+    delta = 0.05 m is the hardware localization error bound, not a tuned
+    value: `docs/phases/phase4_sim_to_real_transfer.md` requires
+    `test_localization_accuracy` error < 5 cm at the 95th percentile, and its
+    §8.7 prescribes adding the position uncertainty to the obstacle radii in
+    the CBF (the measurement-robust CBF construction, D87).
+    """
+
+    def test_default_margin_is_zero(self):
+        assert CBFShield(CFG).margin == 0.0
+
+    def test_default_arm_is_bit_identical_to_an_explicit_zero_margin(self):
+        state = np.array([1.0, -2.0, 0.7])
+        obstacles = [{"x": 2.0, "y": -1.0, "radius": 0.6}]
+        a = CBFShield(CFG).filter((1.0, 0.4), state, obstacles)
+        b = CBFShield(CFG, margin=0.0).filter((1.0, 0.4), state, obstacles)
+        assert np.array_equal(a[0], b[0])
+        assert a[1]["min_clearance"] == b[1]["min_clearance"]
+        assert a[1]["min_h"] == b[1]["min_h"]
+
+    def test_margin_inflates_the_obstacle_effective_radius(self):
+        # State at the origin heading +x, d=0.1 -> q = (0.1, 0). Obstacle at
+        # (1.1, 0) radius 0.35: r_eff = 0.35 + 0.15 = 0.50 unmargined and
+        # 0.55 with delta = 0.05. ||q - p_obs|| = 1.0, so
+        #   h    = 1.0 - 0.50^2 = 0.75      -> 1.0 - 0.55^2 = 0.6975
+        #   clr  = 1.0 - 0.50   = 0.50      -> 1.0 - 0.55   = 0.45
+        state = np.array([0.0, 0.0, 0.0])
+        obstacles = [{"x": 1.1, "y": 0.0, "radius": 0.35}]
+        plain = next(
+            c
+            for c in CBFShield(CFG).constraints(state, obstacles)
+            if c.kind == "obstacle"
+        )
+        robust = next(
+            c
+            for c in CBFShield(CFG, margin=0.05).constraints(state, obstacles)
+            if c.kind == "obstacle"
+        )
+        assert plain.h == pytest.approx(0.75)
+        assert plain.clearance == pytest.approx(0.50)
+        assert robust.h == pytest.approx(0.6975)
+        assert robust.clearance == pytest.approx(0.45)
+
+    def test_margin_shrinks_the_boundary_limits(self):
+        # half = 5.0, agent_radius = 0.15 -> x_lim 4.85 unmargined, 4.80 with
+        # delta = 0.05. At the origin heading +x, q = (0.1, 0), so the east
+        # wall barrier is 4.85 - 0.1 = 4.75 and 4.80 - 0.1 = 4.70.
+        state = np.array([0.0, 0.0, 0.0])
+        plain = CBFShield(CFG).constraints(state, [])
+        robust = CBFShield(CFG, margin=0.05).constraints(state, [])
+        assert plain[0].h == pytest.approx(4.75)
+        assert robust[0].h == pytest.approx(4.70)
+
+    def test_every_clearance_is_exactly_delta_smaller(self):
+        # The defining property: the barrier reaches zero delta metres
+        # earlier, for boundaries and obstacles alike.
+        state = np.array([1.3, -2.2, 0.9])
+        obstacles = [
+            {"x": 2.0, "y": -1.0, "radius": 0.6},
+            {"x": -3.0, "y": 3.0, "radius": 0.4},
+        ]
+        plain = CBFShield(CFG).constraints(state, obstacles)
+        robust = CBFShield(CFG, margin=0.05).constraints(state, obstacles)
+        assert len(plain) == len(robust) == 6
+        for a, b in zip(plain, robust, strict=True):
+            assert a.kind == b.kind
+            assert b.clearance == pytest.approx(a.clearance - 0.05)
+
+    def test_margin_intervenes_where_the_plain_shield_does_not(self):
+        # Head-on at the east wall, nominal (v, omega) = (1.0, 0.0).
+        # The DCBF row for that wall is dt*a_v*v + gamma*h >= 0 with
+        # a_v = -cos(theta) = -1, dt = 0.05, gamma = 0.2, so the nominal is
+        # feasible iff h >= 0.25. At x = 4.49 the VCP is at 4.59, giving
+        #   plain  h = 4.85 - 4.59 = 0.26  -> -0.05 + 0.052 =  0.002 >= 0
+        #   robust h = 4.80 - 4.59 = 0.21  -> -0.05 + 0.042 = -0.008 <  0
+        state = np.array([4.49, 0.0, 0.0])
+        _, plain = CBFShield(CFG).filter((1.0, 0.0), state, [])
+        _, robust = CBFShield(CFG, margin=0.05).filter((1.0, 0.0), state, [])
+        assert plain["intervention"] is False
+        assert robust["intervention"] is True
+        assert robust["method"] == "exact"
+
+    def test_margin_moves_the_backup_turn_away_boundary(self):
+        # The backup tier turns away from the nearest danger measured against
+        # the SAME inflated limits, so the two arms cannot disagree about
+        # where the wall is. At (4.0, 0, 0) the east wall is the nearest
+        # danger under both, and the crawl speed is unchanged.
+        state = np.array([4.0, 0.0, 0.0])
+        plain = CBFShield(CFG).backup(state, [])
+        robust = CBFShield(CFG, margin=0.05).backup(state, [])
+        assert plain[0] == pytest.approx(robust[0])  # crawl speed unchanged
+        assert plain[1] == pytest.approx(robust[1])  # same wall, same turn
+        assert CBFShield(CFG, margin=0.05)._x_lim == pytest.approx(4.80)
+
+    def test_noop_control_keeps_the_zero_margin_default(self):
+        # The negative control must measure the true geometry, so the shipped
+        # control arm is an unmargined NoOpShield.
+        assert NoOpShield(CFG).margin == 0.0

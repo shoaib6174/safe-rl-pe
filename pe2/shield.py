@@ -204,6 +204,18 @@ class CBFShield:
     Usage:
         shield = CBFShield(env.cfg)
         safe_action, info = shield.filter(nominal, env.pursuer_pose, env.obstacles)
+
+    `margin` (delta, metres) is the D87 robust arm: every constraint radius is
+    inflated and every boundary limit shrunk by delta, so a barrier reaches
+    zero delta metres of clearance earlier than the true contact surface. It
+    exists because the hardware shield runs on an ESTIMATED state, and it is
+    NOT a tuned number: `docs/phases/phase4_sim_to_real_transfer.md` requires
+    localization error below 5 cm at the 95th percentile
+    (`test_localization_accuracy`) and its §8.7 prescribes adding that
+    position uncertainty to the obstacle radii in the CBF, which is the
+    measurement-robust CBF construction cited in D87 (Cosner/Ames
+    arXiv 2104.14030; Dean/Taylor CoRL 2020). The default is 0.0, so the arm
+    gated by G1-G4 is unchanged; the G5 arm uses delta = 0.05 m.
     """
 
     def __init__(
@@ -213,18 +225,27 @@ class CBFShield:
         vcp_d: float = 0.1,
         w_v: float = 150.0,
         w_omega: float = 1.0,
+        margin: float = 0.0,
     ):
         self.cfg = cfg
         self.gamma = gamma
         self.d = vcp_d
         self.w_v = w_v
         self.w_omega = w_omega
+        self.margin = margin
         half = cfg.arena_size / 2.0
-        self._x_lim = half - cfg.agent_radius
-        self._y_lim = half - cfg.agent_radius
+        self._x_lim = half - cfg.agent_radius - margin
+        self._y_lim = half - cfg.agent_radius - margin
 
     def constraints(self, state: np.ndarray, obstacles: list[dict]) -> list[Constraint]:
-        """Obstacle (effective radius = obs + agent) + 4 boundary constraints."""
+        """Obstacle (effective radius = obs + agent + margin) + 4 boundaries.
+
+        With `margin = 0` (the default, and the arm gated by G1-G4) the
+        constraint surfaces coincide with the env's own contact surfaces. The
+        robust arm inflates every radius and shrinks every boundary limit by
+        `margin`, so each barrier reaches zero exactly `margin` metres of
+        clearance earlier — the measurement-robust CBF construction (D87).
+        """
         cons = _boundary_constraints(state, self._x_lim, self._y_lim, self.d)
         for obs in obstacles:
             cons.append(
@@ -232,7 +253,7 @@ class CBFShield:
                     state,
                     obs["x"],
                     obs["y"],
-                    obs["radius"] + self.cfg.agent_radius,
+                    obs["radius"] + self.cfg.agent_radius + self.margin,
                     self.d,
                 )
             )
