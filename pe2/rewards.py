@@ -28,6 +28,7 @@ import numpy as np
 
 from pe2.config import EnvConfig
 from pe2.exploitability import SingleAgentWrapper
+from pe2.obs import build_observation
 from pe2.sensing import is_visible
 
 
@@ -81,6 +82,19 @@ def _nearest_obstacle_surface(xy: np.ndarray, obstacles: list[dict]) -> float:
     )
 
 
+def visibility_term(w_vis: float, obs: np.ndarray) -> float:
+    """The `vis` dense term for one step: +w_vis iff the observation flags
+    the opponent visible.
+
+    `obs[6]` is the combined FOV-cone + clear-LOS flag (D6) that
+    `pe2.obs.build_observation` writes, so this one function is the whole
+    definition of the term. `DenseRewardWrapper` pays it and
+    `visibility_monotone_report` checks it; there is no second copy of the
+    geometry that could drift from the one that trains.
+    """
+    return w_vis * float(obs[6] > 0.5)
+
+
 class DenseRewardWrapper(gym.Wrapper):
     """Training-only dense reward on top of SingleAgentWrapper (T0.2).
 
@@ -127,8 +141,11 @@ class DenseRewardWrapper(gym.Wrapper):
         e = self.env.env
         return e.pursuer_pose if self.env.role == "pursuer" else e.evader_pose
 
+    def _own_obs(self) -> np.ndarray:
+        return self.env._last_joint_obs[self.env.role]
+
     def _visible(self) -> bool:
-        return bool(self.env._last_joint_obs[self.env.role][6] > 0.5)
+        return bool(self._own_obs()[6] > 0.5)
 
     def _phi(self) -> float:
         return -_nearest_obstacle_surface(self._own_pose()[:2], self.env.env.obstacles)
@@ -145,7 +162,10 @@ class DenseRewardWrapper(gym.Wrapper):
         terms: dict[str, float] = {}
         visible = self._visible()
         if self.w_vis:
-            terms["vis"] = self.w_vis * float(visible)
+            # Through `visibility_term`, never inline: the T0.2 monotone
+            # criterion drives this same function, so the criterion cannot
+            # pass while the reward that trains pays something else.
+            terms["vis"] = visibility_term(self.w_vis, self._own_obs())
         if self.tracker is not None:
             terms["search"] = self.w_search * self.tracker.observe_and_reward(
                 self._own_pose(), self.env.env.obstacles, self.env.env.current_step
@@ -186,9 +206,20 @@ def signal_nondegeneracy(rewards: list[float]) -> dict:
 # Which plateau check each dense term is owed. The derisk spec (T0.2) states
 # a DIFFERENT check per term, because the terms are different shapes:
 #
-#   vis, evis  "indicator": the term is on/off (+w / 0, or +w / -w). A flat
-#              region shows up as the term being on, or off, on nearly every
-#              step -> the 0.05-0.95 band on frac_positive.
+#   vis        "monotone": the spec's own words are "reward-vs-bearing curve
+#              must be monotone into the cone" — a property of the reward's
+#              GEOMETRY, checked analytically by `visibility_monotone_report`
+#              and not estimated from a rollout at all. It replaced a
+#              step-wise positive-fraction band (amendment A7, S121): the
+#              band was never in the spec, and the term's true positive
+#              fraction is 0.0528 (95% CI [0.0493, 0.0563] over 2,500
+#              episodes / 2,566,786 steps at five disjoint seeds), sitting ON
+#              the 0.05 edge, so no affordable rollout could decide it. The
+#              rollout statistics are still recorded for `vis`, as
+#              OBSERVATIONS (`stats_role`), and decide nothing.
+#   evis       "indicator": the term is on/off (+w / -w). A flat region shows
+#              up as the term being on, or off, on nearly every step -> the
+#              0.05-0.95 band on frac_positive. UNCHANGED by A7.
 #   search,    "continuous": the term takes many values on a bounded range.
 #   pbrs       Staleness is NON-NEGATIVE by construction (mean staleness of
 #              the observed cells, 0 only when nothing is visible), so its
@@ -204,23 +235,135 @@ def signal_nondegeneracy(rewards: list[float]) -> dict:
 # continuous term, and its positivity is decided by whichever term is
 # non-negative.
 TERM_KINDS = {
-    "vis": "indicator",
+    "vis": "monotone",
     "evis": "indicator",
     "search": "continuous",
     "pbrs": "continuous",
 }
+# What each kind's verdict is made of, so a results file names its own
+# criterion instead of leaving the reader to infer it from a number.
+CRITERIA = {
+    "monotone": "monotone_into_cone",
+    "indicator": "positive_fraction_band",
+    "continuous": "non_constancy",
+}
+# Kinds whose verdict is analytic: exact, deterministic, no sampling error,
+# so resampling a rollout says nothing about them (the runner reports them
+# decisive by construction instead of bootstrapping them).
+DETERMINISTIC_KINDS = frozenset({"monotone"})
 BAND = (0.05, 0.95)
 MAX_MODAL_FRACTION = 0.95
+# Sweep resolution for the monotone check: 361 bearings over [-pi, pi] is a
+# 1 deg grid, on which the default pi/4 half-angle is a grid point exactly.
+MONOTONE_BEARINGS = 361
 
 
-def nondegeneracy_report(terms: dict[str, list[float]]) -> dict:
+def visibility_monotone_report(
+    cfg: EnvConfig,
+    *,
+    w_vis: float,
+    n_bearings: int = MONOTONE_BEARINGS,
+    range_m: float | None = None,
+    term_fn=visibility_term,
+) -> dict:
+    """T0.2's criterion for the pursuer visibility term: "reward-vs-bearing
+    curve must be monotone into the cone".
+
+    Hold the opponent at a fixed range inside sensing range in an
+    obstacle-free world and sweep its bearing relative to the agent's
+    heading. The term must be
+
+      1. non-decreasing as the bearing MAGNITUDE falls (turning toward the
+         opponent can only help — a reward that fell here would be one the
+         agent is punished for following),
+      2. not constant (it must actually carry information), and
+      3. stepping at the configured half-angle `fov_angle / 2`, so the
+         reward and the sensing configuration agree.
+
+    It is a step, not a slope — that is expected of an indicator reward; the
+    property that matters is that the step points the right way and sits
+    where the configuration says. The check is analytic and deterministic:
+    same configuration, same verdict, with no sampling error to bootstrap.
+
+    `term_fn` exists so a negative control can be swept through the identical
+    machinery; the default IS the term `DenseRewardWrapper` pays.
+    """
+    half_angle = cfg.sensing.fov_angle / 2.0
+    r = cfg.sensing.fov_range / 2.0 if range_m is None else float(range_m)
+    if not 0.0 < r < cfg.sensing.fov_range:
+        raise ValueError(
+            f"sweep range {r} must lie strictly inside the sensing range "
+            f"{cfg.sensing.fov_range}: outside it the range gate, not the "
+            "cone, decides every sample and the sweep says nothing"
+        )
+    own_pose = np.zeros(3)  # origin, heading +x -> bearing IS relative bearing
+    bearings = np.linspace(-np.pi, np.pi, n_bearings)
+    rewards = np.array(
+        [
+            term_fn(
+                w_vis,
+                build_observation(
+                    own_pose,
+                    np.array([r * np.cos(b), r * np.sin(b), 0.0]),
+                    [],  # no obstacles: LOS is clear at every bearing
+                    cfg,
+                ),
+            )
+            for b in bearings
+        ],
+        dtype=float,
+    )
+    # "Into the cone" = the bearing magnitude falling. Each side of the
+    # heading is its own sweep, so a term that misbehaves on only one side
+    # is still caught.
+    left = rewards[bearings <= 0.0]  # -pi -> 0: magnitude falling
+    right = rewards[bearings >= 0.0][::-1]  # +pi -> 0: magnitude falling
+    monotone = bool(np.all(np.diff(left) >= 0.0) and np.all(np.diff(right) >= 0.0))
+    grid_step = float(bearings[1] - bearings[0])
+    positive = np.flatnonzero(rewards > 0.0)
+    transition = float(np.abs(bearings[positive]).max()) if positive.size else None
+    # One grid step: the sweep can only locate the edge to its own resolution.
+    matches = transition is not None and abs(transition - half_angle) <= grid_step
+    varies = bool(rewards.max() > rewards.min())
+    return {
+        "criterion": CRITERIA["monotone"],
+        "bearings": [float(b) for b in bearings],
+        "rewards": [float(v) for v in rewards],
+        "monotone_into_cone": monotone,
+        "varies": varies,
+        "transition_bearing": transition,
+        "expected_transition_bearing": float(half_angle),
+        "transition_matches": bool(matches),
+        "transition_tolerance": grid_step,
+        "grid_step": grid_step,
+        "n_bearings": int(n_bearings),
+        "range_m": r,
+        "fov_angle": float(cfg.sensing.fov_angle),
+        "fov_range": float(cfg.sensing.fov_range),
+        "obstacles": 0,
+        "w_vis": float(w_vis),
+        "passes": bool(monotone and varies and matches),
+    }
+
+
+def nondegeneracy_report(
+    terms: dict[str, list[float]],
+    cfg: EnvConfig | None = None,
+    w_vis: float | None = None,
+) -> dict:
     """T0.2 plateau check, applied PER TERM (see TERM_KINDS).
 
     `terms` maps a term name to its per-step values over a rollout, as
     `DenseRewardWrapper` reports them in `info["dense_terms"]`. Returns
-    `{"terms": {name: {...stats, "kind", "passes"}}, "all_pass": bool}`.
-    A term with no declared kind raises rather than being checked by a
-    criterion that may not apply to it.
+    `{"terms": {name: {...stats, "kind", "criterion", "stats_role",
+    "passes"}}, "all_pass": bool}`. A term with no declared kind raises
+    rather than being checked by a criterion that may not apply to it.
+
+    A term of the "monotone" kind is decided by `visibility_monotone_report`
+    on `cfg` — a property of the reward, not of this rollout — so `cfg` and
+    `w_vis` are required whenever such a term is present, and its rollout
+    statistics are carried with `stats_role="observation"` to say plainly
+    that they are recorded and not applied.
     """
     out = {}
     for name, values in terms.items():
@@ -230,10 +373,29 @@ def nondegeneracy_report(terms: dict[str, list[float]]) -> dict:
                 "TERM_KINDS so the right plateau check is applied to it"
             )
         kind = TERM_KINDS[name]
-        stats = signal_nondegeneracy(values)
-        if kind == "indicator":
-            passes = BAND[0] < stats["frac_positive"] < BAND[1] and stats["std"] > 0.0
+        entry = {
+            **signal_nondegeneracy(values),
+            "kind": kind,
+            "criterion": CRITERIA[kind],
+            "stats_role": "observation" if kind == "monotone" else "criterion",
+        }
+        if kind == "monotone":
+            if cfg is None or w_vis is None:
+                raise ValueError(
+                    f"dense term {name!r} is checked by the analytic "
+                    f"{CRITERIA[kind]} criterion, which needs `cfg` and "
+                    "`w_vis`; its rollout statistics are recorded as "
+                    "observations and decide nothing (amendment A7)"
+                )
+            geometry = visibility_monotone_report(cfg, w_vis=w_vis)
+            entry |= {"monotone": geometry, "passes": geometry["passes"]}
+        elif kind == "indicator":
+            entry["passes"] = bool(
+                BAND[0] < entry["frac_positive"] < BAND[1] and entry["std"] > 0.0
+            )
         else:
-            passes = stats["std"] > 0.0 and stats["frac_modal"] < MAX_MODAL_FRACTION
-        out[name] = {**stats, "kind": kind, "passes": bool(passes)}
+            entry["passes"] = bool(
+                entry["std"] > 0.0 and entry["frac_modal"] < MAX_MODAL_FRACTION
+            )
+        out[name] = entry
     return {"terms": out, "all_pass": all(t["passes"] for t in out.values())}

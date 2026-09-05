@@ -3,13 +3,15 @@
 import numpy as np
 import pytest
 
-from pe2.config import EnvConfig
+from pe2.config import EnvConfig, SensingConfig
 from pe2.exploitability import SingleAgentWrapper
 from pe2.rewards import (
     DenseRewardWrapper,
     SearchStalenessTracker,
     nondegeneracy_report,
     signal_nondegeneracy,
+    visibility_monotone_report,
+    visibility_term,
 )
 from pe2.scripted import GreedyEvader, GreedyPursuer
 
@@ -233,17 +235,21 @@ class TestPerTermNondegeneracy:
 
     def test_an_always_on_indicator_is_degenerate(self):
         # 100 steps, the term on at every one: frac_positive 1.0, std 0.
-        # An indicator that never turns off carries no information.
-        rep = nondegeneracy_report({"vis": [0.1] * 100})
-        assert rep["terms"]["vis"]["frac_positive"] == 1.0
-        assert rep["terms"]["vis"]["passes"] is False
+        # An indicator that never turns off carries no information. Asked of
+        # `evis`, which is the term that still carries the band (A7 moved
+        # `vis` to the analytic monotone criterion; the band is unchanged).
+        rep = nondegeneracy_report({"evis": [0.1] * 100})
+        assert rep["terms"]["evis"]["frac_positive"] == 1.0
+        assert rep["terms"]["evis"]["passes"] is False
         assert rep["all_pass"] is False
 
     def test_a_live_indicator_passes(self):
         # on for 7 of 100 steps -> frac_positive 0.07, inside (0.05, 0.95).
-        rep = nondegeneracy_report({"vis": [0.1] * 7 + [0.0] * 93})
-        assert rep["terms"]["vis"]["frac_positive"] == pytest.approx(0.07)
-        assert rep["terms"]["vis"]["passes"] is True
+        rep = nondegeneracy_report({"evis": [0.1] * 7 + [0.0] * 93})
+        assert rep["terms"]["evis"]["frac_positive"] == pytest.approx(0.07)
+        assert rep["terms"]["evis"]["criterion"] == "positive_fraction_band"
+        assert rep["terms"]["evis"]["stats_role"] == "criterion"
+        assert rep["terms"]["evis"]["passes"] is True
         assert rep["all_pass"] is True
 
     def test_a_varying_non_negative_continuous_term_passes(self):
@@ -286,7 +292,9 @@ class TestPerTermNondegeneracy:
         # frac_positive 0.971, outside the band, entirely because staleness
         # is non-negative; per term, vis is on 7% of steps and staleness
         # takes ~700 distinct values. Rolled here with the scripted teacher
-        # so the test needs no saved model.
+        # so the test needs no saved model. `vis` is now judged by the
+        # analytic monotone criterion (A7), so the rollout supplies only its
+        # recorded observations; `search` is still judged by this rollout.
         from pe2.scripted import FovLimitedPursuer
 
         cfg = EnvConfig()
@@ -308,9 +316,235 @@ class TestPerTermNondegeneracy:
                     terms.setdefault(k, []).append(val)
                 if term or trunc:
                     break
-        rep = nondegeneracy_report(terms)
+        rep = nondegeneracy_report(terms, cfg=cfg, w_vis=0.1)
         assert set(rep["terms"]) == {"vis", "search"}
+        assert rep["terms"]["vis"]["stats_role"] == "observation"
+        assert rep["terms"]["search"]["stats_role"] == "criterion"
         assert rep["all_pass"] is True, rep
         # not vacuous: the sum would fail the indicator band it is not owed.
         summed = [sum(v) for v in zip(*terms.values(), strict=True)]
         assert signal_nondegeneracy(summed)["frac_positive"] > 0.95
+
+
+# ---------------------------------------------------------------------------
+# T0.2 visibility criterion (amendment A7): the spec's own check for the
+# pursuer visibility term — "reward-vs-bearing curve must be monotone into
+# the cone" — replaces the 0.05-0.95 positive-fraction band.
+#
+# Hand-computed geometry, EnvConfig defaults throughout:
+#   fov_angle  = pi/2 = 1.5707963268 rad, so the cone HALF-angle is
+#                pi/4 = 0.7853981634 rad = 45 deg;
+#   fov_range  = 8.0 m, so the default swept range is 8.0 / 2 = 4.0 m,
+#                strictly inside sensing range;
+#   n_bearings = 361 over [-pi, pi] -> grid step 2*pi/360 = pi/180
+#                = 0.0174532925 rad = 1 deg, and 45 deg = 45 * (pi/180) is
+#                exactly a grid point (index 225 counting from -pi).
+# The sweep is run with NO obstacles, so LOS is clear at every bearing and
+# the only thing that moves the reward is the cone.
+# ---------------------------------------------------------------------------
+
+HALF_ANGLE = np.pi / 4  # 0.7853981633974483 rad = 45 deg
+GRID_STEP = np.pi / 180  # 0.017453292519943295 rad = 1 deg
+
+
+def _blind_dead_ahead(w_vis, obs):
+    """NEGATIVE CONTROL: pays inside the cone EXCEPT in a blind spot of
+    |bearing| < pi/8 = 22.5 deg around the heading. Turning toward the
+    opponent from 30 deg to 10 deg then LOSES the reward — exactly the
+    degeneracy the monotone criterion exists to catch."""
+    if obs[6] <= 0.5:
+        return 0.0
+    bearing = float(np.arctan2(obs[4], obs[3]))  # body frame, from obs itself
+    return 0.0 if abs(bearing) < np.pi / 8 else w_vis
+
+
+def _always_on(w_vis, obs):
+    """NEGATIVE CONTROL: the same value at every bearing. Non-decreasing by
+    construction, so monotonicity alone would pass it; it carries no
+    information at all."""
+    return w_vis
+
+
+def _narrow_by_22_5_degrees(w_vis, obs):
+    """NEGATIVE CONTROL: monotone and varying, but the step sits at
+    |bearing| = pi/8 = 22.5 deg instead of the configured half-angle of
+    45 deg — the reward and the sensing configuration disagree."""
+    if obs[6] <= 0.5:
+        return 0.0
+    bearing = float(np.arctan2(obs[4], obs[3]))
+    return w_vis if abs(bearing) <= np.pi / 8 else 0.0
+
+
+def _reward_at(rep, degrees):
+    b = np.asarray(rep["bearings"])
+    r = np.asarray(rep["rewards"])
+    return float(r[int(np.argmin(np.abs(b - np.deg2rad(degrees))))])
+
+
+class TestVisibilityTerm:
+    def test_the_term_is_the_indicator_the_wrapper_pays(self):
+        obs = np.zeros(11)
+        obs[6] = 1.0
+        assert visibility_term(0.1, obs) == pytest.approx(0.1)
+        obs[6] = 0.0
+        assert visibility_term(0.1, obs) == pytest.approx(0.0)
+
+
+class TestVisibilityMonotoneCheck:
+    def test_the_shipped_visibility_term_passes(self):
+        rep = visibility_monotone_report(CFG, w_vis=0.1)
+        assert rep["monotone_into_cone"] is True
+        assert rep["varies"] is True
+        assert rep["transition_bearing"] == pytest.approx(HALF_ANGLE, abs=GRID_STEP)
+        assert rep["expected_transition_bearing"] == pytest.approx(HALF_ANGLE)
+        assert rep["transition_matches"] is True
+        assert rep["passes"] is True
+
+    def test_the_swept_curve_is_the_step_the_configuration_specifies(self):
+        # 0 deg (dead ahead) and +-44 deg are inside the 45 deg half-angle
+        # -> +w_vis = 0.1; 46 deg, 90 deg and 180 deg are outside -> 0.0.
+        rep = visibility_monotone_report(CFG, w_vis=0.1)
+        assert _reward_at(rep, 0) == pytest.approx(0.1)
+        assert _reward_at(rep, 44) == pytest.approx(0.1)
+        assert _reward_at(rep, -44) == pytest.approx(0.1)
+        assert _reward_at(rep, 46) == pytest.approx(0.0)
+        assert _reward_at(rep, -46) == pytest.approx(0.0)
+        assert _reward_at(rep, 90) == pytest.approx(0.0)
+        assert _reward_at(rep, 180) == pytest.approx(0.0)
+
+    def test_the_evidence_is_a_full_sweep_at_a_range_inside_sensing_range(self):
+        rep = visibility_monotone_report(CFG, w_vis=0.1)
+        assert len(rep["bearings"]) == len(rep["rewards"]) == 361
+        assert rep["bearings"][0] == pytest.approx(-np.pi)
+        assert rep["bearings"][-1] == pytest.approx(np.pi)
+        assert rep["grid_step"] == pytest.approx(GRID_STEP)
+        assert rep["range_m"] == pytest.approx(4.0)  # 8.0 / 2, inside range
+        assert rep["obstacles"] == 0
+
+    def test_the_check_is_deterministic(self):
+        # No sampling: two calls must agree exactly, which is the whole
+        # reason the runner does not bootstrap this verdict.
+        a = visibility_monotone_report(CFG, w_vis=0.1)
+        b = visibility_monotone_report(CFG, w_vis=0.1)
+        assert a == b
+
+    def test_a_narrower_cone_moves_the_transition(self):
+        # fov_angle = pi/3 (60 deg) -> half-angle 30 deg = 0.5235987756 rad.
+        # The check reads the transition off the reward and compares it with
+        # THIS configuration, so it tracks the config rather than a constant.
+        cfg = EnvConfig(sensing=SensingConfig(fov_angle=np.pi / 3))
+        rep = visibility_monotone_report(cfg, w_vis=0.1)
+        assert rep["expected_transition_bearing"] == pytest.approx(np.pi / 6)
+        assert rep["transition_bearing"] == pytest.approx(np.pi / 6, abs=GRID_STEP)
+        assert rep["passes"] is True
+
+    # ---- NEGATIVE CONTROLS: the criterion must be able to fail ----
+
+    def test_a_reward_that_dips_dead_ahead_is_rejected(self):
+        # THE CASE THE CRITERION EXISTS FOR. Blind spot inside |b| < 22.5 deg:
+        # at 30 deg the reward is 0.1 and at 10 deg it is 0.0, so turning
+        # toward the opponent LOSES reward. Varies, and its outermost
+        # positive bearing is still 45 deg, so only monotonicity catches it.
+        rep = visibility_monotone_report(CFG, w_vis=0.1, term_fn=_blind_dead_ahead)
+        assert _reward_at(rep, 30) == pytest.approx(0.1)
+        assert _reward_at(rep, 10) == pytest.approx(0.0)
+        assert rep["varies"] is True
+        assert rep["transition_matches"] is True
+        assert rep["monotone_into_cone"] is False
+        assert rep["passes"] is False
+
+    def test_a_constant_reward_is_rejected(self):
+        # Non-decreasing by construction (every difference is 0), so the
+        # monotonicity test alone would pass it; `varies` rejects it.
+        rep = visibility_monotone_report(CFG, w_vis=0.1, term_fn=_always_on)
+        assert rep["monotone_into_cone"] is True
+        assert rep["varies"] is False
+        assert rep["passes"] is False
+
+    def test_a_transition_at_the_wrong_angle_is_rejected(self):
+        # Monotone and varying, but the step is at 22.5 deg while the config
+        # says 45 deg — a 22.5 deg disagreement against a 1 deg tolerance.
+        rep = visibility_monotone_report(
+            CFG, w_vis=0.1, term_fn=_narrow_by_22_5_degrees
+        )
+        assert rep["monotone_into_cone"] is True
+        assert rep["varies"] is True
+        assert rep["transition_bearing"] == pytest.approx(np.pi / 8, abs=GRID_STEP)
+        assert rep["transition_matches"] is False
+        assert rep["passes"] is False
+
+    def test_the_check_scores_the_reward_the_wrapper_actually_pays(self):
+        # The criterion must not be able to pass while the trained reward
+        # does something else. Same two bearings, two routes: the analytic
+        # sweep, and a real DenseRewardWrapper step with the evader placed
+        # at 4 m and 30 deg (inside the 45 deg half-angle -> 0.1) and at
+        # 4 m and 75 deg (outside -> 0.0). The evader moves at most
+        # 1.2 * 0.05 = 0.06 m during the step, i.e. <= 0.86 deg of bearing
+        # at 4 m, so neither placement can cross the 45 deg edge.
+        cfg = EnvConfig(n_obstacles=0)
+        rep = visibility_monotone_report(cfg, w_vis=0.1)
+        w = DenseRewardWrapper(
+            SingleAgentWrapper(cfg, "pursuer", GreedyEvader), w_vis=0.1
+        )
+        for degrees in (30.0, 75.0):
+            rad = np.deg2rad(degrees)
+            w.reset(seed=0)
+            _place(
+                w.env,
+                (0.0, 0.0, 0.0),
+                (4.0 * np.cos(rad), 4.0 * np.sin(rad), 0.0),
+            )
+            _, _r, _, _, info = w.step(np.array([-1.0, 0.0]))  # v = 0
+            assert info["dense_terms"]["vis"] == pytest.approx(
+                _reward_at(rep, degrees), abs=1e-12
+            )
+
+
+class TestVisTermDispatch:
+    """A7: `vis` is dispatched to the analytic criterion; every other term's
+    criterion is untouched."""
+
+    def test_the_vis_term_is_judged_by_geometry_not_by_frequency(self):
+        # 3 positives in 100 steps -> frac_positive 0.03, BELOW the old 0.05
+        # band edge, and the term still passes: the criterion is now the
+        # reward's shape, and the frequency is only recorded.
+        rep = nondegeneracy_report({"vis": [0.1] * 3 + [0.0] * 97}, cfg=CFG, w_vis=0.1)
+        vis = rep["terms"]["vis"]
+        assert vis["kind"] == "monotone"
+        assert vis["criterion"] == "monotone_into_cone"
+        assert vis["stats_role"] == "observation"
+        assert vis["frac_positive"] == pytest.approx(0.03)
+        assert vis["monotone"]["passes"] is True
+        assert vis["passes"] is True
+        assert rep["all_pass"] is True
+
+    def test_a_degenerate_vis_reward_fails_the_report(self, monkeypatch):
+        # And the report says False when the geometry is wrong: the same
+        # rollout values, with the analytic check fed the blind-spot reward.
+        # The production signature takes no injection point, so the check is
+        # substituted here rather than made configurable for a test.
+        import pe2.rewards as rewards_mod
+
+        def _degenerate(cfg, *, w_vis):
+            return visibility_monotone_report(
+                cfg, w_vis=w_vis, term_fn=_blind_dead_ahead
+            )
+
+        monkeypatch.setattr(rewards_mod, "visibility_monotone_report", _degenerate)
+        rep = nondegeneracy_report({"vis": [0.1] * 3 + [0.0] * 97}, cfg=CFG, w_vis=0.1)
+        assert rep["terms"]["vis"]["passes"] is False
+        assert rep["all_pass"] is False
+
+    def test_the_monotone_criterion_refuses_to_run_without_the_configuration(self):
+        # A frequency check needs only numbers; a geometric one needs the
+        # configuration. Silently falling back to the band is the failure
+        # this guards.
+        with pytest.raises(ValueError, match="cfg"):
+            nondegeneracy_report({"vis": [0.1, 0.0]})
+
+    def test_the_search_term_keeps_its_non_constancy_check(self):
+        vals = [k / 100 for k in range(1, 101)]
+        rep = nondegeneracy_report({"search": vals})
+        assert rep["terms"]["search"]["criterion"] == "non_constancy"
+        assert rep["terms"]["search"]["stats_role"] == "criterion"
+        assert rep["terms"]["search"]["passes"] is True
