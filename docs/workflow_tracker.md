@@ -12,6 +12,7 @@
 
 | Blocker | Since Session | Details |
 |---------|--------------|---------|
+| **Step 6 shield v1 failed its kill criteria G1/G3/G5 (S122)** | **Open — blocks Steps 7–12 and R4; v2 spec + plan ready (D97)** | Reset audit: 1.45 % of resets start outside the barrier set (dominant cause), plus VCP–body gap, relaxed tier dropping obstacles, FEAS_TOL drift, linearization. v2 = hard body rows + exact one-step check + never-drop tiers; pre-registered on seeds 800000+/810000+, definition unchanged. Execute `docs/superpowers/plans/2026-09-05-step6-shield-v2.md` |
 | ABL-3/ABL-4 divergence check | S88+ | ✅ **RESOLVED** |
 | BR-5/BR-6 completion | S88+ | ✅ **COMPLETE** |
 | SP17b_s49/s50 completion | S89 | ✅ **COMPLETE** |
