@@ -37,6 +37,20 @@ OUTCOME_CAPTURE = "capture"
 OUTCOME_TIMEOUT = "timeout"
 
 
+def euler_step(pose, v: float, omega: float, dt: float) -> tuple[float, float, float]:
+    """One UNCLIPPED unicycle Euler step -- the kinematics of this env.
+
+    Shared with pe2.shield so the shield's one-step prediction is the env's
+    next state bit for bit; the shield's zero-contact argument (Step 6 v2
+    spec, B4) rests on that identity. Keep the operation order exactly as
+    written: (v * cos) * dt, then + x.
+    """
+    x = pose[0] + v * np.cos(pose[2]) * dt
+    y = pose[1] + v * np.sin(pose[2]) * dt
+    theta = wrap_angle(pose[2] + omega * dt)
+    return x, y, theta
+
+
 class PursuitEvasionEnv(gym.Env):
     """1v1 pursuit-evasion with unicycle dynamics in a bounded arena."""
 
@@ -140,9 +154,7 @@ class PursuitEvasionEnv(gym.Env):
         """
         c = self.cfg
         pose = self.pursuer_pose if role == "pursuer" else self.evader_pose
-        x = pose[0] + v * np.cos(pose[2]) * c.dt
-        y = pose[1] + v * np.sin(pose[2]) * c.dt
-        theta = wrap_angle(pose[2] + omega * c.dt)
+        x, y, theta = euler_step(pose, v, omega, c.dt)
 
         wall_contact = False
         if x < self._x_min:

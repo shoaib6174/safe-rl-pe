@@ -242,5 +242,38 @@ class TestInvariantSweep:
         assert episodes >= 3  # sweep actually exercised resets
 
 
+class TestEulerStepIdentity:
+    """The shield predicts the env's next pose with this function; the
+    zero-contact argument in the Step 6 v2 spec (B4) needs bit identity."""
+
+    def test_advance_agent_uses_euler_step_bitwise(self):
+        from pe2.env import euler_step
+
+        cfg = EnvConfig()
+        env = PursuitEvasionEnv(cfg)
+        rng = np.random.default_rng(12345)
+        for _ in range(10_000):
+            env.reset(seed=int(rng.integers(0, 2**31 - 1)))
+            # Keep away from the walls so the clip never engages.
+            env.pursuer_pose[:] = (
+                rng.uniform(-3.0, 3.0),
+                rng.uniform(-3.0, 3.0),
+                rng.uniform(-np.pi, np.pi),
+            )
+            env.obstacles = []
+            v = float(rng.uniform(0.0, cfg.v_max))
+            w = float(rng.uniform(-cfg.omega_max, cfg.omega_max))
+            predicted = euler_step(env.pursuer_pose.copy(), v, w, cfg.dt)
+            env._advance_agent("pursuer", v, w)
+            assert tuple(env.pursuer_pose) == predicted  # bitwise, no approx
+
+    def test_zero_action_is_the_identity_on_position(self):
+        from pe2.env import euler_step
+
+        pose = np.array([1.2345678901234567, -2.3456789012345678, 0.7])
+        x, y, _ = euler_step(pose, 0.0, 0.0, 0.05)
+        assert x == pose[0] and y == pose[1]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
