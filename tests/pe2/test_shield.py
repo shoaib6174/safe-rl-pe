@@ -8,7 +8,6 @@ from pe2.env import OUTCOME_CAPTURE, PursuitEvasionEnv
 from pe2.metrics import DEADLOCK_STEPS, ShieldMetrics, summarize_shield
 from pe2.scripted import GreedyEvader, GreedyPursuer, run_duel, run_shielded_duel
 from pe2.shield import (
-    STALL_V_FRAC,
     CBFShield,
     NoOpShield,
     _body_obstacle_constraint,
@@ -225,49 +224,6 @@ class TestCBFShieldFilter:
                 >= -1e-9
             )
 
-    def test_relaxed_tier_when_obstacle_infeasible(self):
-        # Already penetrating the effective radius dead ahead: the obstacle
-        # constraint demands v < 0, impossible -> drop to boundary-only.
-        shield = CBFShield(CFG)
-        obstacles = [{"x": 0.5, "y": 0.0, "radius": 0.35}]  # r_eff 0.5, h < 0
-        u, info = shield.filter((1.0, 0.0), np.array([0.0, 0.0, 0.0]), obstacles)
-        assert info["method"] == "relaxed"
-        assert u[0] >= -1e-9  # box bounds still respected
-
-    def test_backup_tier_when_wall_infeasible(self):
-        # Outside the wall limit heading +x: even boundary rows are infeasible.
-        shield = CBFShield(CFG)
-        u, info = shield.filter((1.0, 0.0), np.array([5.0, 0.0, 0.0]), [])
-        assert info["method"] == "backup"
-        assert u[0] == pytest.approx(0.1 * CFG.v_max)
-        assert abs(u[1]) == pytest.approx(CFG.omega_max)
-
-    def test_backup_turns_away_from_nearest_danger(self):
-        shield = CBFShield(CFG)
-        # Wall to the east, heading east -> must rotate toward west.
-        u = shield.backup(np.array([4.8, 0.0, 0.0]), [])
-        assert u[0] == pytest.approx(0.1 * CFG.v_max)
-        assert u[1] > 0  # +omega turns toward pi
-
-    def test_backup_head_on_north_wall_tie_breaks_ccw(self):
-        # Heading +y at y=4.8: nearest danger is the north wall (angle pi/2),
-        # away = -pi/2, error = wrap(-pi/2 - pi/2) = wrap(-pi) = -pi -> an exact
-        # tie. Convention: ties turn CCW (+omega).
-        shield = CBFShield(CFG)
-        u = shield.backup(np.array([0.0, 4.8, np.pi / 2]), [])
-        assert u[0] == pytest.approx(0.1 * CFG.v_max)
-        assert u[1] == pytest.approx(CFG.omega_max)
-
-    def test_backup_turns_the_short_way_when_not_a_tie(self):
-        # Wall east, heading 0.5 rad north of east: away = pi, error =
-        # wrap(pi - 0.5) = +2.64 -> CCW. Heading -0.5: error = wrap(pi + 0.5)
-        # = -2.64 -> CW. Both saturate at omega_max (3 * 2.64 > 2.84).
-        shield = CBFShield(CFG)
-        u_ccw = shield.backup(np.array([4.8, 0.0, 0.5]), [])
-        u_cw = shield.backup(np.array([4.8, 0.0, -0.5]), [])
-        assert u_ccw[1] == pytest.approx(CFG.omega_max)
-        assert u_cw[1] == pytest.approx(-CFG.omega_max)
-
     def test_no_inter_agent_constraint(self):
         # The shield takes obstacles only; constraints are obstacle+boundary,
         # so capture (which needs contact) can never be blocked by design.
@@ -275,7 +231,7 @@ class TestCBFShieldFilter:
         obstacles = [{"x": 1.0, "y": 0.0, "radius": 0.3}]
         cons = shield.constraints(np.array([0.0, 0.0, 0.0]), obstacles)
         assert info_kinds(cons) == {"obstacle", "boundary"}
-        assert len(cons) == 4 + len(obstacles)
+        assert len(cons) == 4 + 4 + 2 * len(obstacles)
 
     def test_deterministic(self):
         shield = CBFShield(CFG)
@@ -307,10 +263,18 @@ class TestCBFShieldFilter:
         # gives v <= gamma*h/dt = 0.2 * 0.001 / 0.05 = 0.004. That is below
         # 0.05 * v_max = 0.05 while the nominal 1.0 is above 0.5 * v_max,
         # so the step is a stall on the exact tier.
+        #
+        # v = 0.004 sits EXACTLY on that barrier, and the tier test is the
+        # exact one-step check with no tolerance, so in float the successor
+        # barrier lands ~1 ulp below the target (-3.6e-16) and the candidate is
+        # rejected. The nearest admissible candidate is then a full stop. The
+        # conservative direction, and 0.2 mm/step of speed either way; a
+        # tolerance here would have to be granted to the HARD rows too, which
+        # is precisely the guarantee this design refuses to soften.
         shield = CBFShield(CFG)
         u, info = shield.filter((1.0, 0.0), np.array([4.749, 0.0, 0.0]), [])
         assert info["method"] == "exact"
-        assert u[0] == pytest.approx(0.004, abs=1e-6)
+        assert u[0] == 0.0
         assert info["stalled"] is True
 
     def test_filter_not_stalled_when_nominal_is_slow(self):
@@ -323,11 +287,12 @@ class TestCBFShieldFilter:
     def test_immobile_is_flagged_even_when_the_nominal_is_slow(self):
         # A policy that lowers its OWN commanded speed hides from `stalled`:
         # nominal 0.4 < 0.5 * v_max, so stalled is False by definition, but
-        # the shield still holds the executed speed at 0.004 <= 0.05 * v_max.
+        # the shield still holds the executed speed at 0 <= 0.05 * v_max (see
+        # the stall test above for why the 0.004 boundary candidate rounds out).
         # `immobile` is the nominal-independent flag that catches it.
         shield = CBFShield(CFG)
         _, info = shield.filter((0.4, 0.0), np.array([4.749, 0.0, 0.0]), [])
-        assert info["v_exec"] == pytest.approx(0.004, abs=1e-6)
+        assert info["v_exec"] == 0.0
         assert info["stalled"] is False
         assert info["immobile"] is True
 
@@ -340,83 +305,6 @@ class TestCBFShieldFilter:
         _, free = shield.filter((0.5, 0.0), np.array([0.0, 0.0, 0.0]), [])
         assert free["stalled"] is False
         assert free["immobile"] is False
-
-    def test_backup_speed_sits_above_the_stall_band_by_construction(self):
-        # The two constants are not independent: the backup controller returns
-        # 0.1 * v_max, which is strictly above STALL_V_FRAC * v_max = 0.05, so
-        # a backup-tier step can never be flagged stalled or immobile. That is
-        # exactly why tier-3 immobility needs its own counter.
-        assert 0.1 > STALL_V_FRAC
-        shield = CBFShield(CFG)
-        _, info = shield.filter((1.0, 0.0), np.array([5.0, 0.0, 0.0]), [])
-        assert info["method"] == "backup"
-        assert info["v_exec"] == pytest.approx(0.1 * CFG.v_max)
-        assert info["stalled"] is False
-        assert info["immobile"] is False
-
-    def test_backup_honours_the_effective_speed_cap(self):
-        # Called with a cap below 0.1 * cfg.v_max, the backup controller must
-        # not return an action above the cap it was given: 0.1 * 0.5 = 0.05.
-        shield = CBFShield(CFG)
-        u = shield.backup(np.array([5.0, 0.0, 0.0]), [], v_max=0.5)
-        assert u[0] == pytest.approx(0.05)
-        # Same through filter, where the cap comes from the caller's role.
-        u, info = shield.filter((1.0, 0.0), np.array([5.0, 0.0, 0.0]), [], v_max=0.5)
-        assert info["method"] == "backup"
-        assert u[0] == pytest.approx(0.05)
-        assert u[0] <= 0.5
-
-    def test_relaxed_tier_through_filter_reports_infeasible(self):
-        # The reviewer's probe. State x = 0.05 heading +x with an obstacle at
-        # the origin, radius 0.3 -> r_eff = 0.45, q = (0.15, 0), dist 0.15:
-        #   h        = 0.15^2 - 0.45^2 = 0.0225 - 0.2025 = -0.18 m^2
-        #   clearance = 0.15 - 0.45                      = -0.30 m
-        # The obstacle row demands v < 0, so the exact program is infeasible
-        # and the boundary-only program is not (walls are 4.7 m away), which
-        # is the RELAXED tier. It returns the nominal unmodified.
-        shield = CBFShield(CFG)
-        u, info = shield.filter(
-            (1.0, 0.0),
-            np.array([0.05, 0.0, 0.0]),
-            [{"x": 0.0, "y": 0.0, "radius": 0.3}],
-        )
-        assert info["method"] == "relaxed"
-        assert info["feasible"] is False
-        assert info["stalled"] is False
-        assert info["immobile"] is False
-        assert np.allclose(u, [1.0, 0.0])
-        assert info["min_h_obstacle"] == pytest.approx(-0.18)
-        assert info["min_h_boundary"] == pytest.approx(4.7)
-        assert info["min_clearance"] == pytest.approx(-0.30)
-        # An intervention-free step that is among the LEAST safe: on the
-        # relaxed tier the obstacle row is simply dropped.
-        assert info["intervention"] is False
-
-    def test_relaxed_tier_info_is_classified_by_the_accumulator(self):
-        # Cross-module contract for a non-exact tier: the real info dict from
-        # the probe above must land as infeasible-but-not-backup.
-        shield = CBFShield(CFG)
-        _, info = shield.filter(
-            (1.0, 0.0),
-            np.array([0.05, 0.0, 0.0]),
-            [{"x": 0.0, "y": 0.0, "radius": 0.3}],
-        )
-        m = ShieldMetrics()
-        m.record(info, violation=False)
-        s = m.summary()
-        assert s["n_infeasible"] == 1
-        assert s["n_backup"] == 0
-        assert s["infeasibility_rate"] == pytest.approx(1.0)
-        assert s["backup_rate"] == 0.0
-        assert s["tier_histogram"] == {
-            "exact": 0,
-            "relaxed": 1,
-            "backup": 0,
-            "none": 0,
-        }
-        # The least-safe step of the episode logs no intervention at all.
-        assert s["intervention_rate"] == 0.0
-        assert s["min_clearance_floor"] == pytest.approx(-0.30)
 
     def test_equal_clearance_wall_and_obstacle_report_equal_clearance(self):
         # The mixed-unit trap: 0.02 m of clearance from a wall and 0.02 m from
@@ -443,6 +331,101 @@ class TestCBFShieldFilter:
         assert wall["min_h_boundary"] == pytest.approx(0.02)
         assert obst["min_h_obstacle"] == pytest.approx(0.0464)
         assert obst["min_h_boundary"] == pytest.approx(X_LIM - 0.1)
+
+    def test_safe_nominal_passes_unchanged_on_the_exact_tier(self):
+        shield = CBFShield(CFG)
+        u, info = shield.filter((0.8, 0.3), np.array([0.0, 0.0, 0.0]), [])
+        assert info["method"] == "exact" and info["feasible"]
+        assert np.allclose(u, [0.8, 0.3]) and not info["intervention"]
+
+    def test_head_on_at_the_wall_stops_and_never_contacts(self):
+        shield = CBFShield(CFG)
+        state = np.array([X_LIM, 0.0, 0.0])  # body on the +x wall, heading into it
+        u, info = shield.filter((1.0, 0.0), state, [])
+        assert u[0] < 1e-12  # sub-ulp speeds cannot move x past x_lim
+        assert info["method"] in ("exact", "relaxed")  # the VCP row is already < 0
+        assert shield.progress(state, [], u)[0] >= 0.0  # hard +x row kept
+
+    def test_tangent_slide_into_obstacle_is_braked_not_penetrated(self):
+        """RC2 from the spec: at the surface with the heading 96° from the
+        outward normal the VCP row alone would allow ~3 mm penetration."""
+        shield = CBFShield(CFG)
+        r_eff = 0.3 + CFG.agent_radius  # 0.45
+        obstacles = [{"x": 0.0, "y": 0.0, "radius": 0.3}]
+        state = np.array([r_eff, 0.0, np.pi / 2 + np.deg2rad(6.0)])  # slightly inward
+        u, info = shield.filter((1.0, 0.0), state, obstacles)
+        env = PursuitEvasionEnv(CFG)
+        env.reset(seed=0)
+        env.obstacles = obstacles
+        env.pursuer_pose[:] = state
+        env.evader_pose[:] = (4.0, 4.0, 0.0)
+        _, _, _, _, step_info = env.step([u[0], u[1], 0.0, 0.0])
+        assert not step_info["pursuer_obstacle_contact"]
+        assert info["intervention"]
+
+    def test_reset_with_vcp_inside_uses_relaxed_tier_and_keeps_hard_rows(self):
+        """RC1: body just outside the surface, VCP already inside (h_vcp < 0)."""
+        shield = CBFShield(CFG)
+        obstacles = [{"x": 0.0, "y": 0.0, "radius": 0.3}]
+        state = np.array([0.46, 0.0, np.pi])  # heading straight at the centre
+        cons = shield.constraints(state, obstacles)
+        assert any(c.h < 0 for c in cons if not c.hard)
+        assert all(c.h >= 0 for c in cons if c.hard)
+        u, info = shield.filter((1.0, 0.0), state, obstacles)
+        assert info["method"] == "relaxed" and not info["feasible"]
+        p = shield.progress(state, obstacles, u)
+        assert all(p[j] >= 0 for j, c in enumerate(cons) if c.hard)
+
+    def test_backup_tier_maximises_worst_hard_progress_then_turns(self):
+        """Body inside the INFLATED set (robust arm), heading at the centre:
+        no candidate keeps the hard row (any v > 0 goes deeper, v = 0 holds
+        h < (1-γ)h), so the tier is backup; the best hard progress is v = 0,
+        and the soft-row tie-break turns the VCP out at full rate so the
+        next step can drive away."""
+        shield = CBFShield(CFG, margin=0.05)
+        obstacles = [{"x": 0.0, "y": 0.0, "radius": 0.3}]
+        state = np.array([0.47, 0.0, np.pi])  # inside 0.50 but outside 0.45
+        cons = shield.constraints(state, obstacles)
+        assert any(c.h < 0 for c in cons if c.hard)
+        u, info = shield.filter((1.0, 0.0), state, obstacles)
+        assert info["method"] == "backup" and not info["feasible"]
+        assert u[0] == 0.0 and abs(u[1]) == CFG.omega_max
+        p = shield.progress(state, obstacles, u)
+        hard = [j for j, c in enumerate(cons) if c.hard]
+        worst = min(p[hard])
+        # No other candidate does better on the worst hard row.
+        from pe2.shield import _qp_candidates
+
+        rows = shield._dcbf_rows(cons)
+        cands = _qp_candidates(
+            1.0, 0.0, rows, CFG.v_max, CFG.omega_max, shield.w_v, shield.w_omega
+        )
+        for cand in cands:
+            assert min(shield.progress(state, obstacles, cand)[hard]) <= worst + 1e-12
+
+    def test_backup_tier_drives_out_when_heading_away(self):
+        shield = CBFShield(CFG, margin=0.05)
+        obstacles = [{"x": 0.0, "y": 0.0, "radius": 0.3}]
+        state = np.array([0.47, 0.0, 0.0])  # heading away from the centre
+        u, info = shield.filter((0.0, 0.0), state, obstacles)
+        # Full speed away satisfies the hard row (0.52 - 0.50 >= 0.8 * -0.03),
+        # so this is NOT the backup tier: the exact/relaxed tiers handle it.
+        assert info["method"] in ("exact", "relaxed")
+        assert u[0] > 0.0 and info["intervention"]
+
+    def test_filter_is_deterministic(self):
+        shield = CBFShield(CFG)
+        obstacles = [{"x": 1.0, "y": 0.2, "radius": 0.4}]
+        state = np.array([0.3, 0.0, 0.1])
+        a, ia = shield.filter((1.0, 1.0), state, obstacles)
+        b, ib = shield.filter((1.0, 1.0), state, obstacles)
+        assert np.array_equal(a, b) and ia == ib
+
+    def test_the_heuristic_backup_is_gone(self):
+        import pe2.shield as m
+
+        assert not hasattr(m, "BACKUP_V_FRAC") and not hasattr(m, "HEAD_ON_TIE_TOL")
+        assert not hasattr(m, "FEAS_TOL") and not hasattr(CBFShield, "backup")
 
 
 def info_kinds(cons):
@@ -473,7 +456,7 @@ class TestNoOpShield:
         _, info = shield.filter((1.0, 0.0), np.array([4.73, 0.0, 0.0]), [])
         assert info["min_h"] == pytest.approx(0.02)
         assert info["min_clearance"] == pytest.approx(0.02)
-        assert info["n_constraints"] == 4
+        assert info["n_constraints"] == 8  # 4 hard walls + 4 soft walls
 
     def test_info_keys_match_the_real_shield(self):
         # The two arms are compared step by step, so their info dicts must
@@ -677,7 +660,7 @@ class TestShieldMetrics:
             ((1.0, 0.0), np.array([0.0, 0.0, 0.0]), [], "exact"),
             (
                 (1.0, 0.0),
-                np.array([0.05, 0.0, 0.0]),
+                np.array([0.46, 0.0, np.pi]),  # VCP inside, body outside
                 [{"x": 0.0, "y": 0.0, "radius": 0.3}],
                 "relaxed",
             ),
@@ -1510,12 +1493,12 @@ class TestRobustMargin:
         plain = next(
             c
             for c in CBFShield(CFG).constraints(state, obstacles)
-            if c.kind == "obstacle"
+            if c.kind == "obstacle" and not c.hard
         )
         robust = next(
             c
             for c in CBFShield(CFG, margin=0.05).constraints(state, obstacles)
-            if c.kind == "obstacle"
+            if c.kind == "obstacle" and not c.hard
         )
         assert plain.h == pytest.approx(0.75)
         assert plain.clearance == pytest.approx(0.50)
@@ -1524,13 +1507,17 @@ class TestRobustMargin:
 
     def test_margin_shrinks_the_boundary_limits(self):
         # half = 5.0, agent_radius = 0.15 -> x_lim 4.85 unmargined, 4.80 with
-        # delta = 0.05. At the origin heading +x, q = (0.1, 0), so the east
-        # wall barrier is 4.85 - 0.1 = 4.75 and 4.80 - 0.1 = 4.70.
+        # delta = 0.05. At the origin heading +x, q = (0.1, 0), so the soft
+        # east-wall barrier (row 4, the first VCP row) is 4.85 - 0.1 = 4.75
+        # and 4.80 - 0.1 = 4.70; the hard east-wall row (row 0) is on the body
+        # at x = 0, so it is x_lim itself.
         state = np.array([0.0, 0.0, 0.0])
         plain = CBFShield(CFG).constraints(state, [])
         robust = CBFShield(CFG, margin=0.05).constraints(state, [])
-        assert plain[0].h == pytest.approx(4.75)
-        assert robust[0].h == pytest.approx(4.70)
+        assert plain[4].h == pytest.approx(4.75)
+        assert robust[4].h == pytest.approx(4.70)
+        assert plain[0].h == pytest.approx(4.85)
+        assert robust[0].h == pytest.approx(4.80)
 
     def test_every_clearance_is_exactly_delta_smaller(self):
         # The defining property: the barrier reaches zero delta metres
@@ -1542,7 +1529,7 @@ class TestRobustMargin:
         ]
         plain = CBFShield(CFG).constraints(state, obstacles)
         robust = CBFShield(CFG, margin=0.05).constraints(state, obstacles)
-        assert len(plain) == len(robust) == 6
+        assert len(plain) == len(robust) == 12  # 4 hard + 4 soft walls, 2 per obstacle
         for a, b in zip(plain, robust, strict=True):
             assert a.kind == b.kind
             assert b.clearance == pytest.approx(a.clearance - 0.05)
@@ -1560,18 +1547,6 @@ class TestRobustMargin:
         assert plain["intervention"] is False
         assert robust["intervention"] is True
         assert robust["method"] == "exact"
-
-    def test_margin_moves_the_backup_turn_away_boundary(self):
-        # The backup tier turns away from the nearest danger measured against
-        # the SAME inflated limits, so the two arms cannot disagree about
-        # where the wall is. At (4.0, 0, 0) the east wall is the nearest
-        # danger under both, and the crawl speed is unchanged.
-        state = np.array([4.0, 0.0, 0.0])
-        plain = CBFShield(CFG).backup(state, [])
-        robust = CBFShield(CFG, margin=0.05).backup(state, [])
-        assert plain[0] == pytest.approx(robust[0])  # crawl speed unchanged
-        assert plain[1] == pytest.approx(robust[1])  # same wall, same turn
-        assert CBFShield(CFG, margin=0.05)._x_lim == pytest.approx(4.80)
 
     def test_noop_control_keeps_the_zero_margin_default(self):
         # The negative control must measure the true geometry, so the shipped

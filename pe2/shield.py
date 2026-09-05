@@ -26,13 +26,18 @@ virtual-control-point barrier evaluated d = 0.1 m ahead of the body, which
 supplies steering (uniform relative degree 1, unlike the body row) and
 reaches zero roughly d before the body touches anything.
 
-3-tier fallback (root SafeActionResolver pattern, minus the unused Tier-1 SVM
-classifier) selects from one candidate set that always includes every row,
-hard and soft alike: exact QP (all constraints) → relaxed QP (boundary only;
-obstacles are lowest priority) → backup controller (brake + turn away from
-nearest danger). Nothing is ever dropped from the candidate set ahead of a
-tier trying it. A violation is defined at env level (wall/obstacle contact
-flags); this module only maintains h > 0.
+Three tiers, all selecting from ONE candidate set (D85 enumeration + u = 0 +
+the clipped nominal) judged by the exact one-step barrier on the true Euler
+successor. Nothing is ever dropped from the row set — no tier discards a
+constraint (spec B3):
+  exact   — some candidate satisfies every row → the one nearest the nominal.
+  relaxed — none does, but some satisfy every HARD row → among those,
+            maximise the worst normalised soft-row progress.
+  backup  — no candidate satisfies every hard row → maximise the worst
+            normalised hard-row progress, then the worst soft-row progress.
+Ties break toward the nominal, so every tier is deterministic. A violation is
+defined at env level (wall/obstacle contact flags); this module only maintains
+h > 0.
 
 h > 0 is a CONSERVATIVE early warning only for the SOFT rows — they are
 evaluated at the virtual control point d = 0.1 m ahead of the body, so in the
@@ -58,15 +63,8 @@ from pe2.config import EnvConfig
 from pe2.env import wrap_angle
 
 INTERVENTION_ATOL = 1e-4  # |Δu| above this counts as an intervention (root convention)
-HEAD_ON_TIE_TOL = 1e-9  # |error| within this of pi counts as an exact head-on tie
 STALL_V_FRAC = 0.05  # executed speed <= this fraction of v_max counts as stopped
 MOVE_V_FRAC = 0.5  # nominal speed >= this fraction of v_max counts as "wanted to move"
-BACKUP_V_FRAC = 0.1  # backup-tier crawl speed, as a fraction of the effective v_max
-# NOT independent of STALL_V_FRAC: BACKUP_V_FRAC > STALL_V_FRAC by construction,
-# so a backup-tier step can never be flagged `stalled` or `immobile`. Tier-3
-# immobility is therefore invisible to those two flags and is counted
-# separately as a backup run (ShieldMetrics.longest_backup_run / `pinned`).
-# Changing either constant must preserve that ordering, or update both metrics.
 
 
 @dataclass
@@ -362,36 +360,6 @@ class CBFShield:
         dt = self.cfg.dt
         return [(dt * c.a_v, dt * c.a_omega, -self.gamma * c.h) for c in cons]
 
-    def backup(
-        self, state: np.ndarray, obstacles: list[dict], v_max: float | None = None
-    ) -> np.ndarray:
-        """Tier 3: brake + turn away from the nearest danger (root pattern).
-
-        Exact head-on ties turn CCW. The crawl speed is BACKUP_V_FRAC of the
-        EFFECTIVE cap `v_max` (the caller's per-role cap, as in `filter`), so
-        the returned action never exceeds the cap it was given.
-        """
-        v_max = self.cfg.v_max if v_max is None else v_max
-        x, y, theta = float(state[0]), float(state[1]), float(state[2])
-        dangers = [
-            (0.0, self._x_lim - x),
-            (np.pi, x + self._x_lim),
-            (np.pi / 2, self._y_lim - y),
-            (-np.pi / 2, y + self._y_lim),
-        ]
-        for obs in obstacles:
-            dx, dy = obs["x"] - x, obs["y"] - y
-            dist = max(np.hypot(dx, dy) - obs["radius"], 0.01)
-            dangers.append((float(np.arctan2(dy, dx)), float(dist)))
-        away = min(dangers, key=lambda d: d[1])[0] + np.pi
-        err = wrap_angle(away - theta)
-        # wrap_angle maps an exact head-on error (±pi) to -pi, which would make
-        # the turn direction depend on float rounding. Convention: ties turn CCW.
-        if err <= -np.pi + HEAD_ON_TIE_TOL:
-            err = np.pi
-        omega = float(np.clip(3.0 * err, -self.cfg.omega_max, self.cfg.omega_max))
-        return np.array([BACKUP_V_FRAC * v_max, omega], dtype=np.float64)
-
     def filter(
         self,
         action: tuple[float, float] | np.ndarray,
@@ -401,54 +369,60 @@ class CBFShield:
     ) -> tuple[np.ndarray, dict]:
         """Project a nominal action into the safe set; never blocks capture.
 
-        Returns (safe_action, info). info keys: method ("exact" | "relaxed" |
-        "backup"), feasible, intervention (bool), min_h, min_clearance,
-        min_h_obstacle, min_h_boundary, h_obstacle, h_boundary, n_constraints,
-        v_nom, v_exec, stalled, immobile.
+        One candidate set (D85 enumeration + u = 0 + nominal) is judged by the
+        exact one-step barrier on the true Euler successor (spec B2). Tiers:
+          exact   — some candidate satisfies every row → nearest to nominal.
+          relaxed — none does, some satisfies every HARD row → among those,
+                    maximise the worst normalised soft-row progress.
+          backup  — no candidate satisfies every hard row → maximise the
+                    worst normalised hard-row progress, then the worst
+                    soft-row progress.
+        Ties break toward the nominal. Nothing is ever dropped (spec B3).
 
-        `min_h` is the worst quadratic-program margin over constraints of BOTH
-        kinds and is therefore mixed-unit (obstacle m², boundary m). It must
-        never be reported as a distance. `min_clearance` is the worst signed
-        distance in metres and is the reportable safety margin.
-
-        `immobile` is `v_exec <= STALL_V_FRAC * v_max` with no condition on the
-        nominal; `stalled` additionally requires `v_nom >= MOVE_V_FRAC * v_max`
-        ("the policy wanted to move"). A policy that lowers its own commanded
-        speed can therefore be immobile without ever being stalled, which is
-        why both are reported.
-
-        `v_exec` is the speed this filter RETURNS, not necessarily the speed
-        the environment applies: with `cfg.prep_steps > 0` the env zeroes the
-        pursuer's speed for the first prep steps after the filter has run.
-        The default is `prep_steps = 0`, where the two coincide.
+        Returns (safe_action, info); see `_info` for the keys. `feasible` is
+        True only on the exact tier.
         """
         v_max = self.cfg.v_max if v_max is None else v_max
         v_nom, w_nom = self._clip_nominal(action, v_max)
         cons = self.constraints(state, obstacles)
+        U = _qp_candidates(
+            v_nom,
+            w_nom,
+            self._dcbf_rows(cons),
+            v_max,
+            self.cfg.omega_max,
+            self.w_v,
+            self.w_omega,
+        )
+        H0 = np.array([c.h for c in cons])
+        scale = np.array([c.scale for c in cons])
+        hard = np.array([c.hard for c in cons])
+        H1 = self.successor_barriers(state, obstacles, U)
+        target = (1.0 - self.gamma) * H0
+        sat = H1 >= target  # (K, R) — exact comparison, no tolerance
+        prog = (H1 - target) / scale
+        obj = self.w_v * (U[:, 0] - v_nom) ** 2 + self.w_omega * (U[:, 1] - w_nom) ** 2
 
-        # Tier 1: exact — all constraints.
-        u, feasible = self._solve(v_nom, w_nom, cons, v_max)
-        method = "exact"
-
-        # Tier 2: relaxed — boundary only (obstacles lowest priority, root).
-        if not feasible:
-            boundary = [c for c in cons if c.kind == "boundary"]
-            u, feasible = self._solve(v_nom, w_nom, boundary, v_max)
+        all_ok = sat.all(axis=1)
+        hard_ok = sat[:, hard].all(axis=1)
+        if all_ok.any():
+            idx = int(np.flatnonzero(all_ok)[np.argmin(obj[all_ok])])
+            method = "exact"
+        elif hard_ok.any():
+            worst_soft = prog[:, ~hard].min(axis=1)
+            pool = np.flatnonzero(hard_ok)
+            order = np.lexsort((obj[pool], -worst_soft[pool]))
+            idx = int(pool[order[0]])
             method = "relaxed"
-
-        # Tier 3: backup controller.
-        if not feasible:
-            u = self.backup(state, obstacles, v_max)
+        else:
+            worst_hard = prog[:, hard].min(axis=1)
+            worst_soft = prog[:, ~hard].min(axis=1)
+            # Hard progress first, then soft (so a body stuck heading at the
+            # surface still turns its VCP out), then the nominal.
+            order = np.lexsort((obj, -worst_soft, -worst_hard))
+            idx = int(order[0])
             method = "backup"
-
-        # info["feasible"] is derived from the tier, not from the local
-        # `feasible` above: only the exact tier means the full constraint set
-        # was satisfied, whereas the local merely records whether the most
-        # recent _solve() call returned a point (true again after a
-        # successful relaxed solve, when the reported feasibility must stay
-        # False). ShieldMetrics.record reads info["feasible"] rather than
-        # re-deriving it from the method string, so a new tier cannot
-        # disagree with itself.
+        u = U[idx].copy()
         return u, self._info(method, method == "exact", u, v_nom, w_nom, cons, v_max)
 
     def _clip_nominal(
@@ -471,9 +445,38 @@ class CBFShield:
         v_max: float,
     ) -> dict:
         """Build the per-step info dict. Shared with NoOpShield so the shielded
-        and unshielded arms report exactly the same keys."""
-        h_obstacle = [c.h for c in cons if c.kind == "obstacle"]
-        h_boundary = [c.h for c in cons if c.kind == "boundary"]
+        and unshielded arms report exactly the same keys.
+
+        Keys: method ("exact" | "relaxed" | "backup" | "none"), feasible,
+        intervention, min_h, min_clearance, min_h_obstacle, min_h_boundary,
+        h_obstacle, h_boundary, n_constraints, v_nom, v_exec, stalled,
+        immobile.
+
+        `h_obstacle` / `h_boundary` (and their minima) are the SOFT (VCP) rows
+        only, so each list stays single-unit and matches what the docstrings
+        say it is: obstacle m², boundary m. Mixing in the hard body rows, which
+        are metres for both kinds, would silently make `h_obstacle` a list of
+        two different units.
+
+        `min_h` is the worst margin over ALL rows, hard and soft, and is
+        therefore mixed-unit; it must never be reported as a distance.
+        `min_clearance` is the worst signed distance in metres over ALL rows —
+        it now includes the hard body rows and so is the true reportable
+        margin: the distance from the body to the nearest contact surface.
+
+        `immobile` is `v_exec <= STALL_V_FRAC * v_max` with no condition on the
+        nominal; `stalled` additionally requires `v_nom >= MOVE_V_FRAC * v_max`
+        ("the policy wanted to move"). A policy that lowers its own commanded
+        speed can therefore be immobile without ever being stalled, which is
+        why both are reported.
+
+        `v_exec` is the speed the filter RETURNS, not necessarily the speed the
+        environment applies: with `cfg.prep_steps > 0` the env zeroes the
+        pursuer's speed for the first prep steps after the filter has run. The
+        default is `prep_steps = 0`, where the two coincide.
+        """
+        h_obstacle = [c.h for c in cons if c.kind == "obstacle" and not c.hard]
+        h_boundary = [c.h for c in cons if c.kind == "boundary" and not c.hard]
         v_exec = float(u[0])
         immobile = v_exec <= STALL_V_FRAC * v_max
         stalled = immobile and v_nom >= MOVE_V_FRAC * v_max
@@ -495,11 +498,6 @@ class CBFShield:
             "stalled": bool(stalled),
             "immobile": bool(immobile),
         }
-
-    def _solve(
-        self, v_nom: float, w_nom: float, cons: list[Constraint], v_max: float
-    ) -> tuple[np.ndarray, bool]:
-        raise NotImplementedError("replaced in Task 5")
 
 
 class NoOpShield(CBFShield):

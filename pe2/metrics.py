@@ -28,9 +28,11 @@ Three immobility diagnostics, because no single one covers every mechanism:
 - `immobile_step_rate` / `longest_immobile_run`: the same speed test with no
   condition on the nominal, so a policy that lowers its own commanded speed
   cannot hide shield-induced immobility.
-- `pinned`: DEADLOCK_STEPS consecutive BACKUP-tier steps. The backup
-  controller crawls above the stall band by construction, so tier-3
-  immobility is invisible to the other two.
+- `pinned`: DEADLOCK_STEPS consecutive BACKUP-tier steps. The backup tier
+  means no candidate action could keep every hard (body) row, i.e. the state
+  is outside the invariant set — at delta = 0 this cannot happen after a valid
+  reset, on the robust arm it is the signature of an episode that started
+  inside the inflated set and cannot get out.
 """
 
 from __future__ import annotations
@@ -143,10 +145,8 @@ class ShieldMetrics:
             )
         else:
             self._current_immobile_run = 0
-        # Tier-3 pinning: the backup controller crawls ABOVE the stall band by
-        # construction (shield.BACKUP_V_FRAC > shield.STALL_V_FRAC), so a run
-        # of backup steps is invisible to the stall/immobile counters and needs
-        # its own. Same threshold as deadlock.
+        # Tier-3 pinning: consecutive steps on which the hard rows were
+        # unsatisfiable. Same threshold as deadlock.
         if method == "backup":
             self._current_backup_run += 1
             self.longest_backup_run = max(
