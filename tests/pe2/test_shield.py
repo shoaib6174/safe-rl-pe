@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from pe2.config import EnvConfig
-from pe2.env import OUTCOME_CAPTURE, PursuitEvasionEnv
+from pe2.env import OUTCOME_CAPTURE, PursuitEvasionEnv, wrap_angle
 from pe2.metrics import DEADLOCK_STEPS, ShieldMetrics, summarize_shield
 from pe2.scripted import GreedyEvader, GreedyPursuer, run_duel, run_shielded_duel
 from pe2.shield import (
@@ -1685,3 +1685,58 @@ class TestSuccessorBarriers:
             expected = (H[j] - (1.0 - shield.gamma) * c.h) / c.scale
             assert p[j] == pytest.approx(expected)
             assert (p[j] >= 0) == (H[j] >= (1.0 - shield.gamma) * c.h)
+
+
+class _WallSeeker:
+    """Adversarial nominal: always full speed, always steering toward the
+    nearest wall or obstacle. The shield alone must keep the body off it."""
+
+    def reset(self):
+        pass
+
+    def act(self, obs, env):
+        x, y, th = env.pursuer_pose
+        lim = env.cfg.arena_size / 2.0
+        targets = [(lim, y), (-lim, y), (x, lim), (x, -lim)] + [
+            (o["x"], o["y"]) for o in env.obstacles
+        ]
+        tx, ty = min(targets, key=lambda t: np.hypot(t[0] - x, t[1] - y))
+        err = wrap_angle(np.arctan2(ty - y, tx - x) - th)
+        return 1.0, float(np.clip(3.0 * err, -env.cfg.omega_max, env.cfg.omega_max))
+
+
+class TestZeroContactGuarantee:
+    """Spec B4: at δ = 0 the shielded role never produces an env contact step,
+    for ANY nominal and ANY opponent. Not the gate (that is N = 1000 on the
+    pre-registered streams); a local witness on unrelated seeds."""
+
+    @pytest.mark.parametrize("seed", range(900000, 900040))
+    def test_wall_seeker_never_contacts(self, seed):
+        env = PursuitEvasionEnv(CFG)
+        log = run_shielded_duel(
+            env, _WallSeeker(), GreedyEvader(), CBFShield(CFG), seed
+        )
+        assert log["violations"] == 0, log["shield"]["tier_histogram"]
+        assert log["shield"]["tier_histogram"]["backup"] == 0
+
+    @pytest.mark.parametrize("seed", range(900100, 900130))
+    def test_greedy_vs_hugger_never_contacts(self, seed):
+        from pe2.scripted import ObstacleHuggingEvader
+
+        env = PursuitEvasionEnv(CFG)
+        log = run_shielded_duel(
+            env, GreedyPursuer(), ObstacleHuggingEvader(), CBFShield(CFG), seed
+        )
+        assert log["violations"] == 0
+
+    def test_wall_seeker_does_contact_without_the_shield(self):
+        """Negative control for the property: the adversarial nominal is real."""
+        env = PursuitEvasionEnv(CFG)
+        hits = sum(
+            run_shielded_duel(env, _WallSeeker(), GreedyEvader(), NoOpShield(CFG), s)[
+                "violations"
+            ]
+            > 0
+            for s in range(900000, 900010)
+        )
+        assert hits >= 8
