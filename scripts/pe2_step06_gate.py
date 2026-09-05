@@ -7,13 +7,13 @@ an episode count or a definition; a criterion that cannot be met is reported,
 not amended.
 
 - G1 (kill criterion): shielded GreedyPursuer vs GreedyEvader, N=1000 seeded
-  episodes (seeds 760000+) -> 0 violation steps. Any violation -> shield math
+  episodes (seeds 800000+) -> 0 violation steps. Any violation -> shield math
   wrong; stop.
 - G2 (capture intact): shielded capture rate >= 0.5 x unshielded capture rate
   on the same paired seeds; paired McNemar reported as the primary comparison
   with effect size (descriptive, no p-threshold).
 - G3 (adversarial probe): `ObstacleHuggingEvader` vs shielded GreedyPursuer,
-  N=1000 (seeds 770000+) -> 0 violations; timeout rate reported.
+  N=1000 (seeds 810000+) -> 0 violations; timeout rate reported.
 - G4 (negative control): the identical probe WITHOUT the shield ->
   episodes-with->=1-violation must be >= 5%. If fewer, the PROBE is too weak
   and gets fixed -- never the gate.
@@ -625,7 +625,7 @@ def main() -> None:
     gates = {
         "G1": {
             "criterion": (
-                "shielded GreedyPursuer vs GreedyEvader, N=1000 seeds 760000+ "
+                "shielded GreedyPursuer vs GreedyEvader, N=1000 seeds 800000+ "
                 "-> 0 violation steps"
             ),
             "arm": "shielded_main",
@@ -658,7 +658,7 @@ def main() -> None:
         "G3": {
             "criterion": (
                 "ObstacleHuggingEvader vs shielded GreedyPursuer, N=1000 seeds "
-                "770000+ -> 0 violation steps; timeout rate reported"
+                "810000+ -> 0 violation steps; timeout rate reported"
             ),
             "arm": "shielded_probe",
             "seeds": [PROBE_SEED0, PROBE_SEED0 + n - 1],
