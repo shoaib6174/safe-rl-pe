@@ -10,6 +10,7 @@ from pe2.scripted import (
     FovLimitedPursuer,
     GreedyEvader,
     GreedyPursuer,
+    ObstacleHuggingEvader,
     run_duel,
 )
 
@@ -172,3 +173,157 @@ class TestRunDuel:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestObstacleHuggingEvader:
+    """Step 6 G3/G4 adversarial probe (see pe2.scripted.ObstacleHuggingEvader).
+
+    Geometry constants used throughout, all from the locked defaults:
+    agent_radius = 0.15, arena_size = 10 -> half = 5, x_lim = y_lim = 4.85,
+    omega_max = 2.84, evader_v_max = 1.2. Probe constants: HUG_CLEARANCE
+    0.05, RADIAL_GAIN 2.0, RADIAL_CLIP 1.0, WALL_HUG_BAND 0.35,
+    HUG_RANGE 4.0, HUG_THREAT_RANGE 7.0.
+    """
+
+    def test_sees_truth(self):
+        assert ObstacleHuggingEvader.uses_truth is True
+
+    def test_orbits_to_the_antipode_of_the_pursuer(self):
+        """Sitting exactly on the hug circle, the probe's desired direction is
+        the pure tangent toward the far side of the obstacle.
+
+        obstacle (0,0) r=0.8 -> hug_r = 0.8 + 0.15 + 0.05 = 1.00.
+        evader (1.0, 0) -> r = 1.00 = hug_r, so the radial term is 0.
+        pursuer (0,-3) -> bearing from the obstacle = -pi/2, antipode = +pi/2;
+        evader bearing = 0, so delta = +pi/2 > 0 -> slide CCW, tangent =
+        (-r_hat_y, r_hat_x) = (0, 1). Heading pi/2 is already that direction,
+        so the turn command is exactly 0.
+        """
+        cfg = EnvConfig(n_obstacles=1)
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=0)
+        env.obstacles = [{"x": 0.0, "y": 0.0, "radius": 0.8}]
+        env.pursuer_pose = np.array([0.0, -3.0, 0.0])
+        env.evader_pose = np.array([1.0, 0.0, np.pi / 2])
+        v, w = ObstacleHuggingEvader().act(None, env)
+        assert v == pytest.approx(cfg.evader_v_max)
+        assert w == pytest.approx(0.0, abs=1e-9)
+
+    def test_slides_the_other_way_when_the_pursuer_swaps_sides(self):
+        """Same geometry with the pursuer at (0, +3): antipode = -pi/2,
+        delta = -pi/2 -> tangent = (0, -1). From heading 0 the error is
+        -pi/2, and K_OMEGA * (-pi/2) = -4.712 saturates at -omega_max.
+        """
+        cfg = EnvConfig(n_obstacles=1)
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=0)
+        env.obstacles = [{"x": 0.0, "y": 0.0, "radius": 0.8}]
+        env.pursuer_pose = np.array([0.0, 3.0, 0.0])
+        env.evader_pose = np.array([1.0, 0.0, 0.0])
+        v, w = ObstacleHuggingEvader().act(None, env)
+        assert v == pytest.approx(cfg.evader_v_max)
+        assert w == pytest.approx(-cfg.omega_max)
+
+    def test_spirals_inward_when_off_the_hug_circle(self):
+        """Off the hug circle the radial correction pulls the probe onto the
+        obstacle, keeping a tangential lead so it arrives already orbiting.
+
+        obstacle (0,0) r=0.8 -> hug_r = 1.00; evader (3, 0) -> r = 3.0.
+        hug_r - r = -2.0, clipped to -1.0, times RADIAL_GAIN 2.0 -> radial
+        term = -2.0 * r_hat = (-2, 0). Pursuer (0,-3) gives tangent (0, 1)
+        as above, so the desired direction is (-2, 1) — inward and CCW.
+        Pointing the evader exactly along atan2(1, -2) must give zero turn.
+        """
+        cfg = EnvConfig(n_obstacles=1)
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=0)
+        env.obstacles = [{"x": 0.0, "y": 0.0, "radius": 0.8}]
+        env.pursuer_pose = np.array([0.0, -3.0, 0.0])
+        env.evader_pose = np.array([3.0, 0.0, float(np.arctan2(1.0, -2.0))])
+        v, w = ObstacleHuggingEvader().act(None, env)
+        assert v == pytest.approx(cfg.evader_v_max)
+        assert w == pytest.approx(0.0, abs=1e-9)
+
+    def test_boundary_hug_slides_along_the_wall_away_from_the_pursuer(self):
+        """With no obstacle in range the probe presses against the nearest
+        wall and slides along it away from the pursuer.
+
+        evader (4.50, 0): east-wall distance 4.85 - 4.50 = 0.35 = the hug
+        band, so the radial term is 0. Outward normal (1, 0) -> tangent
+        (0, 1); e - p = (0, 3) has positive dot with it, so the slide is +y.
+        Heading pi/2 is that direction -> zero turn.
+        """
+        cfg = EnvConfig(n_obstacles=0)
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=0)
+        env.obstacles = []
+        env.pursuer_pose = np.array([4.50, -3.0, 0.0])
+        env.evader_pose = np.array([4.50, 0.0, np.pi / 2])
+        v, w = ObstacleHuggingEvader().act(None, env)
+        assert v == pytest.approx(cfg.evader_v_max)
+        assert w == pytest.approx(0.0, abs=1e-9)
+
+    def test_boundary_hug_closes_on_the_wall_from_outside_the_band(self):
+        """evader (3.85, 0): east-wall distance 1.0, so the radial term is
+        clip(1.0 - 0.35, -1, 1) = 0.65 -> 2.0 * 0.65 = 1.3 along (1, 0).
+        Tangent is (0, 1) as above, so the direction is (1.3, 1).
+        """
+        cfg = EnvConfig(n_obstacles=0)
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=0)
+        env.obstacles = []
+        env.pursuer_pose = np.array([3.85, -3.0, 0.0])
+        env.evader_pose = np.array([3.85, 0.0, float(np.arctan2(1.0, 1.3))])
+        v, w = ObstacleHuggingEvader().act(None, env)
+        assert v == pytest.approx(cfg.evader_v_max)
+        assert w == pytest.approx(0.0, abs=1e-9)
+
+    def test_obstacle_beyond_hug_range_is_ignored(self):
+        """Obstacle (-4, 0) r=0.5 and evader (1, 0): surface distance
+        5.0 - 0.5 = 4.5 > HUG_RANGE 4.0, so the probe falls through to the
+        boundary hug. East-wall distance 4.85 - 1.0 = 3.85 -> radial
+        clip(3.85 - 0.35) = 1.0 -> 2.0 * (1, 0); tangent (0, 1) with the
+        pursuer to the south -> direction (2, 1). If the obstacle had been
+        used the direction would point west instead.
+        """
+        cfg = EnvConfig(n_obstacles=1)
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=0)
+        env.obstacles = [{"x": -4.0, "y": 0.0, "radius": 0.5}]
+        env.pursuer_pose = np.array([1.0, -3.0, 0.0])
+        env.evader_pose = np.array([1.0, 0.0, float(np.arctan2(1.0, 2.0))])
+        v, w = ObstacleHuggingEvader().act(None, env)
+        assert v == pytest.approx(cfg.evader_v_max)
+        assert w == pytest.approx(0.0, abs=1e-9)
+
+    def test_flees_directly_when_the_pursuer_is_far(self):
+        """Beyond HUG_THREAT_RANGE 7.0 the probe is a plain flee-away agent,
+        even with an obstacle right beside it: pursuer (0,-8) is 8.0 m away,
+        so the direction is e - p = (0, 8) and heading pi/2 gives zero turn.
+        """
+        cfg = EnvConfig(n_obstacles=1)
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=0)
+        env.obstacles = [{"x": 1.0, "y": 0.0, "radius": 0.5}]
+        env.pursuer_pose = np.array([0.0, -8.0, 0.0])
+        env.evader_pose = np.array([0.0, 0.0, np.pi / 2])
+        v, w = ObstacleHuggingEvader().act(None, env)
+        assert v == pytest.approx(cfg.evader_v_max)
+        assert w == pytest.approx(0.0, abs=1e-9)
+
+    def test_probe_drives_an_unshielded_pursuer_into_contact(self):
+        """The G4 property in miniature: against this probe an unshielded
+        GreedyPursuer must actually touch things. Smoke scale (20 seeds off
+        the pre-registered probe stream); the gate measures the real rate.
+        """
+        cfg = EnvConfig()
+        env = PursuitEvasionEnv(cfg)
+        logs = [
+            run_duel(env, GreedyPursuer(), ObstacleHuggingEvader(), 770000 + i)
+            for i in range(20)
+        ]
+        with_contact = sum(log["pursuer_violations"] > 0 for log in logs)
+        assert with_contact > 0, (
+            "probe never drives the unshielded pursuer into contact — "
+            "the probe is too weak (pre-registration: fix the probe, not G4)"
+        )

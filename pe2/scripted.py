@@ -24,6 +24,14 @@ SHADOW_SEEK_RANGE = 5.0  # only seek a shadow point within this range (m)
 THREAT_RANGE = 6.0  # only obstacle-seek when the pursuer is this close (m)
 LAST_SEEN_TOL = 0.5  # arrived-at-last-seen distance (m)
 
+# ObstacleHuggingEvader (Step 6 G3/G4 adversarial probe) constants.
+HUG_CLEARANCE = 0.05  # standoff past (obstacle radius + agent radius) when hugging (m)
+HUG_RANGE = 4.0  # only hug an obstacle whose SURFACE is this close (m)
+HUG_THREAT_RANGE = 7.0  # hug at all only while the pursuer is this close (m)
+WALL_HUG_BAND = 0.35  # distance from the wall the boundary hug drives to (m)
+RADIAL_GAIN = 2.0  # weight of the radial correction against the tangential slide
+RADIAL_CLIP = 1.0  # cap on the radial error (m) so the slide is never lost
+
 
 def _clip_omega(value: float, cfg) -> float:
     return float(np.clip(value, -cfg.omega_max, cfg.omega_max))
@@ -79,6 +87,89 @@ class GreedyEvader:
             if dist < SHADOW_SEEK_RANGE and (best is None or dist < best[0]):
                 best = (dist, point)
         return None if best is None else best[1]
+
+
+class ObstacleHuggingEvader:
+    """Step 6 G3/G4 adversarial probe: flee with something solid in between.
+
+    Full-obs (L1.5: scripted baselines see truth). Built to stress the
+    shield, not to be a good evader: while the pursuer is within
+    `HUG_THREAT_RANGE` it drives onto a hug circle `HUG_CLEARANCE` outside
+    the nearest obstacle's swept radius and orbits toward the point
+    diametrically opposite the pursuer, so the obstacle stays between the
+    two; with no obstacle in range it presses against the nearest arena wall
+    and slides along it away from the pursuer. Both modes are a tangential
+    slide plus a clipped radial correction, so the approach is a spiral that
+    is already orbiting when it arrives rather than a head-on dive.
+
+    The point of the probe is what it does to the OTHER robot: a pursuer
+    that beelines at an evader glued to an obstacle or a wall drives itself
+    into that obstacle or wall. G4 (pre-registered) requires exactly that of
+    the unshielded arm; G3 requires the shielded pursuer to survive it with
+    zero contact steps.
+    """
+
+    uses_truth = True
+
+    def reset(self) -> None:
+        pass
+
+    def act(self, obs: np.ndarray, env: PursuitEvasionEnv) -> tuple[float, float]:
+        cfg = env.cfg
+        p, e = env.pursuer_pose[:2], env.evader_pose[:2]
+        away = e - p
+        direction = None
+        if float(np.hypot(*away)) < HUG_THREAT_RANGE:
+            direction = self._obstacle_hug(e, p, env)
+            if direction is None:
+                direction = self._boundary_hug(e, p, env)
+        if direction is None:
+            direction = away  # nothing worth hiding behind: plain flee
+        err = wrap_angle(np.arctan2(direction[1], direction[0]) - env.evader_pose[2])
+        return cfg.evader_v_max, _clip_omega(K_OMEGA * err, cfg)
+
+    @staticmethod
+    def _obstacle_hug(e, p, env: PursuitEvasionEnv):
+        """Orbit the nearest in-range obstacle toward the pursuer's antipode."""
+        best = None
+        for ob in env.obstacles:
+            surface = float(np.hypot(e[0] - ob["x"], e[1] - ob["y"])) - ob["radius"]
+            if surface < HUG_RANGE and (best is None or surface < best[0]):
+                best = (surface, ob)
+        if best is None:
+            return None
+        ob = best[1]
+        c = np.array([ob["x"], ob["y"]])
+        r_vec = e - c
+        r = float(np.hypot(*r_vec))
+        if r < 1e-9:
+            return None  # degenerate: standing on the obstacle centre
+        r_hat = r_vec / r
+        hug_r = ob["radius"] + env.cfg.agent_radius + HUG_CLEARANCE
+        antipode = np.arctan2(p[1] - c[1], p[0] - c[0]) + np.pi
+        delta = wrap_angle(antipode - np.arctan2(r_vec[1], r_vec[0]))
+        sign = 1.0 if delta >= 0.0 else -1.0  # exact tie orbits CCW
+        tangent = sign * np.array([-r_hat[1], r_hat[0]])
+        radial = np.clip(hug_r - r, -RADIAL_CLIP, RADIAL_CLIP) * r_hat
+        return tangent + RADIAL_GAIN * radial
+
+    @staticmethod
+    def _boundary_hug(e, p, env: PursuitEvasionEnv):
+        """Press against the nearest wall and slide along it away from p."""
+        cfg = env.cfg
+        lim = cfg.arena_size / 2.0 - cfg.agent_radius
+        walls = [
+            (np.array([1.0, 0.0]), lim - e[0]),
+            (np.array([-1.0, 0.0]), e[0] + lim),
+            (np.array([0.0, 1.0]), lim - e[1]),
+            (np.array([0.0, -1.0]), e[1] + lim),
+        ]
+        outward, dist = min(walls, key=lambda w: w[1])
+        tangent = np.array([-outward[1], outward[0]])
+        # Slide the way that opens distance from the pursuer; exact tie -> +.
+        sign = 1.0 if float(np.dot(tangent, e - p)) >= 0.0 else -1.0
+        radial = np.clip(dist - WALL_HUG_BAND, -RADIAL_CLIP, RADIAL_CLIP) * outward
+        return sign * tangent + RADIAL_GAIN * radial
 
 
 class FovLimitedPursuer:
