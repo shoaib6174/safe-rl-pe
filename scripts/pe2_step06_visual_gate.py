@@ -19,6 +19,9 @@ checklist items for this GIF, and each is ASSERTED here as well as shown:
       SLIDE_BAND, in an episode with zero contact steps.
   C3. the pursuer still makes contact-capture: a rendered episode ends in
       capture with the bodies touching (final distance <= capture_distance).
+      Each episode gets one overlay-free terminal frame after its loop, so
+      the capture instant is visible and not merely logged -- action frames
+      are drawn before their step, so the last of them precedes the capture.
   C4. the intervention flash rate matches the logged rate: rendering is
       STRIDE=1, the overlay flashes off the logged `info["intervention"]`
       alone, and every rendered frame's flash state is asserted equal to its
@@ -140,6 +143,14 @@ def md5_of(path: pathlib.Path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest()
 
 
+def gif_frame_count(path: pathlib.Path) -> int:
+    """Frames actually in the written file (the encoder coalesces duplicates)."""
+    from PIL import Image
+
+    with Image.open(path) as im:
+        return int(im.n_frames)
+
+
 # ------------------------------------------------------------------ episode
 
 
@@ -154,6 +165,7 @@ def play(cfg, evader_cls, seed: int, shield, renderer, overlay, live, label: str
     frames: list[np.ndarray] = []
     steps: list[dict] = []
     flash_frames = 0
+    action_frames = 0
 
     while True:
         v_p, w_p = pursuer.act(obs["pursuer"], env)
@@ -180,6 +192,7 @@ def play(cfg, evader_cls, seed: int, shield, renderer, overlay, live, label: str
             frames.append(
                 renderer.draw(env, trails, overlays=[overlay], title_prefix=label)
             )
+            action_frames += 1
             flash_frames += int(sinfo["intervention"])
         obs, _, terminated, truncated, info = env.step([v_p, w_p, v_e, w_e])
         steps.append(
@@ -198,6 +211,13 @@ def play(cfg, evader_cls, seed: int, shield, renderer, overlay, live, label: str
         if terminated or truncated:
             break
 
+    # One terminal frame AFTER the loop, so the outcome the episode is chosen
+    # for is actually visible: every action frame is drawn before its step, so
+    # without this the capture instant never appears. Drawn with no overlay --
+    # it carries no action and must not add a flash to the C4 accounting.
+    trails.append("pursuer", *env.pursuer_pose[:2])
+    trails.append("evader", *env.evader_pose[:2])
+    frames.append(renderer.draw(env, trails, overlays=[], title_prefix=label))
     frames.extend([frames[-1]] * HOLD_FRAMES)
     record = {
         "label": label,
@@ -208,7 +228,8 @@ def play(cfg, evader_cls, seed: int, shield, renderer, overlay, live, label: str
         "final_distance": float(info["distance"]),
         "violations": sum(s["contact"] for s in steps),
         "n_interventions": sum(s["intervention"] for s in steps),
-        "rendered_frames": len(frames) - HOLD_FRAMES,
+        "rendered_frames": action_frames,
+        "terminal_frames": 1,
         "flash_frames": flash_frames,
         "obstacles": [dict(o) for o in env.obstacles],
         "per_step": steps,
@@ -403,6 +424,10 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     save_gif(frames, str(path), fps=FPS)
     digest = md5_of(path)
+    # The GIF writer coalesces runs of identical frames, so the HOLD_FRAMES
+    # tail of each episode does not survive into the file. Record what the
+    # artifact actually contains, not what was handed to the encoder.
+    gif_frames = gif_frame_count(path)
     if args.md5_only:
         path.unlink()
         print(f"md5 (re-render, not written): {digest}")
@@ -414,7 +439,8 @@ def main() -> None:
                 "config_fingerprint": gate["config_fingerprint"],
                 "gif": str(GIF_PATH),
                 "gif_md5": digest,
-                "frames": len(frames),
+                "gif_frames": gif_frames,
+                "frames_submitted_to_encoder": len(frames),
                 "fps": FPS,
                 "stride": STRIDE,
                 "hold_frames": HOLD_FRAMES,
@@ -426,7 +452,10 @@ def main() -> None:
             f,
             indent=2,
         )
-    print(f"wrote {GIF_PATH} ({len(frames)} frames), md5 {digest}")
+    print(
+        f"wrote {GIF_PATH} ({gif_frames} frames in the file, "
+        f"{len(frames)} submitted), md5 {digest}"
+    )
     print(f"wrote {JSON_PATH}")
 
 

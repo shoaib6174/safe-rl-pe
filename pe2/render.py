@@ -11,6 +11,7 @@ artifacts fix the seed per gate (plan, assumption 5).
 """
 
 from collections.abc import Callable
+from typing import ClassVar
 
 import imageio
 import matplotlib
@@ -336,6 +337,14 @@ class ShieldOverlay:
 
     FLASH_COLOR = "#ff7f0e"
     NOMINAL_COLOR = "#444444"
+    # The arena border runs along the bottom of the axes, so both captions get
+    # a backing box or they are read against a black line.
+    LABEL_BOX: ClassVar[dict] = {
+        "facecolor": "white",
+        "edgecolor": "none",
+        "alpha": 0.75,
+        "pad": 1,
+    }
 
     def __init__(
         self,
@@ -446,6 +455,7 @@ class ShieldOverlay:
                 fontsize=9,
                 color=self.FLASH_COLOR,
                 fontweight="bold",
+                bbox=self.LABEL_BOX,
             )
         ax.text(
             0.02,
@@ -454,4 +464,5 @@ class ShieldOverlay:
             transform=ax.transAxes,
             fontsize=9,
             color=color,
+            bbox=self.LABEL_BOX,
         )
