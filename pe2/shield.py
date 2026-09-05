@@ -279,7 +279,74 @@ class CBFShield:
             r_eff = obs["radius"] + self.cfg.agent_radius + self.margin
             cons.append(_body_obstacle_constraint(state, obs["x"], obs["y"], r_eff))
             cons.append(_obstacle_constraint(state, obs["x"], obs["y"], r_eff, self.d))
+        # Recompute h through the same vectorised path `successor_barriers`
+        # uses, so the current-pose values and the predicted-successor values
+        # can never drift apart into two independent implementations.
+        H = self._h_columns(
+            np.array([float(state[0])]),
+            np.array([float(state[1])]),
+            np.array([float(state[2])]),
+            obstacles,
+        )[0]
+        for c, h in zip(cons, H, strict=True):
+            c.h = float(h)
+            c.clearance = float(h) if c.hard or c.kind == "boundary" else c.clearance
         return cons
+
+    def _h_columns(
+        self, X: np.ndarray, Y: np.ndarray, TH: np.ndarray, obstacles: list[dict]
+    ) -> np.ndarray:
+        """Barrier values for K poses, one column per row of `constraints()`,
+        in the same order. Hard rows are the env's contact predicates and use
+        the same ufuncs the env uses (`np.hypot`, subtraction), so their
+        values at the predicted successor are the env's values."""
+        d = self.d
+        QX = X + d * np.cos(TH)
+        QY = Y + d * np.sin(TH)
+        cols = [
+            self._x_lim - X,
+            X + self._x_lim,
+            self._y_lim - Y,
+            Y + self._y_lim,
+            self._x_lim - QX,
+            QX + self._x_lim,
+            self._y_lim - QY,
+            QY + self._y_lim,
+        ]
+        for obs in obstacles:
+            r_eff = obs["radius"] + self.cfg.agent_radius + self.margin
+            cols.append(np.hypot(X - obs["x"], Y - obs["y"]) - r_eff)
+            dqx, dqy = QX - obs["x"], QY - obs["y"]
+            cols.append(dqx * dqx + dqy * dqy - r_eff * r_eff)
+        return np.stack(cols, axis=1)
+
+    def successor_barriers(
+        self, state: np.ndarray, obstacles: list[dict], U: np.ndarray
+    ) -> np.ndarray:
+        """h_i at euler_step(state, u) for every candidate u in U (K, 2) -> (K, R).
+
+        Vectorised transcription of `pe2.env.euler_step`: identical operation
+        order, scalar cos/sin of the CURRENT heading, so the hard rows are
+        the env's next-step predicates bit for bit (spec B4)."""
+        U = np.asarray(U, dtype=np.float64)
+        x, y, theta = float(state[0]), float(state[1]), float(state[2])
+        dt = self.cfg.dt
+        cos_t, sin_t = np.cos(theta), np.sin(theta)
+        X = x + U[:, 0] * cos_t * dt
+        Y = y + U[:, 0] * sin_t * dt
+        TH = wrap_angle(theta + U[:, 1] * dt)
+        return self._h_columns(X, Y, TH, obstacles)
+
+    def progress(self, state: np.ndarray, obstacles: list[dict], action) -> np.ndarray:
+        """Normalised one-step DCBF progress of every row under `action`:
+        (h_i(x⁺) − (1−γ) h_i(x)) / scale_i. Every entry ≥ 0 ⟺ the exact
+        tier accepts the action. Public so a gate can re-derive C1 from the
+        definition rather than from another copy of the filter."""
+        cons = self.constraints(state, obstacles)
+        H1 = self.successor_barriers(state, obstacles, np.asarray(action)[None, :])[0]
+        H0 = np.array([c.h for c in cons])
+        scale = np.array([c.scale for c in cons])
+        return (H1 - (1.0 - self.gamma) * H0) / scale
 
     def _dcbf_rows(self, cons: list[Constraint]) -> list[tuple[float, float, float]]:
         """Linearized DCBF: dt·a_v·v + dt·a_ω·ω ≥ −γ·h → (c0, c1, c2)."""

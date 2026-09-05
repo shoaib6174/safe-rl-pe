@@ -1575,3 +1575,84 @@ class TestRobustMargin:
         # The negative control must measure the true geometry, so the shipped
         # control arm is an unmargined NoOpShield.
         assert NoOpShield(CFG).margin == 0.0
+
+
+class TestSuccessorBarriers:
+    def _random_setup(self, rng, margin=0.0):
+        cfg = EnvConfig()
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=int(rng.integers(0, 2**31 - 1)))
+        shield = CBFShield(cfg, margin=margin)
+        state = np.array(env.pursuer_pose, dtype=np.float64)
+        return cfg, env, shield, state
+
+    def test_columns_match_constraints_at_the_current_pose(self):
+        rng = np.random.default_rng(7)
+        _cfg, env, shield, state = self._random_setup(rng)
+        cons = shield.constraints(state, env.obstacles)
+        U = np.zeros((1, 2))
+        H = shield.successor_barriers(state, env.obstacles, U)
+        assert H.shape == (1, len(cons))
+        # Hard rows are bit-identical under u = 0 (spec B4 ii).
+        for j, c in enumerate(cons):
+            if c.hard:
+                assert H[0, j] == c.h
+            else:
+                assert H[0, j] == pytest.approx(c.h, abs=1e-12)
+
+    def test_hard_rows_equal_env_predicates_bitwise(self):
+        """Predicted hard rows at the successor == what the env computes
+        after it actually steps. 10k random (pose, action) pairs."""
+        rng = np.random.default_rng(99)
+        cfg = EnvConfig()
+        env = PursuitEvasionEnv(cfg)
+        shield = CBFShield(cfg)
+        for _ in range(10_000):
+            env.reset(seed=int(rng.integers(0, 2**31 - 1)))
+            state = np.array(env.pursuer_pose, dtype=np.float64)
+            u = np.array(
+                [
+                    [
+                        rng.uniform(0, cfg.v_max),
+                        rng.uniform(-cfg.omega_max, cfg.omega_max),
+                    ]
+                ]
+            )
+            H = shield.successor_barriers(state, env.obstacles, u)
+            cons = shield.constraints(state, env.obstacles)
+            hard_idx = [j for j, c in enumerate(cons) if c.hard]
+            # Step the env with the evader frozen; take the pursuer's new pose.
+            _, _, _, _, info = env.step([u[0, 0], u[0, 1], 0.0, 0.0])
+            if info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"]:
+                continue  # the env clipped/projected; the sign test covers that
+            after = np.array(env.pursuer_pose, dtype=np.float64)
+            hard_after = [c for c in shield.constraints(after, env.obstacles) if c.hard]
+            for j, c_env in zip(hard_idx, hard_after, strict=True):
+                assert H[0, j] == c_env.h, (j, H[0, j], c_env.h)
+
+    def test_hard_row_sign_is_the_contact_predicate(self):
+        cfg = EnvConfig()
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=3)
+        shield = CBFShield(cfg)
+        lim = cfg.arena_size / 2.0 - cfg.agent_radius
+        # Body exactly on the +x wall, heading into it, full speed: the
+        # successor has x > x_max, so the hard +x row must be < 0.
+        state = np.array([lim, 0.0, 0.0])
+        H = shield.successor_barriers(state, [], np.array([[1.0, 0.0]]))
+        assert H[0, 0] < 0.0
+        # Same pose, u = 0: row exactly 0 (x_lim - x with x == x_lim).
+        H0 = shield.successor_barriers(state, [], np.array([[0.0, 0.0]]))
+        assert H0[0, 0] == 0.0
+
+    def test_progress_sign_matches_the_dcbf_condition(self):
+        rng = np.random.default_rng(5)
+        _cfg, env, shield, state = self._random_setup(rng)
+        u = np.array([0.6, -0.4])
+        p = shield.progress(state, env.obstacles, u)
+        cons = shield.constraints(state, env.obstacles)
+        H = shield.successor_barriers(state, env.obstacles, u[None, :])[0]
+        for j, c in enumerate(cons):
+            expected = (H[j] - (1.0 - shield.gamma) * c.h) / c.scale
+            assert p[j] == pytest.approx(expected)
+            assert (p[j] >= 0) == (H[j] >= (1.0 - shield.gamma) * c.h)
