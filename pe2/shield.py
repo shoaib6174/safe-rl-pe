@@ -48,9 +48,9 @@ contact. The HARD rows are exact: h = 0 is the contact surface and h < 0
 means the env's own contact predicate has fired.
 
 Units: `Constraint.h` is a barrier value whose units depend on the kind
-(obstacle barriers are m², boundary barriers are m), so it is a QP margin and
-never a distance. `Constraint.clearance` is the signed distance in metres for
-both kinds and is the only field that may be reported as a distance.
+(obstacle barriers are m², boundary barriers are m), so it is a barrier margin
+and never a distance. `Constraint.clearance` is the signed distance in metres
+for both kinds and is the only field that may be reported as a distance.
 """
 
 from __future__ import annotations
@@ -428,7 +428,7 @@ class CBFShield:
     def _clip_nominal(
         self, action: tuple[float, float] | np.ndarray, v_max: float
     ) -> tuple[float, float]:
-        """The nominal (v, ω) actually fed to the program, clipped to the box."""
+        """The nominal (v, ω) the candidate set is built around, clipped to the box."""
         return (
             float(np.clip(float(action[0]), 0.0, v_max)),
             float(np.clip(float(action[1]), -self.cfg.omega_max, self.cfg.omega_max)),
@@ -460,9 +460,17 @@ class CBFShield:
 
         `min_h` is the worst margin over ALL rows, hard and soft, and is
         therefore mixed-unit; it must never be reported as a distance.
-        `min_clearance` is the worst signed distance in metres over ALL rows —
-        it now includes the hard body rows and so is the true reportable
-        margin: the distance from the body to the nearest contact surface.
+
+        `min_clearance` is the worst signed clearance in metres over ALL rows:
+        the minimum of the BODY clearances (hard rows) and the VIRTUAL CONTROL
+        POINT clearances (soft rows, measured d = 0.1 m ahead of the body). It
+        is therefore a conservative lower bound on safety and NOT by itself a
+        body-to-surface distance — the soft rows win whenever the agent heads
+        toward a surface, so a body a centimetre clear of an obstacle can
+        report a `min_clearance` of −0.09 m with no contact anywhere. The
+        body-to-surface distance is the minimum over the HARD rows alone
+        (`min(c.clearance for c in cons if c.hard)`); that, not this, is the
+        quantity that goes to zero exactly when the env's contact flag fires.
 
         `immobile` is `v_exec <= STALL_V_FRAC * v_max` with no condition on the
         nominal; `stalled` additionally requires `v_nom >= MOVE_V_FRAC * v_max`
@@ -511,14 +519,15 @@ class NoOpShield(CBFShield):
     It returns the nominal action unchanged (clipped only to the action box,
     which the env would clip anyway) and reports `method="none"` — a distinct
     tier in the histogram, so this arm's zero infeasibility rate and zero
-    intervention rate can never be read as an all-exact QP measurement.
+    intervention rate can never be read as a run on which every step really did
+    satisfy every barrier row.
 
     It DOES still measure the barriers: `min_h` / `min_clearance` are
     properties of the state and the static map, not of the filter, and the
     unshielded arm's clearance floor is precisely the number the shielded
     arm's floor is compared against. Nothing it reports is invented — the one
-    value that has no meaning here, QP feasibility, is True because no program
-    was solved and therefore none failed.
+    value that has no meaning here, tier feasibility, is True because no
+    candidate was ever tested and therefore none failed.
     """
 
     def filter(

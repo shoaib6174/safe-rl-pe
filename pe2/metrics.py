@@ -9,14 +9,17 @@ in the heading direction (on top of the agent_radius folded into the
 constraint radii). h < 0 does not imply contact; only the env flag does, and
 it is the ground truth the gate counts.
 
-Units: `min_h` is the shield's worst quadratic-program margin over constraints
-of both kinds and is therefore MIXED-UNIT (obstacle barriers are m², boundary
-barriers are m). It must never be reported as a distance. `min_clearance` is
-the worst signed distance in metres and is the reportable safety margin;
-`min_h_obstacle_floor` / `min_h_boundary_floor` are filter-internal
-diagnostics.
+Units: `min_h` is the shield's worst barrier margin over constraints of both
+kinds and is therefore MIXED-UNIT (obstacle barriers are m², boundary barriers
+are m). It must never be reported as a distance. `min_clearance` is the worst
+signed clearance in metres and is the reportable safety margin, but it is the
+minimum over the body rows AND the virtual-control-point rows, so it is a
+conservative lower bound rather than a body-to-surface distance (see
+`CBFShield._info`); `min_h_obstacle_floor` / `min_h_boundary_floor` are
+filter-internal diagnostics.
 
-Infeasibility: the exact all-constraints QP had no solution (method != "exact").
+Infeasibility: no candidate action satisfied every barrier row under the exact
+one-step check, so the filter fell below its exact tier (method != "exact").
 Deadlock: CBF controllers can settle at a force-equilibrium and stall short of
 the goal (Grover, Liu & Sycara, WAFR 2020 / IJRR 2023). We detect the
 behavioral signature: the shield holds executed speed near zero while the
@@ -42,10 +45,11 @@ from dataclasses import dataclass, field
 
 # Every method `record` accepts. "none" is NoOpShield — the pre-registered
 # unshielded negative control — and is kept distinct from "exact" so that
-# control's zero infeasibility rate can never be read as an all-exact QP
-# measurement. A method outside this tuple is an error, not a silent drop:
-# a new tier that only half-registered would produce a histogram that does
-# not sum to the step count beside a contradictory infeasibility rate.
+# control's zero infeasibility rate can never be read as a run on which every
+# step really did satisfy every barrier row. A method outside this tuple is an
+# error, not a silent drop: a new tier that only half-registered would produce
+# a histogram that does not sum to the step count beside a contradictory
+# infeasibility rate.
 TIERS = ("exact", "relaxed", "backup", "none")
 DEADLOCK_STEPS = 40  # 2.0 s at dt = 0.05
 
@@ -92,7 +96,7 @@ class ShieldMetrics:
     _current_immobile_run: int = field(default=0, repr=False, compare=False, init=False)
     _current_backup_run: int = field(default=0, repr=False, compare=False, init=False)
     method_counts: dict[str, int] = field(default_factory=dict)
-    min_h_floor: float = math.inf  # worst mixed-unit QP margin seen anywhere
+    min_h_floor: float = math.inf  # worst mixed-unit barrier margin seen anywhere
     min_h_sum: float = 0.0  # for the mean margin
     min_clearance_floor: float = math.inf  # worst signed distance, metres
     min_h_obstacle_floor: float = math.inf  # worst obstacle barrier (m²)
@@ -158,7 +162,7 @@ class ShieldMetrics:
     def summary(self) -> dict:
         """Rates + margins. Every floor is None if it was never observed.
 
-        `min_h_floor` / `min_h_mean` are mixed-unit QP margins (see the module
+        `min_h_floor` / `min_h_mean` are mixed-unit barrier margins (see the module
         docstring) and must not be reported as distances; `min_clearance_floor`
         is the reportable margin in metres.
         """
@@ -210,7 +214,7 @@ def summarize_shield(logs: list[dict]) -> dict:
     matching how G1 counts "violation steps over N episodes". Per-episode
     minima are kept as a list so the gate can report their distribution.
 
-    `min_h_per_episode` / `min_h_floor` are MIXED-UNIT quadratic-program
+    `min_h_per_episode` / `min_h_floor` are MIXED-UNIT barrier
     margins (obstacle barriers m², boundary barriers m) and must never be
     reported as distances; `min_clearance_per_episode` / `min_clearance_floor`
     are the reportable metres.
