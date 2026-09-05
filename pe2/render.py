@@ -308,3 +308,150 @@ class BeliefOverlay:
 def save_gif(frames: list[np.ndarray], path: str, fps: float = 20.0) -> None:
     """Write frames to an animated GIF."""
     imageio.mimsave(path, frames, fps=fps, loop=0)
+
+
+class ShieldOverlay:
+    """Step 6 overlay: nominal vs executed action, constraint surfaces, flash.
+
+    Draws, for one role:
+    - the CBF constraint surfaces the shield actually used: a dashed circle at
+      `obstacle radius + agent_radius + margin` around each obstacle and a
+      dashed rectangle at the (margin-shrunk) boundary limits, so "slides
+      along the obstacle boundary" is a visible geometric claim
+    - the NOMINAL action as a dashed grey unicycle arc over `lookahead`
+      seconds, and the EXECUTED action as a solid arc in the role's colour;
+      the two coincide exactly when the shield does not intervene
+    - an intervention flash (ring + caption) on exactly the steps whose
+      logged `info["intervention"]` is True
+    - a readout: fallback tier and the reportable clearance in metres
+      (`min_clearance`; `min_h` is a mixed-unit QP margin, D89, and is never
+      drawn as a distance)
+
+    `live` is a dict the CALLER refreshes each step before drawing, with keys
+    "nominal", "executed" and "info" (the dict returned by
+    `CBFShield.filter`). The overlay never runs the shield itself, so what is
+    drawn is exactly what was logged — which is what makes the flash rate and
+    the logged intervention rate the same number by construction.
+    """
+
+    FLASH_COLOR = "#ff7f0e"
+    NOMINAL_COLOR = "#444444"
+
+    def __init__(
+        self,
+        role: str,
+        shield,
+        live: dict,
+        lookahead: float = 1.0,
+        substeps: int = 20,
+    ):
+        self.role = role
+        self.shield = shield
+        self.live = live
+        self.lookahead = lookahead
+        self.substeps = substeps
+
+    @staticmethod
+    def _arc(pose, v: float, omega: float, horizon: float, n: int) -> np.ndarray:
+        """Unicycle roll-out of a constant (v, omega) over `horizon` seconds."""
+        x, y, theta = float(pose[0]), float(pose[1]), float(pose[2])
+        dt = horizon / n
+        pts = [(x, y)]
+        for _ in range(n):
+            x += v * np.cos(theta) * dt
+            y += v * np.sin(theta) * dt
+            theta += omega * dt
+            pts.append((x, y))
+        return np.array(pts)
+
+    def __call__(self, ax, env) -> None:
+        info = self.live.get("info")
+        if info is None:
+            return
+        cfg = env.cfg
+        pose = env.pursuer_pose if self.role == "pursuer" else env.evader_pose
+        color = ROLE_STYLE[self.role]["color"]
+
+        # Constraint surfaces as the shield sees them (margin included).
+        for obs in env.obstacles:
+            ax.add_patch(
+                Circle(
+                    (obs["x"], obs["y"]),
+                    obs["radius"] + cfg.agent_radius + self.shield.margin,
+                    fill=False,
+                    edgecolor="#555555",
+                    linestyle=":",
+                    linewidth=1,
+                    zorder=3,
+                )
+            )
+        lim = self.shield._x_lim
+        ax.plot(
+            [-lim, lim, lim, -lim, -lim],
+            [-lim, -lim, lim, lim, -lim],
+            color="#555555",
+            linestyle=":",
+            linewidth=1,
+            zorder=3,
+        )
+
+        # Nominal (dashed grey) vs executed (solid, role colour) arcs.
+        for key, style, width, arc_color in (
+            ("nominal", "--", 1.6, self.NOMINAL_COLOR),
+            ("executed", "-", 2.2, color),
+        ):
+            v, omega = self.live[key]
+            pts = self._arc(pose, v, omega, self.lookahead, self.substeps)
+            ax.plot(
+                pts[:, 0],
+                pts[:, 1],
+                color=arc_color,
+                linestyle=style,
+                linewidth=width,
+                zorder=7,
+            )
+            head = pts[-1] - pts[-2]
+            norm = float(np.hypot(*head))
+            if norm > 1e-9:
+                ax.add_patch(
+                    FancyArrow(
+                        pts[-1, 0],
+                        pts[-1, 1],
+                        0.12 * head[0] / norm,
+                        0.12 * head[1] / norm,
+                        width=0.01,
+                        head_width=0.16,
+                        head_length=0.16,
+                        color=arc_color,
+                        zorder=7,
+                    )
+                )
+
+        if info["intervention"]:
+            ax.add_patch(
+                Circle(
+                    (pose[0], pose[1]),
+                    cfg.agent_radius * 2.2,
+                    fill=False,
+                    edgecolor=self.FLASH_COLOR,
+                    linewidth=3,
+                    zorder=8,
+                )
+            )
+            ax.text(
+                0.02,
+                0.10,
+                "SHIELD INTERVENING",
+                transform=ax.transAxes,
+                fontsize=9,
+                color=self.FLASH_COLOR,
+                fontweight="bold",
+            )
+        ax.text(
+            0.02,
+            0.03,
+            f"tier {info['method']} - clearance {info['min_clearance']:+.3f} m",
+            transform=ax.transAxes,
+            fontsize=9,
+            color=color,
+        )
