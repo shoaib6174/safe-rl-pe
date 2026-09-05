@@ -56,7 +56,12 @@ from pe2.exploitability import (
     finetune_ppo,
     train_bc_ppo,
 )
-from pe2.rewards import DenseRewardWrapper, nondegeneracy_report
+from pe2.rewards import (
+    DETERMINISTIC_KINDS,
+    TERM_KINDS,
+    DenseRewardWrapper,
+    nondegeneracy_report,
+)
 from pe2.scripted import FovLimitedPursuer, GreedyEvader
 
 OUT = pathlib.Path("results/derisk")
@@ -97,18 +102,20 @@ NONDEG_SEED0 = 790500
 # positive fraction is outside roughly [0.058, 0.942] and, via
 # `all_decisive`, refuses to claim a verdict for one that is not.
 #
-# It does NOT decide the SHIPPED `vis` term, and no affordable budget does.
-# Measured over 2,500 episodes / 2,566,786 clone steps at five disjoint
-# seeds (790500, 791500, 792500, 793500, 794500; per-seed positive fraction
-# 0.0520 / 0.0529 / 0.0574 / 0.0509 / 0.0509), the term's positive fraction
-# is 0.0528 with bootstrap 95% CI [0.0493, 0.0563]: it sits ON the 0.05
-# edge, 5.6% above it. Extrapolating the bootstrap, the lower bound first
-# clears 0.05 only at ~4,000 episodes (4.1M steps, ~35 min, twenty times the
-# training budget of the arm this gates) and even 8,000 episodes buys a
-# margin of 0.0009. The band was NOT widened to make it pass: the gate
-# reports the term undecided and stops the run, because whether a step-wise
-# positive-fraction floor is the right check for a term that fires in bursts
-# is a pre-registration question, not a threshold to relax.
+# It never decided the `vis` term, and no affordable budget could: measured
+# over 2,500 episodes / 2,566,786 clone steps at five disjoint seeds (790500,
+# 791500, 792500, 793500, 794500; per-seed positive fraction 0.0520 / 0.0529
+# / 0.0574 / 0.0509 / 0.0509) that term's positive fraction is 0.0528 with
+# bootstrap 95% CI [0.0493, 0.0563] — sitting ON the 0.05 band edge, 5.6%
+# above it, with the lower bound first clearing 0.05 at ~4,000 episodes
+# (4.1M steps, twenty times the training budget of the arm this gates).
+# The band was NOT widened: amendment A7 (S121) replaced it, for `vis` only,
+# with the criterion the spec actually names — "reward-vs-bearing curve must
+# be monotone into the cone" — which is analytic, exact and free of sampling
+# noise (`pe2.rewards.visibility_monotone_report`). The positive fraction is
+# still measured and recorded, as an OBSERVATION (`stats_role`), because the
+# number is informative; it decides nothing. This budget therefore now gates
+# only the SAMPLED terms — `search` on the shipped configuration.
 NONDEG_EPISODES = 500
 NONDEG_BOOTSTRAP = 400
 # A verdict is claimed only when the bootstrap reproduces it in at least
@@ -131,10 +138,24 @@ def gate_decisiveness(per_episode, seed, n_resamples=None) -> dict[str, float]:
     (see `DECISIVE_FRACTION` and `main`). The per-term criteria themselves
     are untouched: each resample is scored by the same
     `nondegeneracy_report` the point estimate uses.
+
+    Terms of a DETERMINISTIC kind (A7: `vis`, judged by the analytic
+    monotone-into-cone criterion) are excluded outright and get no share.
+    Their verdict is a property of the reward's geometry, identical in every
+    resample by construction, so bootstrapping it would dress an exact
+    result up as an estimate; `nondegeneracy_gate` marks them decisive with
+    the reason instead.
     """
     rng = np.random.default_rng(seed)
     n_resamples = NONDEG_BOOTSTRAP if n_resamples is None else n_resamples
-    names = sorted({n for ep in per_episode for n in ep})
+    names = sorted(
+        {
+            n
+            for ep in per_episode
+            for n in ep
+            if TERM_KINDS[n] not in DETERMINISTIC_KINDS
+        }
+    )
     arrays = {n: [np.asarray(ep[n], dtype=float) for ep in per_episode] for n in names}
     hits = {n: 0 for n in names}
     for _ in range(n_resamples):
@@ -157,7 +178,10 @@ def nondegeneracy_gate(cfg, device) -> dict:
 
     Reports each term's verdict AND whether that verdict is decisive under
     an episode-level bootstrap, because this gate is a hard stop and a stop
-    off sampling noise manufactures a false finding about the reward.
+    off sampling noise manufactures a false finding about the reward. The
+    `vis` term is the exception (A7): its criterion is analytic, so it is
+    decisive by construction and never bootstrapped. Its rollout statistics
+    are still recorded, marked `stats_role="observation"`.
     """
     from stable_baselines3 import SAC  # lazy: optional dependency
 
@@ -192,12 +216,30 @@ def nondegeneracy_gate(cfg, device) -> dict:
     for ep_terms in per_episode:
         for name, values in ep_terms.items():
             terms.setdefault(name, []).extend(values)
-    report = nondegeneracy_report(terms)
+    report = nondegeneracy_report(terms, cfg=cfg, w_vis=W_VIS)
     shares = gate_decisiveness(per_episode, NONDEG_SEED0)
     for name, t in report["terms"].items():
-        share = shares[name]
-        t["bootstrap_pass_share"] = share
-        t["decisive"] = share >= DECISIVE_FRACTION or share <= 1.0 - DECISIVE_FRACTION
+        if name in shares:
+            share = shares[name]
+            t["bootstrap_pass_share"] = share
+            t["decisive"] = (
+                share >= DECISIVE_FRACTION or share <= 1.0 - DECISIVE_FRACTION
+            )
+            t["decisive_reason"] = (
+                f"episode-level bootstrap reproduces the verdict in {share:.3f} "
+                f"of {NONDEG_BOOTSTRAP} resamples"
+            )
+        else:
+            # Analytic criterion (A7): exact, deterministic, no sampling
+            # error. Running it through the bootstrap would report an exact
+            # result as an estimate and could only invent uncertainty.
+            t["bootstrap_pass_share"] = None
+            t["decisive"] = True
+            t["decisive_reason"] = (
+                f"{t['criterion']} is an analytic property of the reward's "
+                "geometry: deterministic, no sampling error, decisive by "
+                "construction"
+            )
     report |= {
         "all_decisive": all(t["decisive"] for t in report["terms"].values()),
         "bootstrap": {
@@ -205,6 +247,7 @@ def nondegeneracy_gate(cfg, device) -> dict:
             "n_resamples": NONDEG_BOOTSTRAP,
             "seed": NONDEG_SEED0,
             "decisive_share": DECISIVE_FRACTION,
+            "terms": sorted(shares),
         },
         "config": {"w_vis": W_VIS, "w_search": W_SEARCH},
         "rollout": {
@@ -219,14 +262,32 @@ def nondegeneracy_gate(cfg, device) -> dict:
     with open(OUT / "t0_nondegeneracy.json", "w") as f:
         json.dump(report, f, indent=2)
     for name, t in report["terms"].items():
+        share = t["bootstrap_pass_share"]
         print(
             f"[nondeg] {name:7s} kind={t['kind']:10s} "
-            f"frac_positive={t['frac_positive']:.3f} frac_modal={t['frac_modal']:.3f} "
-            f"std={t['std']:.3g} passes={t['passes']} "
-            f"bootstrap_pass_share={t['bootstrap_pass_share']:.3f} "
-            f"decisive={t['decisive']}",
+            f"criterion={t['criterion']:22s} passes={t['passes']} "
+            f"decisive={t['decisive']} "
+            + (
+                "bootstrap_pass_share=analytic (n/a)"
+                if share is None
+                else f"bootstrap_pass_share={share:.3f}"
+            )
+            + f" | {t['stats_role']}: frac_positive={t['frac_positive']:.4f} "
+            f"frac_modal={t['frac_modal']:.3f} std={t['std']:.3g}",
             flush=True,
         )
+        if "monotone" in t:
+            m = t["monotone"]
+            edge = m["transition_bearing"]
+            print(
+                f"[nondeg] {name:7s} sweep: monotone_into_cone="
+                f"{m['monotone_into_cone']} varies={m['varies']} transition="
+                + ("never positive" if edge is None else f"{edge:.4f}")
+                + f" rad vs configured {m['expected_transition_bearing']:.4f} "
+                f"(+/-{m['transition_tolerance']:.4f}) over {m['n_bearings']} "
+                f"bearings at {m['range_m']:.2f} m",
+                flush=True,
+            )
     return report
 
 
@@ -522,14 +583,15 @@ def main() -> None:
                 "episodes the episode-level bootstrap does not reproduce the "
                 "point verdict, so the verdict is about the sample and not "
                 "about the reward. Do NOT re-roll the seed and do NOT widen "
-                "the band. Measured over 2500 episodes / 2.57M clone steps "
-                "at five disjoint seeds, the vis term's positive fraction is "
-                "0.0528 (bootstrap 95% CI [0.0493, 0.0563]) against a band "
-                "edge of 0.05 — it sits ON the edge, and the interval's "
-                "lower bound first clears 0.05 only at ~4000 episodes, "
-                "twenty times the training budget of the arm this gates. "
-                "Resolve it by changing the term or by amending the "
-                "criterion for it, and pre-register the amendment."
+                "the band. Only SAMPLED criteria can land here: an analytic "
+                "one is decisive by construction. Precedent for what to do "
+                "is amendment A7 (S121) — the `vis` term's positive fraction "
+                "sat ON the 0.05 edge at 0.0528 (95% CI [0.0493, 0.0563] "
+                "over 2500 episodes / 2.57M clone steps at five disjoint "
+                "seeds) and no affordable budget could decide it, so the "
+                "criterion was replaced with the one the spec names, and the "
+                "replacement was pre-registered. Change the term, or amend "
+                "the criterion for it and pre-register the amendment."
             )
         if not gate["all_pass"]:
             raise SystemExit(

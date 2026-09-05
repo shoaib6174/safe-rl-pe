@@ -128,14 +128,21 @@ class TestNondegeneracyGate:
 
 class TestGateDecisiveness:
     """The plateau gate is a hard stop. These pin that it fires on the
-    reward and not on the sampling noise of a short rollout."""
+    reward and not on the sampling noise of a short rollout.
+
+    The sampled indicator term is `evis` (`vis` moved to the analytic
+    criterion under A7 and is no longer bootstrapped at all — see
+    `TestAnalyticTermIsNotBootstrapped`). The numbers below are unchanged:
+    both terms are judged by the same 0.05-0.95 band on the positive
+    fraction, which A7 did not touch.
+    """
 
     @staticmethod
     def _episodes(n_high, n_low, steps=100, positives=10):
-        # "high" episodes carry `positives` steps of vis=+0.1 out of
+        # "high" episodes carry `positives` steps of evis=+0.1 out of
         # `steps`; "low" episodes carry none.
-        high = {"vis": [0.1] * positives + [0.0] * (steps - positives)}
-        low = {"vis": [0.0] * steps}
+        high = {"evis": [0.1] * positives + [0.0] * (steps - positives)}
+        low = {"evis": [0.0] * steps}
         return [dict(high) for _ in range(n_high)] + [dict(low) for _ in range(n_low)]
 
     def test_a_live_term_is_decisively_passed(self):
@@ -144,14 +151,14 @@ class TestGateDecisiveness:
         # std > 0. Nothing to be uncertain about.
         mod = _runner()
         eps = self._episodes(20, 0, steps=100, positives=50)
-        assert mod.gate_decisiveness(eps, seed=1)["vis"] == 1.0
+        assert mod.gate_decisiveness(eps, seed=1)["evis"] == 1.0
 
     def test_a_dead_term_is_decisively_failed(self):
         # Every step zero -> std = 0 and frac_positive = 0 in every
         # resample: the term fails the band in all of them.
         mod = _runner()
         eps = self._episodes(0, 20)
-        assert mod.gate_decisiveness(eps, seed=1)["vis"] == 0.0
+        assert mod.gate_decisiveness(eps, seed=1)["evis"] == 0.0
 
     def test_a_term_sitting_on_the_band_edge_is_not_decisive(self):
         # THE DEFECT THIS EXISTS FOR. 10 high + 10 low episodes of 100
@@ -163,11 +170,51 @@ class TestGateDecisiveness:
         # coin flip is exactly what must not happen.
         mod = _runner()
         eps = self._episodes(10, 10)
-        frac = mod.gate_decisiveness(eps, seed=1)["vis"]
+        frac = mod.gate_decisiveness(eps, seed=1)["evis"]
         assert 0.30 < frac < 0.52  # 0.4119 +/- 4 bootstrap SE (0.025)
         assert not (
             frac >= mod.DECISIVE_FRACTION or frac <= 1.0 - mod.DECISIVE_FRACTION
         )
+
+
+class TestAnalyticTermIsNotBootstrapped:
+    """A7: `vis` is judged by an analytic geometric criterion, so it carries
+    no sampling error and must not be run through the bootstrap machinery."""
+
+    def test_the_analytic_term_gets_no_bootstrap_share(self):
+        # Both terms present in every episode; only the sampled one comes
+        # back with a share.
+        mod = _runner()
+        eps = [{"vis": [0.1] * 10 + [0.0] * 90, "evis": [0.1] * 50 + [0.0] * 50}] * 20
+        shares = mod.gate_decisiveness(eps, seed=1)
+        assert set(shares) == {"evis"}
+
+    def test_the_gate_marks_it_decisive_by_construction(self, tmp_path, monkeypatch):
+        # The whole gate, on a 2-episode rollout that could decide nothing
+        # by sampling: `vis` must still come back decisive, with its share
+        # null and the reason in words, while `search` is bootstrapped.
+        mod = _runner()
+        if not mod.CLONE.exists():
+            pytest.skip(f"gated clone not present: {mod.CLONE}")
+        from pe2.config import EnvConfig
+
+        monkeypatch.setattr(mod, "OUT", tmp_path)
+        monkeypatch.setattr(mod, "NONDEG_EPISODES", 2)
+        monkeypatch.setattr(mod, "NONDEG_BOOTSTRAP", 8)
+        report = mod.nondegeneracy_gate(EnvConfig(max_steps=40), "cpu")
+
+        vis = report["terms"]["vis"]
+        assert vis["criterion"] == "monotone_into_cone"
+        assert vis["bootstrap_pass_share"] is None
+        assert vis["decisive"] is True
+        assert "analytic" in vis["decisive_reason"]
+        # The retired frequency criterion is still recorded, as an observation.
+        assert vis["stats_role"] == "observation"
+        assert 0.0 <= vis["frac_positive"] <= 1.0
+        # The sampled term is untouched by the amendment.
+        assert report["terms"]["search"]["criterion"] == "non_constancy"
+        assert report["terms"]["search"]["bootstrap_pass_share"] is not None
+        assert report["bootstrap"]["terms"] == ["search"]
 
 
 class TestGateBlocksTheRun:
