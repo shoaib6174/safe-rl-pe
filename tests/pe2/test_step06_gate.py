@@ -176,3 +176,81 @@ class TestReportedNotGated:
         assert (
             block["min_clearance_floor_m"] != block["min_h_floor_qp_margin_mixed_units"]
         )
+
+
+class TestContactGeometry:
+    """How far past a surface the executed step would have gone, in metres.
+
+    Locked defaults: dt = 0.05, agent_radius = 0.15, arena 10 -> the env
+    clips the body centre at +-4.85.
+    """
+
+    def test_no_contact_is_two_zeros(self):
+        g = GATE.contact_geometry(EnvConfig(), (0.0, 0.0, 0.0), (1.0, 0.0), [])
+        assert g["wall_overshoot_m"] == 0.0
+        assert g["obstacle_penetration_m"] == 0.0
+
+    def test_wall_overshoot(self):
+        # x = 4.83 + 1.0 * cos(0) * 0.05 = 4.88; 4.88 - 4.85 = 0.03 m.
+        g = GATE.contact_geometry(EnvConfig(), (4.83, 0.0, 0.0), (1.0, 0.0), [])
+        assert g["wall_overshoot_m"] == pytest.approx(0.03)
+
+    def test_obstacle_penetration(self):
+        # Heading -x: x = 0.68 - 0.05 = 0.63. Obstacle at the origin, r = 0.5,
+        # so the env's minimum centre distance is 0.5 + 0.15 = 0.65 and the
+        # overlap is 0.65 - 0.63 = 0.02 m.
+        import math
+
+        g = GATE.contact_geometry(
+            EnvConfig(),
+            (0.68, 0.0, math.pi),
+            (1.0, 0.0),
+            [{"x": 0.0, "y": 0.0, "radius": 0.5}],
+        )
+        assert g["wall_overshoot_m"] == 0.0
+        assert g["obstacle_penetration_m"] == pytest.approx(0.02)
+
+    def test_obstacle_overlap_is_measured_after_the_wall_clip(self):
+        # x = 4.84 + 0.05 = 4.89 -> overshoot 0.04, then the env clips to
+        # 4.85 BEFORE resolving obstacles. Obstacle at (5.3, 0) r = 0.4:
+        # from the clipped 4.85 the distance is 0.45 and the minimum is 0.55,
+        # so the overlap is 0.10 m. Measured from the unclipped 4.89 it would
+        # read 0.14 m, which is not what the env does.
+        g = GATE.contact_geometry(
+            EnvConfig(),
+            (4.84, 0.0, 0.0),
+            (1.0, 0.0),
+            [{"x": 5.3, "y": 0.0, "radius": 0.4}],
+        )
+        assert g["wall_overshoot_m"] == pytest.approx(0.04)
+        assert g["obstacle_penetration_m"] == pytest.approx(0.10)
+
+    def test_a_stopped_robot_moves_nowhere(self):
+        g = GATE.contact_geometry(
+            EnvConfig(),
+            (4.85, 0.0, 0.0),
+            (0.0, 2.0),
+            [{"x": 0.0, "y": 0.0, "radius": 0.5}],
+        )
+        assert g["wall_overshoot_m"] == 0.0
+        assert g["obstacle_penetration_m"] == 0.0
+
+
+class TestDistribution:
+    def test_empty(self):
+        assert GATE.distribution([]) == {"n": 0}
+
+    def test_hand_computed(self):
+        # sorted [0.0, 1e-10, 1e-4, 0.05, 0.2]: p50 is the 3rd value 1e-4;
+        # p95 interpolates at index 0.95*4 = 3.8, i.e. 0.05 + 0.8*(0.2-0.05)
+        # = 0.17. Three values exceed 1e-9 and 1e-6; two exceed 1e-3 and 1e-2.
+        d = GATE.distribution([0.0, 1e-10, 1e-4, 0.05, 0.2])
+        assert d["n"] == 5
+        assert d["min"] == 0.0
+        assert d["max"] == pytest.approx(0.2)
+        assert d["p50"] == pytest.approx(1e-4)
+        assert d["p95"] == pytest.approx(0.17)
+        assert d["n_above_1e-9_m"] == 3
+        assert d["n_above_1e-6_m"] == 3
+        assert d["n_above_1e-3_m"] == 2
+        assert d["n_above_1e-2_m"] == 2

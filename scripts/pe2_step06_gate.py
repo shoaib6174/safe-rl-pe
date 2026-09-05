@@ -254,101 +254,204 @@ def run_sweep(cfg, pursuer_factory, evader_factory, shield, seed0: int, n: int) 
     ]
 
 
-def forensic_replay(cfg, pursuer_factory, evader_factory, shield, seed: int) -> dict:
-    """Re-run one seed step by step and return the first contact step in full.
+def contact_geometry(cfg, pose_before, action, obstacles: list[dict]) -> dict:
+    """How far the executed step would have gone past a surface, in metres.
 
-    Used only on a G1 / G3 kill: the pre-registration requires the state, the
-    tier and the barrier values at the offending step to be reported, and the
-    sweep runner keeps only aggregates. The replay is exact -- `reset(seed)`
-    and the scripted policies are deterministic.
+    Replicates the env's own arithmetic (`_advance_agent` then
+    `_project_out_of_obstacles`): one Euler step from `pose_before` under
+    `action`, the wall overshoot measured against the same limits the env
+    clips to, then the deepest obstacle overlap of the wall-clipped point.
+    Both are zero when nothing was resolved, so a contact step's numbers say
+    HOW MUCH the env had to correct -- the difference between a shield that
+    lets a robot drive into a wall and one that grazes the surface at
+    float-noise scale.
+    """
+    lim = cfg.arena_size / 2.0 - cfg.agent_radius
+    x = float(pose_before[0]) + action[0] * np.cos(pose_before[2]) * cfg.dt
+    y = float(pose_before[1]) + action[0] * np.sin(pose_before[2]) * cfg.dt
+    wall_overshoot = max(0.0, x - lim, -lim - x, y - lim, -lim - y)
+    xc, yc = float(np.clip(x, -lim, lim)), float(np.clip(y, -lim, lim))
+    penetration = 0.0
+    for obs in obstacles:
+        dist = float(np.hypot(xc - obs["x"], yc - obs["y"]))
+        penetration = max(penetration, obs["radius"] + cfg.agent_radius - dist)
+    return {
+        "wall_overshoot_m": float(wall_overshoot),
+        "obstacle_penetration_m": float(penetration),
+    }
+
+
+def distribution(values: list[float]) -> dict:
+    """min / median / p95 / max plus counts above decade thresholds."""
+    if not values:
+        return {"n": 0}
+    arr = np.asarray(values, dtype=float)
+    return {
+        "n": len(values),
+        "min": float(arr.min()),
+        "p50": float(np.percentile(arr, 50)),
+        "p95": float(np.percentile(arr, 95)),
+        "max": float(arr.max()),
+        "n_above_1e-9_m": int(np.sum(arr > 1e-9)),
+        "n_above_1e-6_m": int(np.sum(arr > 1e-6)),
+        "n_above_1e-3_m": int(np.sum(arr > 1e-3)),
+        "n_above_1e-2_m": int(np.sum(arr > 1e-2)),
+    }
+
+
+def forensic_replay(cfg, pursuer_factory, evader_factory, shield, seed: int) -> dict:
+    """Re-run one seed step by step and return EVERY contact step it contains.
+
+    The pre-registration requires the state, the tier and the barrier values
+    at an offending step to be reported, and the sweep runner keeps only
+    aggregates. Returns the first offending step in full plus a compact row
+    per contact step, so the kill report can say whether the arm drove into a
+    wall or grazed one. The replay is exact -- `reset(seed)` and the scripted
+    policies are deterministic.
     """
     env = PursuitEvasionEnv(cfg)
     pursuer, evader = pursuer_factory(), evader_factory()
     pursuer.reset()
     evader.reset()
     obs, _ = env.reset(seed=seed)
+    first: dict | None = None
+    rows: list[dict] = []
     while True:
         v_p, w_p = pursuer.act(obs["pursuer"], env)
         v_e, w_e = evader.act(obs["evader"], env)
         state_before = np.array(env.pursuer_pose, dtype=float)
+        obstacles = [dict(o) for o in env.obstacles]
         cons = shield.constraints(state_before, env.obstacles)
         (v_p, w_p), sinfo = shield.filter(
             (v_p, w_p), env.pursuer_pose, env.obstacles, v_max=cfg.v_max
         )
+        executed = (float(v_p), float(w_p))
+        geometry = contact_geometry(cfg, state_before, executed, obstacles)
         obs, _, terminated, truncated, info = env.step([v_p, w_p, v_e, w_e])
         if info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"]:
-            return {
-                "seed": seed,
-                "step": env.current_step,
-                "pursuer_state_before": state_before.tolist(),
-                "pursuer_state_after": np.array(env.pursuer_pose).tolist(),
-                "evader_state_after": np.array(env.evader_pose).tolist(),
-                "obstacles": [dict(o) for o in env.obstacles],
-                "wall_contact": bool(info["pursuer_wall_contact"]),
-                "obstacle_contact": bool(info["pursuer_obstacle_contact"]),
-                "tier": sinfo["method"],
-                "feasible": sinfo["feasible"],
-                "nominal_action": [sinfo["v_nom"], float(w_p)],
-                "executed_action": [float(v_p), float(w_p)],
-                "min_h": sinfo["min_h"],
-                "min_clearance": sinfo["min_clearance"],
-                "h_obstacle": sinfo["h_obstacle"],
-                "h_boundary": sinfo["h_boundary"],
-                "constraints": [
-                    {
-                        "kind": c.kind,
-                        "h": c.h,
-                        "clearance": c.clearance,
-                        "a_v": c.a_v,
-                        "a_omega": c.a_omega,
-                    }
-                    for c in cons
-                ],
-            }
-        if terminated or truncated:
-            raise RuntimeError(
-                f"forensic replay of seed {seed} found no contact step -- the "
-                "replay does not reproduce the sweep, which is a determinism bug"
+            rows.append(
+                {
+                    "step": env.current_step,
+                    "wall_contact": bool(info["pursuer_wall_contact"]),
+                    "obstacle_contact": bool(info["pursuer_obstacle_contact"]),
+                    "tier": sinfo["method"],
+                    "feasible": sinfo["feasible"],
+                    "min_clearance": sinfo["min_clearance"],
+                    **geometry,
+                }
             )
+            if first is None:
+                first = {
+                    "seed": seed,
+                    "step": env.current_step,
+                    "pursuer_state_before": state_before.tolist(),
+                    "pursuer_state_after": np.array(env.pursuer_pose).tolist(),
+                    "evader_state_after": np.array(env.evader_pose).tolist(),
+                    "obstacles": obstacles,
+                    "wall_contact": bool(info["pursuer_wall_contact"]),
+                    "obstacle_contact": bool(info["pursuer_obstacle_contact"]),
+                    "tier": sinfo["method"],
+                    "feasible": sinfo["feasible"],
+                    "nominal_action": [sinfo["v_nom"], sinfo["v_exec"]],
+                    "executed_action": list(executed),
+                    "min_h": sinfo["min_h"],
+                    "min_clearance": sinfo["min_clearance"],
+                    "h_obstacle": sinfo["h_obstacle"],
+                    "h_boundary": sinfo["h_boundary"],
+                    **geometry,
+                    "constraints": [
+                        {
+                            "kind": c.kind,
+                            "h": c.h,
+                            "clearance": c.clearance,
+                            "a_v": c.a_v,
+                            "a_omega": c.a_omega,
+                        }
+                        for c in cons
+                    ],
+                }
+        if terminated or truncated:
+            break
+    if first is None:
+        raise RuntimeError(
+            f"forensic replay of seed {seed} found no contact step -- the "
+            "replay does not reproduce the sweep, which is a determinism bug"
+        )
+    return {"first_offending_step": first, "contact_steps": rows}
 
 
-def kill(arm_name: str, gate: str, cfg, arm, logs: list) -> None:
-    """G1 / G3 kill path: report the offending step in full and stop."""
-    offenders = [log for log in logs if log["violations"] > 0]
-    first = min(offenders, key=lambda log: log["seed"])
-    detail = forensic_replay(
-        cfg, arm["pursuer"], arm["evader"], arm["shield"], first["seed"]
+def violation_census(arm_name: str, cfg, arm, logs: list) -> dict:
+    """Replay every offending episode of an arm and describe its violations.
+
+    The pre-registration's kill report is "the state, the tier and the barrier
+    values at the offending step"; this is that, plus the distribution over
+    all of them, because a single step cannot say whether the arm drove into a
+    wall or grazed one. It measures, it does not excuse: the verdict is
+    decided by the violation count alone, upstream of here.
+    """
+    offenders = sorted(
+        (log for log in logs if log["violations"] > 0), key=lambda log: log["seed"]
     )
-    print(f"\n{'=' * 72}\n{gate} KILL CRITERION TRIPPED on arm {arm_name}\n{'=' * 72}")
+    replays = [
+        forensic_replay(cfg, arm["pursuer"], arm["evader"], arm["shield"], log["seed"])
+        for log in offenders
+    ]
+    rows = [row for replay in replays for row in replay["contact_steps"]]
+    tiers: dict[str, int] = {}
+    for row in rows:
+        tiers[row["tier"]] = tiers.get(row["tier"], 0) + 1
+    return {
+        "arm": arm_name,
+        "episodes_with_violation": len(offenders),
+        "n_episodes": len(logs),
+        "violation_steps": sum(log["violations"] for log in logs),
+        "contact_steps_replayed": len(rows),
+        "offending_seeds": [log["seed"] for log in offenders],
+        "wall_contact_steps": sum(row["wall_contact"] for row in rows),
+        "obstacle_contact_steps": sum(row["obstacle_contact"] for row in rows),
+        "tier_at_contact": tiers,
+        "wall_overshoot_m": distribution(
+            [row["wall_overshoot_m"] for row in rows if row["wall_contact"]]
+        ),
+        "obstacle_penetration_m": distribution(
+            [row["obstacle_penetration_m"] for row in rows if row["obstacle_contact"]]
+        ),
+        "min_clearance_at_contact_m": distribution(
+            [row["min_clearance"] for row in rows]
+        ),
+        "first_offending_step": replays[0]["first_offending_step"],
+    }
+
+
+def print_census(gate: str, census: dict) -> None:
+    """Print the pre-registered kill report for one arm."""
+    print(f"\n{'=' * 72}")
+    print(f"{gate} KILL CRITERION TRIPPED on arm {census['arm']}")
+    print("=" * 72)
     print(
-        f"{len(offenders)} of {len(logs)} episodes contain a shielded-role "
-        f"contact step; total violation steps "
-        f"{sum(log['violations'] for log in logs)}."
+        f"{census['episodes_with_violation']} of {census['n_episodes']} episodes "
+        f"contain a shielded-role contact step; {census['violation_steps']} "
+        f"violation steps in total "
+        f"({census['wall_contact_steps']} wall, "
+        f"{census['obstacle_contact_steps']} obstacle), "
+        f"tiers at contact {census['tier_at_contact']}."
     )
+    for key in ("wall_overshoot_m", "obstacle_penetration_m"):
+        dist = census[key]
+        if dist.get("n"):
+            print(
+                f"  {key}: n={dist['n']} min={dist['min']:.3e} "
+                f"p50={dist['p50']:.3e} p95={dist['p95']:.3e} max={dist['max']:.3e} "
+                f"(>1e-9 m: {dist['n_above_1e-9_m']}, >1e-3 m: "
+                f"{dist['n_above_1e-3_m']}, >1e-2 m: {dist['n_above_1e-2_m']})"
+            )
     print("First offending episode, first offending step:")
-    print(json.dumps(detail, indent=2))
+    print(json.dumps(census["first_offending_step"], indent=2))
     print(
         "\nPre-registration: any shielded violation means the shield math is "
         "wrong. Stopping. This is a finding about the shield, not a gate to "
         "loosen."
     )
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    with open(OUT_DIR / f"step_06_{gate.lower()}_kill.json", "w") as f:
-        json.dump(
-            {
-                "gate": gate,
-                "arm": arm_name,
-                "config_fingerprint": config_fingerprint(cfg),
-                "n_episodes": len(logs),
-                "episodes_with_violation": len(offenders),
-                "violation_steps": sum(log["violations"] for log in logs),
-                "offending_seeds": [log["seed"] for log in offenders][:50],
-                "first_offending_step": detail,
-            },
-            f,
-            indent=2,
-        )
-    sys.exit(1)
 
 
 # --------------------------------------------------------------------- main
@@ -455,10 +558,18 @@ def main() -> None:
             f"CR {s['capture_rate']:.3f}  interv {s['intervention_rate']:.4f}"
         )
 
+    # Every arm that produced a violation is replayed and described BEFORE any
+    # verdict is announced, so a kill stops the step with its evidence written
+    # rather than with it lost. The criteria themselves are untouched: an arm
+    # with a single violation step fails, whatever the census says about it.
+    censuses = {
+        name: violation_census(name, cfg, arms[name], logs[name])
+        for name in arms
+        if not arms[name]["control"] and summaries[name]["violation_steps"] > 0
+    }
+
     # --- G1 (kill criterion) ---
     g1 = summaries["shielded_main"]
-    if g1["violation_steps"] > 0:
-        kill("shielded_main", "G1", cfg, arms["shielded_main"], logs["shielded_main"])
     g1_upper = violation_upper_bound(g1["episodes_with_violation"], n)
     g1_pass = g1["violation_steps"] == 0
 
@@ -469,10 +580,6 @@ def main() -> None:
 
     # --- G3 (adversarial probe, kill criterion) ---
     g3 = summaries["shielded_probe"]
-    if g3["violation_steps"] > 0:
-        kill(
-            "shielded_probe", "G3", cfg, arms["shielded_probe"], logs["shielded_probe"]
-        )
     g3_pass = g3["violation_steps"] == 0
 
     # --- G4 (negative control: the probe must bite an unshielded pursuer) ---
@@ -481,10 +588,6 @@ def main() -> None:
 
     # --- G5 (robust-margin arm: G1's and G3's criteria) ---
     r_main, r_probe = summaries["robust_main"], summaries["robust_probe"]
-    if r_main["violation_steps"] > 0:
-        kill("robust_main", "G5", cfg, arms["robust_main"], logs["robust_main"])
-    if r_probe["violation_steps"] > 0:
-        kill("robust_probe", "G5", cfg, arms["robust_probe"], logs["robust_probe"])
     g5_pass = r_main["violation_steps"] == 0 and r_probe["violation_steps"] == 0
 
     gates = {
@@ -608,6 +711,7 @@ def main() -> None:
         ),
         "gates": gates,
         "arms": arm_blocks,
+        "violation_census": censuses,
     }
     with open(OUT_JSON, "w") as f:
         json.dump(payload, f, indent=2)
@@ -666,6 +770,15 @@ def main() -> None:
         f"{g3['intervention_rate']:.4f}"
     )
     print(f"\nwrote {OUT_JSON}")
+
+    for gate_name, arm_name in (
+        ("G1", "shielded_main"),
+        ("G3", "shielded_probe"),
+        ("G5", "robust_main"),
+        ("G5", "robust_probe"),
+    ):
+        if arm_name in censuses:
+            print_census(gate_name, censuses[arm_name])
 
     verdicts = {
         "G1": g1_pass,
