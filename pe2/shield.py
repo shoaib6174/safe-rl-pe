@@ -341,7 +341,16 @@ class CBFShield:
         """Normalised one-step DCBF progress of every row under `action`:
         (h_i(x⁺) − (1−γ) h_i(x)) / scale_i. Every entry ≥ 0 ⟺ the exact
         tier accepts the action. Public so a gate can re-derive C1 from the
-        definition rather than from another copy of the filter."""
+        definition rather than from another copy of the filter.
+
+        Two things this does NOT model, both benign today: it does not clip
+        `action` to the box (the caller must pass an already box-clipped
+        action -- `_qp_candidates` clips every candidate before this is
+        called), and the successor prediction ignores `cfg.prep_steps`
+        (under which the env forces the pursuer's speed to zero for the
+        first steps after reset; the default is 0, where this is moot). A
+        gate built directly on this method should account for both.
+        """
         cons = self.constraints(state, obstacles)
         H1 = self.successor_barriers(state, obstacles, np.asarray(action)[None, :])[0]
         H0 = np.array([c.h for c in cons])

@@ -11,6 +11,8 @@ from pe2.shield import (
     STALL_V_FRAC,
     CBFShield,
     NoOpShield,
+    _body_obstacle_constraint,
+    _body_wall_constraints,
     _boundary_constraints,
     _obstacle_constraint,
     compute_vcp,
@@ -1600,29 +1602,81 @@ class TestSuccessorBarriers:
             else:
                 assert H[0, j] == pytest.approx(c.h, abs=1e-12)
 
+    def test_constructor_h_matches_h_columns_directly(self):
+        """`constraints()` overwrites `c.h` from `_h_columns`, so comparing
+        the two through `constraints()` (as the test above does) compares
+        `_h_columns` against itself. This instead builds the rows straight
+        from the module-level constructors -- the formulas an engineer would
+        actually edit -- and checks each `h` against `_h_columns`
+        independently, so the two cannot silently drift apart."""
+        rng = np.random.default_rng(11)
+        for margin in (0.0, 0.05):
+            cfg = EnvConfig()
+            env = PursuitEvasionEnv(cfg)
+            shield = CBFShield(cfg, margin=margin)
+            for _ in range(5):
+                env.reset(seed=int(rng.integers(0, 2**31 - 1)))
+                state = np.array(env.pursuer_pose, dtype=np.float64)
+                direct = _body_wall_constraints(state, shield._x_lim, shield._y_lim)
+                direct += _boundary_constraints(
+                    state, shield._x_lim, shield._y_lim, shield.d
+                )
+                for obs in env.obstacles:
+                    r_eff = obs["radius"] + cfg.agent_radius + margin
+                    direct.append(
+                        _body_obstacle_constraint(state, obs["x"], obs["y"], r_eff)
+                    )
+                    direct.append(
+                        _obstacle_constraint(state, obs["x"], obs["y"], r_eff, shield.d)
+                    )
+                H = shield._h_columns(
+                    np.array([state[0]]),
+                    np.array([state[1]]),
+                    np.array([state[2]]),
+                    env.obstacles,
+                )[0]
+                assert len(direct) == len(H)
+                for j, c in enumerate(direct):
+                    assert H[j] == c.h, (margin, j, H[j], c.h)
+
     def test_hard_rows_equal_env_predicates_bitwise(self):
         """Predicted hard rows at the successor == what the env computes
-        after it actually steps. 10k random (pose, action) pairs."""
+        after it actually steps. 10k random (pose, action) pairs, each
+        evaluated inside a K=137 candidate batch (Task 5's actual call shape
+        for the exact tier). numpy ufunc inner loops can be SIMD-dispatched
+        BY ARRAY LENGTH, so bit identity at K=1 does not logically imply bit
+        identity at the batch size the gate actually uses -- this exercises
+        that batch size, not just a lone candidate."""
         rng = np.random.default_rng(99)
         cfg = EnvConfig()
         env = PursuitEvasionEnv(cfg)
         shield = CBFShield(cfg)
+        k_candidates = 137
         for _ in range(10_000):
             env.reset(seed=int(rng.integers(0, 2**31 - 1)))
             state = np.array(env.pursuer_pose, dtype=np.float64)
             u = np.array(
+                [rng.uniform(0, cfg.v_max), rng.uniform(-cfg.omega_max, cfg.omega_max)]
+            )
+            others = np.column_stack(
                 [
-                    [
-                        rng.uniform(0, cfg.v_max),
-                        rng.uniform(-cfg.omega_max, cfg.omega_max),
-                    ]
+                    rng.uniform(0, cfg.v_max, size=k_candidates - 1),
+                    rng.uniform(-cfg.omega_max, cfg.omega_max, size=k_candidates - 1),
                 ]
             )
-            H = shield.successor_barriers(state, env.obstacles, u)
+            idx = int(rng.integers(0, k_candidates))
+            batch = np.insert(others, idx, u, axis=0)
+            H_batch = shield.successor_barriers(state, env.obstacles, batch)
+            # The batched row must equal the K=1 evaluation of the same
+            # action: a correctness lock against a numpy ufunc whose result
+            # depends on array length rather than only on each element.
+            H_single = shield.successor_barriers(state, env.obstacles, u[None, :])
+            assert np.array_equal(H_batch[idx], H_single[0])
+            H = H_batch[idx : idx + 1]
             cons = shield.constraints(state, env.obstacles)
             hard_idx = [j for j, c in enumerate(cons) if c.hard]
             # Step the env with the evader frozen; take the pursuer's new pose.
-            _, _, _, _, info = env.step([u[0, 0], u[0, 1], 0.0, 0.0])
+            _, _, _, _, info = env.step([u[0], u[1], 0.0, 0.0])
             if info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"]:
                 continue  # the env clipped/projected; the sign test covers that
             after = np.array(env.pursuer_pose, dtype=np.float64)

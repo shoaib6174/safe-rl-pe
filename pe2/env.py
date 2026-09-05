@@ -40,10 +40,14 @@ OUTCOME_TIMEOUT = "timeout"
 def euler_step(pose, v: float, omega: float, dt: float) -> tuple[float, float, float]:
     """One UNCLIPPED unicycle Euler step -- the kinematics of this env.
 
-    Shared with pe2.shield so the shield's one-step prediction is the env's
-    next state bit for bit; the shield's zero-contact argument (Step 6 v2
-    spec, B4) rests on that identity. Keep the operation order exactly as
-    written: (v * cos) * dt, then + x.
+    `pe2.shield.CBFShield.successor_barriers` TRANSCRIBES this function in
+    vectorised form rather than calling it (calling it per candidate would
+    be ~150 million Python calls across a gate run), so the shield's
+    one-step prediction is the env's next state bit for bit only as long as
+    the two copies stay in lockstep. `test_hard_rows_equal_env_predicates_bitwise`
+    (tests/pe2/test_shield.py) is what binds the two copies together --
+    change either without re-running it and the identity is unverified.
+    Keep the operation order exactly as written: (v * cos) * dt, then + x.
     """
     x = pose[0] + v * np.cos(pose[2]) * dt
     y = pose[1] + v * np.sin(pose[2]) * dt
