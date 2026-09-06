@@ -208,14 +208,21 @@ class TestTrainAwr:
         ]
         assert runs[0]["iterations"] == runs[1]["iterations"]
         assert runs[0]["torch_seed"] == 5
+        assert runs[0]["first_action"] == runs[1]["first_action"]
 
-    def test_different_seeds_produce_different_rollouts(self, tmp_path):
+    def test_different_seeds_produce_different_first_action(self, tmp_path):
         """Regression test: `seed_torch` must run AFTER `SAC.load`, or `load`
         silently re-applies the seed baked into the clone's zip and the
-        declared `seed` never governs a single sampled action — two
-        different seeds would then produce byte-identical stats, and
-        `test_same_seed_same_stats` alone cannot catch that (it passes
-        either way)."""
+        declared `seed` never governs a single sampled action.
+
+        This must compare something that only torch's global generator
+        drives, NOT `stats["iterations"]` — those losses are also shaped by
+        `rng = np.random.default_rng(seed)`, which is seeded straight from
+        `seed` independently of the torch bug and drives minibatch
+        permutation order, so `iterations` differs across seeds even when
+        the torch seed is silently discarded. `first_action` is the first
+        value that actually depends on torch's global generator, so it is
+        identical under the bug and different once fixed."""
         pytest.importorskip("stable_baselines3")
         from stable_baselines3 import SAC
 
@@ -257,4 +264,4 @@ class TestTrainAwr:
             for s in (5, 6)
         ]
         assert stats[0]["torch_seed"] != stats[1]["torch_seed"]
-        assert stats[0]["iterations"] != stats[1]["iterations"]
+        assert stats[0]["first_action"] != stats[1]["first_action"]

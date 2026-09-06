@@ -267,6 +267,12 @@ def train_awr(
             min_episodes=awr.initial_episodes,
         )
     )
+    # The first sampled action of the first rollout — provenance for the
+    # torch seed, since it is the earliest value that depends on torch's
+    # global generator (unlike the numpy `rng`, which only drives minibatch
+    # permutation order and is seeded independently of the torch bug this
+    # guards against).
+    first_action = buffer[0].actions[0].tolist()
     iterations.append(update("offline"))
     fire_probes(0)
     while steps < total_timesteps:
@@ -277,6 +283,7 @@ def train_awr(
     stats = {
         "torch_seed": torch_seed,
         "seed": seed,
+        "first_action": first_action,
         "rollout_seed0": rollout_seed0,
         "total_steps": steps,
         "n_episodes": n_episodes,
