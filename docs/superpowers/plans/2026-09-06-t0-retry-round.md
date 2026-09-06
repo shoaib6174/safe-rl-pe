@@ -14,7 +14,7 @@
 
 - Always `./venv/bin/python`; tests as `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 ./venv/bin/python -m pytest <target> -q`. The full `tests/pe2` suite takes ~12 minutes; run it once, in Task 5.
 - Lint only touched files: `./venv/bin/ruff check <files>` and `./venv/bin/ruff format --check <files>`.
-- **Pre-registered constants, verbatim from spec C2/C3 — never tuned:** `TOTAL = 1_000_000`, `EVERY = 100_000`, `EVAL_N = 200`, `FINAL_EVAL_N = 500`, `PASS_FROM = 500_000`, `CLONE_CI_LO = 0.137` (existing), `BETA_RB = 0.1`, `CRITIC_WARMUP = 50_000`, `NEG_TOTAL = 200_000`, `EVAL_SEED0 = 780_000`, `AWR_SEED0 = 820_000`, `AWRNEG_SEED0 = 830_000`, `SEEDS = {"RB": 7, "RC": 9, "RD": 11, "RDNEG": 11}`, `STARTS = {"RB": (37, 200), "RC": (41, 200), "RD": (37, 200), "RDNEG": (37, 200)}`, AWR `LAM = 0.5`, `W_MAX = 20.0`, `initial_episodes = 300`, `buffer_episodes = 300`, `steps_per_iter = 50_000`, `gamma = 0.999`.
+- **Pre-registered constants, verbatim from spec C2/C3 — never tuned** (with one exception, marked): `TOTAL = 1_000_000`, `EVERY = 100_000`, `EVAL_N = 200`, `FINAL_EVAL_N = 500`, `PASS_FROM = 500_000`, `CLONE_CI_LO = 0.137` (existing), `BETA_RB = 0.1`, `CRITIC_WARMUP = 50_000`, ~~`NEG_TOTAL = 200_000`~~ → **`NEG_TOTAL = 500_000` per amendment C3-a** (recorded in `docs/pathway/t0_retry_round_prereg_2026-09-06.md` §C3 at 19:24:31 on 2026-09-06, twenty minutes before the first checkpoint of any arm existed; `train_awr`'s unconditional 300-episode offline phase alone costs ≈306k steps, so at 200k the control's online loop would never run). **This plan line is superseded; the spec, the code and the results are all 500,000.** `EVAL_SEED0 = 780_000`, `AWR_SEED0 = 820_000`, `AWRNEG_SEED0 = 830_000`, `SEEDS = {"RB": 7, "RC": 9, "RD": 11, "RDNEG": 11}`, `STARTS = {"RB": (37, 200), "RC": (41, 200), "RD": (37, 200), "RDNEG": (37, 200)}`, AWR `LAM = 0.5`, `W_MAX = 20.0`, `initial_episodes = 300`, `buffer_episodes = 300`, `steps_per_iter = 50_000`, `gamma = 0.999`.
 - **Verdict rules, verbatim:** pass = win rate ≥ 0.137 at every probe with `steps >= PASS_FROM`; improved = Wilson lower bound (z = 1.96) of the final N = 500 probe > the arm's start point estimate; verdict ∈ {COLLAPSED, PRESERVED, IMPROVED, UNDETERMINED}; survivor = IMPROVED only. `RDNEG` must satisfy `control_collapsed(rows, from_step=100_000)` is `True` or `RD` is withheld.
 - **Evaluation is on true outcomes only** — `evaluate_sb3_policy` / `CheckpointEvalProbe` build their own unshaped wrapper. Nothing shaped touches an eval path.
 - SAC-family recipe is D80/D81 binding: `finetune_br_anchored` unchanged. PPO kwargs are the existing `PPO_KWARGS`, unchanged.
@@ -773,7 +773,9 @@ def _arm(name, verdict, rows=None, final=(120, 500)):
 class TestPreRegisteredConstants:
     def test_protocol(self):
         assert (R.TOTAL, R.EVERY, R.EVAL_N, R.FINAL_EVAL_N, R.PASS_FROM) == (1_000_000, 100_000, 200, 500, 500_000)
-        assert (R.BETA_RB, R.CRITIC_WARMUP, R.NEG_TOTAL) == (0.1, 50_000, 200_000)
+        # SUPERSEDED by amendment C3-a: NEG_TOTAL is 500_000, not 200_000.
+        # The shipped test asserts 500_000; see tests/pe2/test_derisk_t0b_round.py.
+        assert (R.BETA_RB, R.CRITIC_WARMUP, R.NEG_TOTAL) == (0.1, 50_000, 500_000)
         assert (R.EVAL_SEED0, R.AWR_SEED0, R.AWRNEG_SEED0) == (780_000, 820_000, 830_000)
 
     def test_seeds_and_starts(self):
@@ -879,7 +881,7 @@ PASS_FROM = 500_000
 EVAL_SEED0 = 780_000  # Tier 0's probe stream: every probe is paired with Tier 0's
 BETA_RB = 0.1
 CRITIC_WARMUP = 50_000
-NEG_TOTAL = 200_000
+NEG_TOTAL = 500_000  # amendment C3-a (was 200_000); see the Global Constraints note
 AWR_SEED0 = 820_000
 AWRNEG_SEED0 = 830_000
 SEEDS = {"RB": 7, "RC": 9, "RD": 11, "RDNEG": 11}
