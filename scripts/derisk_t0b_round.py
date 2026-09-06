@@ -9,7 +9,7 @@ paired seeds 780000+, final probe N=500):
   RB    KL-anchored SAC fine-tune, beta = 0.1 (the A4 pre-commitment)
   RC    PPO-BC clone -> PPO+GAE at 1M (the only Tier-0 arm rising at cutoff)
   RD    advantage-weighted regression on MC returns, offline then online
-  RDNEG RD with the advantage sign flipped, 200k: MUST collapse (control)
+  RDNEG RD with the advantage sign flipped, 500k: MUST collapse (control)
 Pass = win rate >= 0.137 at every probe from 500k. Improved = final N=500
 Wilson lower bound > the arm's own start (37/200 = 0.185 SAC-family;
 41/200 = 0.205 PPO). Survivor = IMPROVED. RD is withheld unless RDNEG
@@ -49,7 +49,15 @@ PASS_FROM = 500_000
 EVAL_SEED0 = 780_000  # Tier 0's probe stream: every probe is paired with Tier 0's
 BETA_RB = 0.1
 CRITIC_WARMUP = 50_000
-NEG_TOTAL = 200_000
+# Amendment C3-a (docs/pathway/t0_retry_round_prereg_2026-09-06.md): 200_000
+# -> 500_000. train_awr's offline phase collects initial_episodes=300
+# unconditionally, and the clone's measured mean episode length is 1020.6
+# steps (results/derisk/t0_signal_audit_pursuer.json: 1,000,161 / 980), so
+# the offline phase alone costs ~306k steps -- already 1.5x the old budget,
+# and at 200k the online `while steps < total_timesteps` loop would never
+# run: RDNEG would score two probes of the same post-offline model. 500k
+# gives the offline phase plus four online iterations.
+NEG_TOTAL = 500_000
 AWR_SEED0 = 820_000
 AWRNEG_SEED0 = 830_000
 SEEDS = {"RB": 7, "RC": 9, "RD": 11, "RDNEG": 11}
@@ -120,7 +128,11 @@ def run_arm(arm: str, cfg: EnvConfig, device: str) -> dict:
 
     total = NEG_TOTAL if arm == "RDNEG" else TOTAL
     pr = probe(cfg, arm)
-    counter = TrainingCaptureCounter(snapshot_every=EVERY)
+    # snapshot_every=CRITIC_WARMUP (50k), not EVERY (100k): 50k divides 100k
+    # so the probe grid is untouched, but it also lands ON RB's phase-A/B
+    # boundary, restoring the decomposition `segments` exists to give (100k
+    # alone would blend the frozen-actor warm-up into the first segment).
+    counter = TrainingCaptureCounter(snapshot_every=CRITIC_WARMUP)
     extra: dict = {}
     if arm == "RB":
         cb = CallbackList(
@@ -251,27 +263,48 @@ def load_results() -> dict:
     }
 
 
+DETERMINATE_VERDICTS = ("COLLAPSED", "PRESERVED", "IMPROVED")
+
+
 def summarize(results: dict) -> dict:
     """Apply the withhold rule and the C4 direction. Pure: no I/O."""
     arms = {
         a: {"verdict": r["verdict"], "reason": r["reason"]} for a, r in results.items()
     }
     ctrl = results.get("RDNEG")
+    rd_withheld = False
     if "RD" in arms:
         if ctrl is None:
             arms["RD"] = {
                 "verdict": "UNDETERMINED",
                 "reason": "withheld: the AWR control (RDNEG) has not run, so the AWR loop and its probe path are unvalidated",
             }
+            rd_withheld = True
         elif ctrl["verdict"] is not True:
             arms["RD"] = {
                 "verdict": "UNDETERMINED",
                 "reason": f"withheld: the AWR control did not demonstrably collapse ({ctrl['reason']})",
             }
+            rd_withheld = True
     survivors = [
         a for a in LEARNER_ARMS if a in arms and arms[a]["verdict"] == "IMPROVED"
     ]
-    complete = all(a in results for a in (*LEARNER_ARMS, "RDNEG"))
+    # `complete` must mean every learner arm was actually JUDGED, not merely
+    # that a results file for it exists: a crashed arm's own UNDETERMINED
+    # verdict (run_arm's missing-checkpoint case) must not silently count as
+    # "ran" and feed the round-ending Route-C conclusion. R-D is the one
+    # pre-registered exception: a LEGITIMATELY withheld R-D (its control ran
+    # and did not collapse, or has not run yet -- `rd_withheld` above) still
+    # leaves the round "decided on R-B and R-C alone", so it does not block
+    # completeness. An R-D that crashed on its OWN while its control DID
+    # collapse is not withheld (rd_withheld stays False there) and correctly
+    # fails this check like any other crashed learner.
+    learners_judged = all(
+        a in arms
+        and (arms[a]["verdict"] in DETERMINATE_VERDICTS or (a == "RD" and rd_withheld))
+        for a in LEARNER_ARMS
+    )
+    complete = all(a in results for a in (*LEARNER_ARMS, "RDNEG")) and learners_judged
     if survivors:
         best = max(
             survivors,
@@ -283,7 +316,7 @@ def summarize(results: dict) -> dict:
     elif complete:
         direction = "No arm IMPROVED. Stabilisation results are reported as method findings; an RL-trained pair that improves on its priors is not reachable at this budget with these families -> Route C (spec C4)."
     else:
-        direction = "incomplete: not every arm has run"
+        direction = "incomplete: not every learner arm has a determinate verdict"
     return {
         "spec": "docs/pathway/t0_retry_round_prereg_2026-09-06.md",
         "clone_ci_lo": CLONE_CI_LO,
@@ -294,6 +327,19 @@ def summarize(results: dict) -> dict:
         "complete": complete,
         "direction": direction,
     }
+
+
+def _verdict_label(verdict) -> str:
+    """RDNEG's verdict is True/False/None (`control_collapsed`'s shape), not
+    one of the VERDICTS strings the other arms use -- give it words instead
+    of a literal "RDNEG (True)" on a signed visual gate."""
+    if verdict is True:
+        return "collapsed"
+    if verdict is False:
+        return "did not collapse"
+    if verdict is None:
+        return "undetermined"
+    return verdict
 
 
 def write_figure(results: dict, summary: dict, path) -> None:
@@ -310,7 +356,7 @@ def write_figure(results: dict, summary: dict, path) -> None:
                 [x["steps"] for x in rows],
                 [x["win_rate"] for x in rows],
                 marker="o",
-                label=f"{arm} ({summary['arms'][arm]['verdict']})",
+                label=f"{arm} ({_verdict_label(summary['arms'][arm]['verdict'])})",
             )
         if "final" in r:
             lo, hi = r["final"]["wilson"]
@@ -350,7 +396,12 @@ def main() -> None:
         if arm == "RC" and not PPO_BC.exists():
             raise SystemExit(f"Tier 0 PPO-BC clone missing: {PPO_BC}")
         run_arm(arm, cfg, args.device)
-    if args.summarize or args.arms:
+    # Written ONLY under --summarize: each arm process writes its own
+    # t0b_arm_{ARM}.json (already flushed per arm), but t0b_round.{json,png}
+    # aggregates ALL of them. Four concurrent arm processes each finishing
+    # their own --arms run would otherwise all write this shared pair on
+    # exit and could interleave; --summarize is meant to run once, after.
+    if args.summarize:
         results = load_results()
         summary = summarize(results)
         (OUT / "t0b_round.json").write_text(
