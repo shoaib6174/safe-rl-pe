@@ -320,7 +320,9 @@ def round_verdict(
         )
     lo, hi = wilson_ci(final_k, final_n)
     final = f"final {final_k}/{final_n} = {final_k / final_n:.3f}, Wilson [{lo:.3f}, {hi:.3f}]"
-    if lo > start_rate:
+    # Call `improved` rather than re-testing `lo > start_rate` here: one
+    # pre-registered rule, one implementation, so the two cannot drift.
+    if improved(final_k, final_n, start_rate):
         return "IMPROVED", f"{final}: lower bound above the start {start_rate:.3f}"
     return "PRESERVED", (
         f"{final}: lower bound does not exceed the start {start_rate:.3f} — "

@@ -349,6 +349,28 @@ class TestRoundVerdict:
         assert improved(121, 500, 0.205)
         assert not improved(120, 500, 0.205)
 
+    def test_round_verdict_improved_branch_at_the_same_boundaries(self):
+        # M4: `round_verdict` must not re-implement the improvement rule.
+        # It delegates to `improved`, so it has to agree with it AT THE EDGE,
+        # not merely far inside (150/500). Same four points as the test above.
+        from pe2.derisk import round_verdict
+
+        rows = self._rows([0.2] * 10)  # passes the window at every probe
+        assert round_verdict(rows, 110, 500, 0.185)[0] == "IMPROVED"
+        assert round_verdict(rows, 109, 500, 0.185)[0] == "PRESERVED"
+        assert round_verdict(rows, 121, 500, 0.205)[0] == "IMPROVED"
+        assert round_verdict(rows, 120, 500, 0.205)[0] == "PRESERVED"
+
+    def test_round_verdict_delegates_to_improved(self):
+        # The binding between the two: whatever `improved` says on the final
+        # counts is what a window-passing arm's verdict says.
+        from pe2.derisk import improved, round_verdict
+
+        rows = self._rows([0.2] * 10)
+        for k, start in ((109, 0.185), (110, 0.185), (120, 0.205), (121, 0.205)):
+            expected = "IMPROVED" if improved(k, 500, start) else "PRESERVED"
+            assert round_verdict(rows, k, 500, start)[0] == expected
+
     def test_collapse_inside_the_window(self):
         from pe2.derisk import round_verdict
 

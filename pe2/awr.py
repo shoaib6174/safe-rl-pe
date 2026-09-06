@@ -132,8 +132,18 @@ def fit_value(value_net, opt, obs, returns, epochs, batch_size, rng) -> list[flo
 def awr_actor_update(
     model, opt, obs, actions, weights, epochs, batch_size, rng
 ) -> list[float]:
-    """Weighted regression of tanh(mu(s)) onto the executed actions —
-    `train_bc_actor`'s step with per-sample weights (normalised per batch)."""
+    """Weighted regression of tanh(mu(s)) onto the executed actions, with
+    per-sample weights normalised per batch.
+
+    NOT identical to `train_bc_actor`'s step. `train_bc_actor` uses
+    `mse_loss`, which means over the batch AND over both action dims; this
+    sums the squared error over the action dims (`.sum(dim=1)`) before the
+    weighted batch mean. At the same nominal learning rate the effective
+    step here is therefore exactly 2x `train_bc_actor`'s (two action dims).
+    The gradient DIRECTION is identical -- the ratio is 2.0000 on every
+    tensor -- so this is a step-size difference, not a different objective,
+    and `config.actor_lr = 3e-4` in the results files is the nominal rate,
+    not the effective one."""
     import torch
 
     n = len(obs)
@@ -152,7 +162,10 @@ def awr_actor_update(
             opt.zero_grad()
             loss.backward()
             opt.step()
-            total += float(loss) * len(idx)
+            # .detach() as in `fit_value` (bc6af22): `loss` still requires
+            # grad here, and float() on it warns every run. Numerically
+            # identical.
+            total += float(loss.detach()) * len(idx)
         losses.append(total / n)
     model.actor.eval()
     return losses

@@ -154,6 +154,62 @@ class TestSummarize:
         assert "Track 2" in R.summarize({"RB": _arm("RB", "IMPROVED")})["direction"]
 
 
+class TestAnnotateWithheld:
+    """I4: the per-arm JSON records the reading spec C4 forbids.
+
+    `run_arm` writes `t0b_arm_RD.json` with R-D's OWN pass-rule verdict
+    ("COLLAPSED") before `summarize` can apply the withhold rule, and
+    `summarize` never wrote back. A data appendix ships the per-arm file, so
+    the per-arm file has to carry its own withhold notice.
+    """
+
+    def _results(self):
+        return {
+            "RD": _arm("RD", "COLLAPSED"),
+            "RDNEG": {
+                "arm": "RDNEG",
+                "verdict": False,
+                "reason": "held at or above threshold at every probe",
+            },
+        }
+
+    def test_withheld_arm_file_gains_the_notice(self, tmp_path):
+        results = self._results()
+        summary = R.summarize(results)
+        assert R.annotate_withheld(results, summary, out_dir=tmp_path) == ["RD"]
+
+        written = json.loads((tmp_path / "t0b_arm_RD.json").read_text())
+        # The arm's own reading is preserved verbatim -- annotated, not rewritten.
+        assert written["verdict"] == "COLLAPSED"
+        w = written["withheld"]
+        assert w["round_verdict"] == "UNDETERMINED"
+        assert w["arm_verdict"] == "COLLAPSED"
+        assert w["superseded_by"] == (
+            "results/derisk/t0b_round.json -> summary.arms.RD"
+        )
+        assert "control" in w["round_reason"]
+        assert "SUPERSEDES" in w["note"]
+
+    def test_arms_whose_verdict_stands_are_untouched(self, tmp_path):
+        results = {
+            "RB": _arm("RB", "COLLAPSED"),
+            "RD": _arm("RD", "COLLAPSED"),
+            "RDNEG": {"arm": "RDNEG", "verdict": True, "reason": "collapsed"},
+        }
+        summary = R.summarize(results)
+        # RDNEG collapsed, so R-D is NOT withheld and nothing is annotated.
+        assert R.annotate_withheld(results, summary, out_dir=tmp_path) == []
+        assert list(tmp_path.iterdir()) == []
+        assert "withheld" not in results["RB"] and "withheld" not in results["RD"]
+
+    def test_annotation_does_not_alter_verdicts_or_direction(self, tmp_path):
+        results = self._results()
+        summary = R.summarize(results)
+        before = json.dumps(summary, sort_keys=True)
+        R.annotate_withheld(results, summary, out_dir=tmp_path)
+        assert json.dumps(R.summarize(results), sort_keys=True) == before
+
+
 class TestSurvivorTieBreak:
     def test_best_is_the_higher_wilson_lower_bound_not_list_order(self):
         # `test_survivors_are_improved_only` gives both survivors identical

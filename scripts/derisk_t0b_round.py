@@ -329,6 +329,47 @@ def summarize(results: dict) -> dict:
     }
 
 
+def annotate_withheld(results: dict, summary: dict, out_dir=OUT) -> list[str]:
+    """Write the round-level withhold decision back into the per-arm JSONs.
+
+    `run_arm` writes `t0b_arm_{ARM}.json` with that arm's OWN pass-rule
+    verdict, computed before `summarize` can apply the withhold rule (the
+    rule needs the control, which is a different process). For R-D that
+    file therefore says `"verdict": "COLLAPSED"` -- the exact reading D100
+    and spec C4 forbid anyone to draw -- with nothing in it pointing at the
+    round summary that supersedes it. A data appendix ships the per-arm
+    file, so the per-arm file must carry its own notice.
+
+    Adds a `withheld` block to every arm whose round-level verdict differs
+    from its own, rewrites that arm's JSON, and returns the arm names. The
+    arm's own `verdict`/`reason` are left EXACTLY as run_arm computed them
+    -- this annotates the record, it does not rewrite it. Pure aggregation:
+    no training, no evaluation, no threshold touched.
+    """
+    annotated = []
+    for arm, own in results.items():
+        rounded = summary["arms"].get(arm)
+        if rounded is None or rounded["verdict"] == own.get("verdict"):
+            continue
+        own["withheld"] = {
+            "round_verdict": rounded["verdict"],
+            "round_reason": rounded["reason"],
+            "arm_verdict": own.get("verdict"),
+            "superseded_by": f"results/derisk/t0b_round.json -> summary.arms.{arm}",
+            "note": (
+                f"The `verdict`/`reason` fields in this file are {arm}'s OWN "
+                "pass-rule reading, computed before the round-level rule was "
+                "applied. The round summary above SUPERSEDES them and is the "
+                "citable verdict for this arm. Per D100 / spec C4 this arm "
+                "must not be reported as evidence against the mechanism it "
+                "tests."
+            ),
+        }
+        (out_dir / f"t0b_arm_{arm}.json").write_text(json.dumps(own, indent=2))
+        annotated.append(arm)
+    return annotated
+
+
 def _verdict_label(verdict) -> str:
     """RDNEG's verdict is True/False/None (`control_collapsed`'s shape), not
     one of the VERDICTS strings the other arms use -- give it words instead
@@ -404,6 +445,8 @@ def main() -> None:
     if args.summarize:
         results = load_results()
         summary = summarize(results)
+        for arm in annotate_withheld(results, summary):
+            print(f"[{arm}] per-arm JSON annotated: superseded by the round summary")
         (OUT / "t0b_round.json").write_text(
             json.dumps({"summary": summary, "arms": results}, indent=2)
         )

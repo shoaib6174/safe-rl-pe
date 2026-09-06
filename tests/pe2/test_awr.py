@@ -1,5 +1,7 @@
 """Tests for pe2.awr — advantage-weighted regression on MC returns (T0.4 R-D)."""
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -106,6 +108,29 @@ class TestActorUpdate:
         with torch.no_grad():
             out = torch.tanh(model.actor.get_action_dist_params(obs[:1])[0])
         assert (out > 0.4).all()  # pulled to the heavily weighted action
+
+    def test_loss_accumulation_does_not_warn_on_a_grad_tensor(self):
+        # M5: `total += float(loss)` on a requires_grad tensor emits a
+        # UserWarning every run. `fit_value`'s sibling was fixed in bc6af22;
+        # the actor path was missed. Numerically identical either way.
+        torch = pytest.importorskip("torch")
+        from pe2.awr import awr_actor_update
+        from pe2.obs import obs_dim
+
+        cfg = EnvConfig()
+        model = self._model(cfg)
+        rng = np.random.default_rng(3)
+        obs = torch.as_tensor(
+            rng.uniform(-1, 1, size=(64, obs_dim(cfg))), dtype=torch.float32
+        )
+        acts = torch.full((64, 2), 0.5)
+        opt = torch.optim.Adam(model.actor.parameters(), lr=1e-3)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            awr_actor_update(
+                model, opt, obs, acts, torch.ones(64), epochs=2, batch_size=32, rng=rng
+            )
+        assert not [w for w in caught if issubclass(w.category, UserWarning)]
 
 
 class TestTrainAwr:
