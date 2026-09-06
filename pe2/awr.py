@@ -124,7 +124,7 @@ def fit_value(value_net, opt, obs, returns, epochs, batch_size, rng) -> list[flo
             opt.zero_grad()
             loss.backward()
             opt.step()
-            total += float(loss) * len(idx)
+            total += float(loss.detach()) * len(idx)
         losses.append(total / n)
     return losses
 
@@ -179,9 +179,13 @@ def train_awr(
     import torch
     from stable_baselines3 import SAC
 
-    torch_seed = seed_torch(seed)
     rng = np.random.default_rng(seed)
     model = SAC.load(clone_path, device=device)
+    # SEED AFTER THE LOAD, never before. `SAC.load` re-applies the seed baked
+    # into the zip through `_setup_model`, so seeding first is silently
+    # overwritten and the declared seed never governs a single sampled
+    # action (see scripts/derisk_t0_pilots.py's identical fix).
+    torch_seed = seed_torch(seed)
     dev = model.device
     wrapper = SingleAgentWrapper(cfg, role, opponent_factory)
     value_net = make_value_net(obs_dim(cfg), awr.hidden, dev)
@@ -238,6 +242,7 @@ def train_awr(
             "actor_loss_first": a_losses[0],
             "actor_loss_last": a_losses[-1],
             "advantage_mean": float((rets_np - values).mean()),
+            "advantage_std": float((rets_np - values).std()),
             "weight_mean": float(w.mean()),
             "weight_clipped_fraction": float((w >= awr.w_max).mean()),
         }

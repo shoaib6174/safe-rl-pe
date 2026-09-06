@@ -208,3 +208,53 @@ class TestTrainAwr:
         ]
         assert runs[0]["iterations"] == runs[1]["iterations"]
         assert runs[0]["torch_seed"] == 5
+
+    def test_different_seeds_produce_different_rollouts(self, tmp_path):
+        """Regression test: `seed_torch` must run AFTER `SAC.load`, or `load`
+        silently re-applies the seed baked into the clone's zip and the
+        declared `seed` never governs a single sampled action — two
+        different seeds would then produce byte-identical stats, and
+        `test_same_seed_same_stats` alone cannot catch that (it passes
+        either way)."""
+        pytest.importorskip("stable_baselines3")
+        from stable_baselines3 import SAC
+
+        from pe2.awr import AwrConfig, train_awr
+        from pe2.exploitability import SingleAgentWrapper
+        from pe2.scripted import GreedyEvader
+
+        cfg = EnvConfig(max_steps=40)
+        clone = tmp_path / "clone.zip"
+        SAC(
+            "MlpPolicy",
+            SingleAgentWrapper(cfg, "pursuer", GreedyEvader),
+            seed=0,
+            verbose=0,
+            device="cpu",
+        ).save(clone)
+        awr = AwrConfig(
+            initial_episodes=4,
+            buffer_episodes=6,
+            steps_per_iter=80,
+            value_epochs=1,
+            actor_epochs=1,
+            batch_size=64,
+        )
+        stats = [
+            train_awr(
+                cfg,
+                "pursuer",
+                GreedyEvader,
+                clone,
+                300,
+                seed=s,
+                awr=awr,
+                probe_every=150,
+                probe=lambda m, s: None,
+                device="cpu",
+                rollout_seed0=990100,
+            )[1]
+            for s in (5, 6)
+        ]
+        assert stats[0]["torch_seed"] != stats[1]["torch_seed"]
+        assert stats[0]["iterations"] != stats[1]["iterations"]
