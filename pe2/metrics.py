@@ -15,8 +15,11 @@ are m). It must never be reported as a distance. `min_clearance` is the worst
 signed clearance in metres and is the reportable safety margin, but it is the
 minimum over the body rows AND the virtual-control-point rows, so it is a
 conservative lower bound rather than a body-to-surface distance (see
-`CBFShield._info`); `min_h_obstacle_floor` / `min_h_boundary_floor` are
-filter-internal diagnostics.
+`CBFShield._info`). `min_clearance_hard_floor` is that body-to-surface
+distance -- the minimum over the HARD rows alone -- reported alongside it,
+never gated: a violation is still, and only, the env's own contact flag.
+`min_h_obstacle_floor` / `min_h_boundary_floor` are filter-internal
+diagnostics.
 
 Infeasibility: no candidate action satisfied every barrier row under the exact
 one-step check, so the filter fell below its exact tier (method != "exact").
@@ -99,6 +102,7 @@ class ShieldMetrics:
     min_h_floor: float = math.inf  # worst mixed-unit barrier margin seen anywhere
     min_h_sum: float = 0.0  # for the mean margin
     min_clearance_floor: float = math.inf  # worst signed distance, metres
+    min_clearance_hard_floor: float = math.inf  # worst BODY (hard-row) distance, m
     min_h_obstacle_floor: float = math.inf  # worst obstacle barrier (m²)
     min_h_boundary_floor: float = math.inf  # worst boundary barrier (m)
 
@@ -123,6 +127,9 @@ class ShieldMetrics:
         self.min_h_sum += shield_info["min_h"]
         self.min_clearance_floor = min(
             self.min_clearance_floor, shield_info["min_clearance"]
+        )
+        self.min_clearance_hard_floor = min(
+            self.min_clearance_hard_floor, shield_info["min_clearance_hard"]
         )
         # A per-kind barrier is absent when that kind had no constraints this
         # step (no obstacles in the map); leave its floor untouched.
@@ -190,6 +197,7 @@ class ShieldMetrics:
             "min_h_floor": None if n == 0 else self.min_h_floor,
             "min_h_mean": self.min_h_sum / n if n else 0.0,
             "min_clearance_floor": _floor(self.min_clearance_floor),
+            "min_clearance_hard_floor": _floor(self.min_clearance_hard_floor),
             "min_h_obstacle_floor": _floor(self.min_h_obstacle_floor),
             "min_h_boundary_floor": _floor(self.min_h_boundary_floor),
             "stall_step_rate": self.n_stalled / n if n else 0.0,
@@ -273,6 +281,7 @@ def summarize_shield(logs: list[dict]) -> dict:
         )
     min_h = [log["shield"]["min_h_floor"] for log in logs]
     min_clearance = [log["shield"]["min_clearance_floor"] for log in logs]
+    min_clearance_hard = [log["shield"]["min_clearance_hard_floor"] for log in logs]
     deadlocks = sum(bool(log["shield"]["deadlock"]) for log in logs)
     pinned = sum(bool(log["shield"]["pinned"]) for log in logs)
     # Exact pooled counts, summed from the per-episode integers. The rate keys
@@ -299,6 +308,10 @@ def summarize_shield(logs: list[dict]) -> dict:
         "min_h_floor": min(min_h) if min_h else None,
         "min_clearance_per_episode": min_clearance,
         "min_clearance_floor": min(min_clearance) if min_clearance else None,
+        "min_clearance_hard_per_episode": min_clearance_hard,
+        "min_clearance_hard_floor": (
+            min(min_clearance_hard) if min_clearance_hard else None
+        ),
         "min_h_obstacle_floor": _min_or_none(
             log["shield"]["min_h_obstacle_floor"] for log in logs
         ),

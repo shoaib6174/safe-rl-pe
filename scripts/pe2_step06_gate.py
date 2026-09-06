@@ -39,8 +39,10 @@ by 0.1 m, so a barrier is a conservative early warning).
 Reported alongside the gated numbers, per plan v3 and D89, never gated:
 infeasibility rate, `min_clearance_floor` (the reportable margin, signed
 metres -- `min_h` is a mixed-unit QP margin and is reported only under that
-name), the fallback-tier histogram, and the stall / immobility / pinning
-rates with their per-episode run-length distributions.
+name), `min_clearance_hard_floor` (the body-to-surface distance alone, the
+minimum over hard rows only -- never separately measured before this field
+existed; see D97's correction), the fallback-tier histogram, and the stall /
+immobility / pinning rates with their per-episode run-length distributions.
 
 Three review notes from S120 are honoured here: the shielded and control
 sweeps go through SEPARATE `summarize_shield` calls (the aggregator refuses a
@@ -211,6 +213,7 @@ def reported_not_gated(summary: dict, is_control: bool) -> dict:
     block = {
         "infeasibility_rate": summary["infeasibility_rate"],
         "min_clearance_floor_m": summary["min_clearance_floor"],
+        "min_clearance_hard_floor_m": summary["min_clearance_hard_floor"],
         "min_h_floor_qp_margin_mixed_units": summary["min_h_floor"],
         "tier_histogram": summary["tier_histogram"],
         "intervention_rate": summary["intervention_rate"],
@@ -245,6 +248,16 @@ def reported_not_gated(summary: dict, is_control: bool) -> dict:
 # ------------------------------------------------------------------- sweeps
 
 
+def shielded_pose(env: PursuitEvasionEnv) -> np.ndarray:
+    """The pose of whichever role `SHIELDED_ROLE` names.
+
+    `run_shielded_duel` selects the shielded agent's pose by its
+    `shielded_role` argument; this mirrors that selection so `start_flags`
+    and `forensic_replay` describe the same agent the sweep actually shielded
+    rather than hardcoding the pursuer."""
+    return env.pursuer_pose if SHIELDED_ROLE == "pursuer" else env.evader_pose
+
+
 def start_flags(cfg, shield, seed: int) -> dict:
     """Whether the RESET state already satisfies every row / every hard row.
 
@@ -252,7 +265,7 @@ def start_flags(cfg, shield, seed: int) -> dict:
     must be able to separate those episodes without re-running."""
     env = PursuitEvasionEnv(cfg)
     env.reset(seed=seed)
-    cons = shield.constraints(np.array(env.pursuer_pose), env.obstacles)
+    cons = shield.constraints(np.array(shielded_pose(env)), env.obstacles)
     return {
         "start_in_barrier_set": bool(all(c.h >= 0.0 for c in cons)),
         "start_hard_feasible": bool(all(c.h >= 0.0 for c in cons if c.hard)),
@@ -343,11 +356,11 @@ def forensic_replay(cfg, pursuer_factory, evader_factory, shield, seed: int) -> 
     while True:
         v_p, w_p = pursuer.act(obs["pursuer"], env)
         v_e, w_e = evader.act(obs["evader"], env)
-        state_before = np.array(env.pursuer_pose, dtype=float)
+        state_before = np.array(shielded_pose(env), dtype=float)
         obstacles = [dict(o) for o in env.obstacles]
         cons = shield.constraints(state_before, env.obstacles)
         (v_p, w_p), sinfo = shield.filter(
-            (v_p, w_p), env.pursuer_pose, env.obstacles, v_max=cfg.v_max
+            (v_p, w_p), shielded_pose(env), env.obstacles, v_max=cfg.v_max
         )
         executed = (float(v_p), float(w_p))
         geometry = contact_geometry(cfg, state_before, executed, obstacles)

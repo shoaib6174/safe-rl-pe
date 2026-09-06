@@ -6,8 +6,9 @@ checklist items for this GIF, and each is ASSERTED here as well as shown:
   C1. nominal vs executed action arrows diverge exactly at constraint
       approach. Asserted two ways: every exact-tier step whose logged
       `intervention` flag is set had at least one violated DCBF row,
-      re-derived from the same rows the QP solved; and every such step's
-      `min_clearance` lies below the analytic bound
+      re-derived from `CBFShield.progress`, the exact one-step check on the
+      constraint DEFINITION -- not from another copy of the filter; and every
+      such step's `min_clearance` lies below the analytic bound
       `intervention_clearance_bound`, the largest clearance at which any row
       can bind given the action box. The converse is REPORTED, not asserted:
       a violated row whose correction is smaller than the shield's
@@ -144,11 +145,15 @@ def intervention_clearance_bound(
     return float(bound)
 
 
-def nominal_violates_a_row(shield, state, obstacles, v_nom: float, w_nom: float) -> bool:
+def nominal_violates_a_row(
+    shield, state, obstacles, v_nom: float, w_nom: float
+) -> bool:
     """True iff the nominal action fails the exact one-step check of at least
     one row — re-derived from `CBFShield.progress`, the constraint DEFINITION,
     not from another copy of the filter (C1)."""
-    return bool((shield.progress(state, obstacles, np.array([v_nom, w_nom])) < 0.0).any())
+    return bool(
+        (shield.progress(state, obstacles, np.array([v_nom, w_nom])) < 0.0).any()
+    )
 
 
 def longest_run(flags: list[bool]) -> int:

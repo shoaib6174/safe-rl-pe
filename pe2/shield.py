@@ -448,9 +448,9 @@ class CBFShield:
         and unshielded arms report exactly the same keys.
 
         Keys: method ("exact" | "relaxed" | "backup" | "none"), feasible,
-        intervention, min_h, min_clearance, min_h_obstacle, min_h_boundary,
-        h_obstacle, h_boundary, n_constraints, v_nom, v_exec, stalled,
-        immobile.
+        intervention, min_h, min_clearance, min_clearance_hard, min_h_obstacle,
+        min_h_boundary, h_obstacle, h_boundary, n_constraints, v_nom, v_exec,
+        stalled, immobile.
 
         `h_obstacle` / `h_boundary` (and their minima) are the SOFT (VCP) rows
         only, so each list stays single-unit and matches what the docstrings
@@ -471,6 +471,8 @@ class CBFShield:
         body-to-surface distance is the minimum over the HARD rows alone
         (`min(c.clearance for c in cons if c.hard)`); that, not this, is the
         quantity that goes to zero exactly when the env's contact flag fires.
+        It is reported separately as `min_clearance_hard` (reported, never
+        gated: a violation is still the env's own contact flag, D89).
 
         `immobile` is `v_exec <= STALL_V_FRAC * v_max` with no condition on the
         nominal; `stalled` additionally requires `v_nom >= MOVE_V_FRAC * v_max`
@@ -496,6 +498,9 @@ class CBFShield:
             ),
             "min_h": float(min(c.h for c in cons)),  # mixed-unit, NOT a distance
             "min_clearance": float(min(c.clearance for c in cons)),  # metres
+            # Body-to-surface distance alone (hard rows only); reported, never
+            # gated -- see the docstring above.
+            "min_clearance_hard": float(min(c.clearance for c in cons if c.hard)),
             "min_h_obstacle": min(h_obstacle) if h_obstacle else None,
             "min_h_boundary": min(h_boundary) if h_boundary else None,
             "h_obstacle": h_obstacle,

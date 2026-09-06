@@ -96,8 +96,11 @@ class TestVCPMath:
         assert rows[0].a_v == pytest.approx(-np.cos(1.0))
 
     def test_vcp_rows_are_soft_with_obstacle_scale(self):
-        c = _obstacle_constraint(np.array([0.0, 0.0, 0.0]), 1.1, 0.0, 0.5, 0.1)
-        assert c.hard is False and c.scale == pytest.approx(1.0)  # 2 * r_eff
+        # r_eff = 0.6 -> scale = 2 * 0.6 = 1.2, distinct from a hardcoded 1.0
+        # (which a bug that always returned 1.0 would also produce at r_eff
+        # 0.5, the value this test used to use).
+        c = _obstacle_constraint(np.array([0.0, 0.0, 0.0]), 1.1, 0.0, 0.6, 0.1)
+        assert c.hard is False and c.scale == pytest.approx(1.2)  # 2 * r_eff
         w = _boundary_constraints(np.array([0.0, 0.0, 0.0]), 4.85, 4.85, 0.1)
         assert all((not r.hard) and r.scale == 1.0 for r in w)
 
@@ -332,6 +335,29 @@ class TestCBFShieldFilter:
         assert obst["min_h_obstacle"] == pytest.approx(0.0464)
         assert obst["min_h_boundary"] == pytest.approx(X_LIM - 0.1)
 
+    def test_min_clearance_hard_is_the_body_floor_not_the_vcp_floor(self):
+        # Same wall geometry as test_equal_clearance_wall_and_obstacle_report_
+        # equal_clearance: x = 4.73, x_lim = 4.85. The VCP leads the body by
+        # d = 0.1 m, so its row (q = 4.83, h = 0.02 m) is closer to the wall
+        # and sets `min_clearance`; the BODY (hard) row is x_lim - x = 0.12 m
+        # -- a different value. If `min_clearance_hard` were confused with
+        # `min_clearance` (e.g. aliased to it), this would not catch it.
+        shield = CBFShield(CFG)
+        _, wall = shield.filter((0.1, 0.0), np.array([4.73, 0.0, 0.0]), [])
+        assert wall["min_clearance"] == pytest.approx(0.02)
+        assert wall["min_clearance_hard"] == pytest.approx(0.12)
+
+        # Obstacle geometry as the same test: r_eff = 1.15, body distance 1.27
+        # -> hard clearance 0.12; VCP distance 1.17 -> soft clearance 0.02
+        # sets `min_clearance`. Again the two must differ.
+        _, obst = shield.filter(
+            (0.1, 0.0),
+            np.array([0.0, 0.0, 0.0]),
+            [{"x": 1.27, "y": 0.0, "radius": 1.0}],
+        )
+        assert obst["min_clearance"] == pytest.approx(0.02)
+        assert obst["min_clearance_hard"] == pytest.approx(0.12)
+
     def test_safe_nominal_passes_unchanged_on_the_exact_tier(self):
         shield = CBFShield(CFG)
         u, info = shield.filter((0.8, 0.3), np.array([0.0, 0.0, 0.0]), [])
@@ -456,6 +482,10 @@ class TestNoOpShield:
         _, info = shield.filter((1.0, 0.0), np.array([4.73, 0.0, 0.0]), [])
         assert info["min_h"] == pytest.approx(0.02)
         assert info["min_clearance"] == pytest.approx(0.02)
+        # Body (hard) row: x_lim - x = 0.12 m, distinct from the VCP-inclusive
+        # min_clearance above -- NoOpShield reports this too, like every other
+        # info key (it shares CBFShield._info).
+        assert info["min_clearance_hard"] == pytest.approx(0.12)
         assert info["n_constraints"] == 8  # 4 hard walls + 4 soft walls
 
     def test_info_keys_match_the_real_shield(self):
@@ -539,9 +569,9 @@ class TestShieldedEnvIntegration:
 def _info(method="exact", intervention=False, min_h=1.0, stalled=False, **over):
     """A CBFShield.filter info dict with defaults; `over` overrides any key.
 
-    Defaults keep `min_clearance` and `min_h_boundary` equal to `min_h` so the
-    hand-computed barrier assertions below stay readable; the clearance tests
-    override them explicitly.
+    Defaults keep `min_clearance`, `min_clearance_hard` and `min_h_boundary`
+    equal to `min_h` so the hand-computed barrier assertions below stay
+    readable; the clearance tests override them explicitly.
     """
     info = {
         "method": method,
@@ -549,6 +579,7 @@ def _info(method="exact", intervention=False, min_h=1.0, stalled=False, **over):
         "intervention": intervention,
         "min_h": min_h,
         "min_clearance": min_h,
+        "min_clearance_hard": min_h,
         "min_h_obstacle": None,
         "min_h_boundary": min_h,
         "stalled": stalled,
@@ -715,6 +746,24 @@ class TestShieldMetrics:
         assert s["min_h_obstacle_floor"] == pytest.approx(0.30)
         assert s["min_h_boundary_floor"] == pytest.approx(0.05)
 
+    def test_min_clearance_hard_floor_differs_from_vcp_inclusive_floor(self):
+        # step 1: min_clearance (VCP-inclusive) 0.02, min_clearance_hard
+        #   (body) 0.12 -- the VCP leads the body, so the all-rows floor is
+        #   tighter than the body-only floor on this step.
+        # step 2: both rows agree far from any surface, at 0.50.
+        # -> min_clearance_floor 0.02 (step 1's VCP row), min_clearance_hard_
+        #    floor 0.12 (step 1's body row is the worst body row seen; step 2
+        #    is looser). If the two accumulators were confused (e.g. one
+        #    aliased to the other), this would assert two different numbers
+        #    are equal and fail.
+        m = ShieldMetrics()
+        m.record(_info(min_clearance=0.02, min_clearance_hard=0.12), violation=False)
+        m.record(_info(min_clearance=0.50, min_clearance_hard=0.50), violation=False)
+        s = m.summary()
+        assert s["min_clearance_floor"] == pytest.approx(0.02)
+        assert s["min_clearance_hard_floor"] == pytest.approx(0.12)
+        assert s["min_clearance_floor"] != pytest.approx(s["min_clearance_hard_floor"])
+
     def test_obstacle_floor_is_none_when_no_obstacle_was_ever_constrained(self):
         m = ShieldMetrics()
         m.record(
@@ -727,6 +776,7 @@ class TestShieldMetrics:
     def test_empty_summary_clearance_floors_are_none(self):
         s = ShieldMetrics().summary()
         assert s["min_clearance_floor"] is None
+        assert s["min_clearance_hard_floor"] is None
         assert s["min_h_obstacle_floor"] is None
         assert s["min_h_boundary_floor"] is None
 
@@ -1103,6 +1153,7 @@ class TestSummarizeShield:
                 tier_histogram={"exact": 96, "relaxed": 3, "backup": 1, "none": 0},
                 min_h_floor=0.2,
                 min_clearance_floor=0.2,
+                min_clearance_hard_floor=0.2,
                 deadlock=False,
             ),
         )
@@ -1118,6 +1169,7 @@ class TestSummarizeShield:
                 tier_histogram={"exact": 300, "relaxed": 0, "backup": 0, "none": 0},
                 min_h_floor=-0.05,
                 min_clearance_floor=-0.05,
+                min_clearance_hard_floor=-0.05,
                 deadlock=True,
             ),
         )
@@ -1144,12 +1196,17 @@ class TestSummarizeShield:
         assert s["capture_rate"] == pytest.approx(0.5)
 
     def test_clearance_floors_pooled_in_metres(self):
-        # Episode A: clearance floor 0.30 m, obstacle barrier floor 0.9 m^2,
-        #            boundary barrier floor 4.0 m.
-        # Episode B: clearance floor 0.05 m, no obstacle ever constrained,
-        #            boundary barrier floor 0.05 m.
-        # -> reportable floor 0.05 m; obstacle floor 0.9 (B contributes none);
-        #    boundary floor 0.05.
+        # Episode A: clearance floor 0.30 m (VCP-inclusive), body-only floor
+        #            0.45 m, obstacle barrier floor 0.9 m^2, boundary barrier
+        #            floor 4.0 m.
+        # Episode B: clearance floor 0.05 m (VCP-inclusive), body-only floor
+        #            0.20 m, no obstacle ever constrained, boundary barrier
+        #            floor 0.05 m.
+        # -> reportable floor 0.05 m; body-only floor 0.20 (pooled
+        #    independently -- the VCP row, not the body row, sets the
+        #    all-rows floor on both episodes, so the two floors must not
+        #    collapse to the same pooled value); obstacle floor 0.9 (B
+        #    contributes none); boundary floor 0.05.
         a = _log(
             "capture",
             10,
@@ -1158,6 +1215,7 @@ class TestSummarizeShield:
                 n_steps=10,
                 min_h_floor=0.9,
                 min_clearance_floor=0.30,
+                min_clearance_hard_floor=0.45,
                 min_h_obstacle_floor=0.9,
                 min_h_boundary_floor=4.0,
             ),
@@ -1170,6 +1228,7 @@ class TestSummarizeShield:
                 n_steps=10,
                 min_h_floor=0.05,
                 min_clearance_floor=0.05,
+                min_clearance_hard_floor=0.20,
                 min_h_obstacle_floor=None,
                 min_h_boundary_floor=0.05,
             ),
@@ -1177,6 +1236,9 @@ class TestSummarizeShield:
         s = summarize_shield([a, b])
         assert s["min_clearance_per_episode"] == [0.30, 0.05]
         assert s["min_clearance_floor"] == pytest.approx(0.05)
+        assert s["min_clearance_hard_per_episode"] == [0.45, 0.20]
+        assert s["min_clearance_hard_floor"] == pytest.approx(0.20)
+        assert s["min_clearance_hard_floor"] != pytest.approx(s["min_clearance_floor"])
         assert s["min_h_obstacle_floor"] == pytest.approx(0.9)
         assert s["min_h_boundary_floor"] == pytest.approx(0.05)
 
@@ -1193,6 +1255,7 @@ class TestSummarizeShield:
                 n_steps=100,
                 min_h_floor=0.1,
                 min_clearance_floor=0.1,
+                min_clearance_hard_floor=0.1,
                 n_immobile=10,
                 longest_immobile_run=4,
                 longest_backup_run=40,
@@ -1207,6 +1270,7 @@ class TestSummarizeShield:
                 n_steps=300,
                 min_h_floor=0.5,
                 min_clearance_floor=0.5,
+                min_clearance_hard_floor=0.5,
                 n_immobile=0,
                 longest_immobile_run=0,
                 longest_backup_run=3,
@@ -1234,6 +1298,7 @@ class TestSummarizeShield:
                 n_steps=100,
                 min_h_floor=1.0,
                 min_clearance_floor=1.0,
+                min_clearance_hard_floor=1.0,
                 n_interventions=7,
                 n_infeasible=3,
                 n_backup=1,
@@ -1248,6 +1313,7 @@ class TestSummarizeShield:
                 n_steps=300,
                 min_h_floor=1.0,
                 min_clearance_floor=1.0,
+                min_clearance_hard_floor=1.0,
                 n_interventions=33,
                 n_infeasible=0,
                 n_backup=0,
@@ -1291,6 +1357,7 @@ class TestSummarizeShield:
                 n_steps=100,
                 min_h_floor=1.0,
                 min_clearance_floor=1.0,
+                min_clearance_hard_floor=1.0,
                 n_stalled=39,
                 longest_stall_run=39,
                 deadlock=False,
@@ -1305,6 +1372,7 @@ class TestSummarizeShield:
                 n_steps=100,
                 min_h_floor=1.0,
                 min_clearance_floor=1.0,
+                min_clearance_hard_floor=1.0,
                 n_stalled=41,
                 longest_stall_run=41,
                 deadlock=True,
@@ -1422,6 +1490,8 @@ class TestSummarizeShield:
         assert s["min_h_floor"] is None
         assert s["min_clearance_per_episode"] == []
         assert s["min_clearance_floor"] is None
+        assert s["min_clearance_hard_per_episode"] == []
+        assert s["min_clearance_hard_floor"] is None
         assert s["min_h_obstacle_floor"] is None
         assert s["min_h_boundary_floor"] is None
         assert s["tier_histogram"] == {

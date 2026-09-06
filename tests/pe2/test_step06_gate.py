@@ -162,6 +162,7 @@ class TestReportedNotGated:
         return {
             "infeasibility_rate": 0.001,
             "min_clearance_floor": -0.0088,
+            "min_clearance_hard_floor": 0.0004,
             "min_h_floor": -0.02,
             "tier_histogram": {"exact": 9, "relaxed": 1, "backup": 0, "none": 0},
             "intervention_rate": 0.23,
@@ -180,6 +181,14 @@ class TestReportedNotGated:
         block = GATE.reported_not_gated(self._summary(), is_control=False)
         assert "structurally_zero_fields" not in block
         assert block["min_clearance_floor_m"] == -0.0088
+
+    def test_min_clearance_hard_is_reported_never_gated(self):
+        # The body-only floor (D97's fix for the false "floor = 0" claim)
+        # rides alongside min_clearance_floor_m in the reported-not-gated
+        # block, distinct from the VCP-inclusive number.
+        block = GATE.reported_not_gated(self._summary(), is_control=False)
+        assert block["min_clearance_hard_floor_m"] == 0.0004
+        assert block["min_clearance_hard_floor_m"] != block["min_clearance_floor_m"]
 
     def test_control_arm_flags_its_structurally_zero_fields(self):
         block = GATE.reported_not_gated(self._summary(), is_control=True)
