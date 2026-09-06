@@ -327,3 +327,66 @@ class TestStartIsAdequate:
         for k in (0, 4, 20, 37):
             _, why = start_is_adequate(k, 200)
             assert isinstance(why, str) and len(why) > 20
+
+
+class TestRoundVerdict:
+    """T0.4 retry-round rules (spec C2): pass = >= 0.137 at every probe from
+    500k; improved = final N=500 Wilson lower bound above the start."""
+
+    def _rows(self, rates, every=100_000):
+        return [
+            {"steps": (i + 1) * every, "win_rate": r, "k": round(r * 200), "n": 200}
+            for i, r in enumerate(rates)
+        ]
+
+    def test_improvement_needs_the_lower_bound_not_the_point(self):
+        from pe2.derisk import improved
+
+        # 110/500 = 0.220 has Wilson lo 0.1859 > 0.185; 109/500 does not.
+        assert improved(110, 500, 0.185)
+        assert not improved(109, 500, 0.185)
+        # PPO's start is 0.205: needs 121/500.
+        assert improved(121, 500, 0.205)
+        assert not improved(120, 500, 0.205)
+
+    def test_collapse_inside_the_window(self):
+        from pe2.derisk import round_verdict
+
+        rows = self._rows([0.2] * 4 + [0.10] + [0.2] * 5)  # dip at 500k
+        verdict, reason = round_verdict(rows, 150, 500, 0.185)
+        assert verdict == "COLLAPSED"
+        assert "500000" in reason and "0.100" in reason
+
+    def test_dip_before_the_window_is_forgiven(self):
+        from pe2.derisk import round_verdict
+
+        rows = self._rows([0.2, 0.03, 0.09, 0.14] + [0.2] * 6)  # P-C's shape
+        verdict, _ = round_verdict(rows, 150, 500, 0.185)
+        assert verdict == "IMPROVED"
+
+    def test_preserved_when_final_is_inside_the_start_interval(self):
+        from pe2.derisk import round_verdict
+
+        rows = self._rows([0.2] * 10)
+        verdict, reason = round_verdict(rows, 100, 500, 0.185)  # 0.200, lo 0.168
+        assert verdict == "PRESERVED"
+        assert "0.185" in reason
+
+    def test_empty_window_is_undetermined_not_collapsed(self):
+        from pe2.derisk import round_verdict
+
+        rows = self._rows([0.2] * 4)  # run died before 500k
+        verdict, reason = round_verdict(rows, 150, 500, 0.185)
+        assert verdict == "UNDETERMINED"
+        assert "500000" in reason
+
+    def test_every_verdict_is_in_the_registry(self):
+        from pe2.derisk import VERDICTS, round_verdict
+
+        for rows, k in (
+            (self._rows([0.2] * 10), 150),
+            (self._rows([0.2] * 10), 100),
+            (self._rows([0.2] * 4 + [0.05] * 6), 150),
+            (self._rows([0.2]), 150),
+        ):
+            assert round_verdict(rows, k, 500, 0.185)[0] in VERDICTS

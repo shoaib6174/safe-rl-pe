@@ -270,6 +270,64 @@ def start_is_adequate(
     )
 
 
+# ---------------------------------------------------------------------------
+# T0.4 retry-round verdicts (docs/pathway/t0_retry_round_prereg_2026-09-06.md
+# §C2). Pre-registered before any arm ran.
+# ---------------------------------------------------------------------------
+
+VERDICTS = ("COLLAPSED", "PRESERVED", "IMPROVED", "UNDETERMINED")
+ROUND_PASS_FROM = 500_000
+
+
+def improved(k: int, n: int, start_rate: float) -> bool:
+    """Improvement rule: the final probe's Wilson LOWER bound exceeds the
+    arm's own START point estimate. The lower bound, not the point, so a
+    survivor is statistically separated from where it began."""
+    from pe2.eval import wilson_ci
+
+    return wilson_ci(k, n)[0] > start_rate
+
+
+def round_verdict(
+    rows: list[dict],
+    final_k: int,
+    final_n: int,
+    start_rate: float,
+    threshold: float = CLONE_CI_LO,
+    from_step: int = ROUND_PASS_FROM,
+) -> tuple[str, str]:
+    """(verdict, reason) for one retry-round arm.
+
+    COLLAPSED: a probe inside the judging window fell below `threshold`.
+    PRESERVED: passed the window, but the final probe is not separated from
+    the start. IMPROVED: passed AND `improved`. UNDETERMINED: the window is
+    empty (a crashed run is neither a pass nor a collapse). The reason is
+    always worded so a reader never meets a bare label.
+    """
+    from pe2.eval import wilson_ci
+
+    window = [r for r in rows if r["steps"] >= from_step]
+    if not window:
+        return "UNDETERMINED", (
+            f"judging window empty: no probe at or after {from_step} steps "
+            f"(probes seen: {[r['steps'] for r in rows]})"
+        )
+    if not pilot_passes(rows, threshold, from_step):
+        worst = min(window, key=lambda r: r["win_rate"])
+        return "COLLAPSED", (
+            f"win rate {worst['win_rate']:.3f} ({worst['k']}/{worst['n']} "
+            f"@{worst['steps']}) below {threshold} inside the window from {from_step}"
+        )
+    lo, hi = wilson_ci(final_k, final_n)
+    final = f"final {final_k}/{final_n} = {final_k / final_n:.3f}, Wilson [{lo:.3f}, {hi:.3f}]"
+    if lo > start_rate:
+        return "IMPROVED", f"{final}: lower bound above the start {start_rate:.3f}"
+    return "PRESERVED", (
+        f"{final}: lower bound does not exceed the start {start_rate:.3f} — "
+        "no collapse, no separated improvement"
+    )
+
+
 class TrainingCaptureCounter:
     """SB3 callback: count training episodes ending in capture, and env
     steps, so the T0.1 kill rule (positives per 1M) can be read off the P-A
