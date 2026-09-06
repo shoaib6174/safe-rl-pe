@@ -70,15 +70,36 @@ MIN_SLIDE_STEPS = 15  # 0.75 s of continuous sliding
 # Episodes are picked from the pre-registered streams (main 800000+, probe
 # 810000+) for illustrative value; every number they produce is still
 # cross-checked against that seed's row in the gate JSON.
-# Filled in Task 8 from the v2 streams (800000+/810000+) after the gate run,
-# by the same criteria as v1 (a capture with a >= MIN_SLIDE_STEPS
-# contact-free slide and a visible intervention rate); the seeds and the
-# reason are recorded in the JSON.
+# Filled in Task 8, Step 3, from step_06_gate.json v2: from
+# arms.shielded_probe.episodes, the two lowest seeds with outcome=="capture",
+# steps>=120, and n_interventions/n_steps>=0.10 -> 810013 (steps=249,
+# interv_rate=0.731), 810023 (steps=255, interv_rate=0.627); from
+# arms.shielded_main.episodes, the lowest seed with the same properties ->
+# 800032 (steps=222, interv_rate=0.176). First choices met all of C1-C4,
+# including C2's >= MIN_SLIDE_STEPS slide, so no fallback attempt was needed
+# (see "episode_selection" in step_06_visual_gate.json).
 GATE_EPISODES = [
     # (label, arm name in step_06_gate.json, evader class, seed)
-    ("probe_slide", "shielded_probe", ObstacleHuggingEvader, None),
-    ("probe_capture", "shielded_probe", ObstacleHuggingEvader, None),
-    ("main_capture", "shielded_main", GreedyEvader, None),
+    ("probe_slide", "shielded_probe", ObstacleHuggingEvader, 810013),
+    ("probe_capture", "shielded_probe", ObstacleHuggingEvader, 810023),
+    ("main_capture", "shielded_main", GreedyEvader, 800032),
+]
+
+# Every selection attempt, in order tried. Only one attempt was needed: the
+# first-choice seeds above satisfied C1-C4, including C2's >= MIN_SLIDE_STEPS
+# contact-free slide, so no fallback (next qualifying probe seed) was drawn.
+EPISODE_SELECTION_LOG = [
+    {
+        "attempt": 1,
+        "rule": (
+            "shielded_probe: two lowest seeds with outcome=='capture', "
+            "steps>=120, n_interventions/n_steps>=0.10; shielded_main: "
+            "lowest seed with the same properties"
+        ),
+        "probe_seeds": [810013, 810023],
+        "main_seed": 800032,
+        "result": "accepted -- C1-C4 all satisfied, no fallback needed",
+    },
 ]
 
 
@@ -450,6 +471,7 @@ def main() -> None:
                 "fps": FPS,
                 "stride": STRIDE,
                 "hold_frames": HOLD_FRAMES,
+                "episode_selection": EPISODE_SELECTION_LOG,
                 "checklist": checklist,
                 "episodes": [
                     {k: v for k, v in r.items() if k != "per_step"} for r in records
