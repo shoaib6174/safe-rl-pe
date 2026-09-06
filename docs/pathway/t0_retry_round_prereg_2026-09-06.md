@@ -80,7 +80,24 @@ fresh from the same start, not an extension of a seen result (D83).
 | **R-B** | KL-anchored SAC fine-tune, **β = 0.1** | gated SAC clone | `finetune_br_anchored`, identical to P-B except β. Its first 200k IS the A4 pre-commitment. Reports the A2 diagnostic (`anchor_kl_grew`, final divergence vs 1e-3) alongside the verdict; the verdict itself is decided by the pass and improvement rules above, not by the divergence. |
 | **R-C** | PPO-BC → PPO+GAE, **1M** | `results/derisk/ppo_bc_pursuer.zip` (the Tier 0 PPO-BC clone, start 41/200) | `finetune_ppo`, seed 9, same kwargs. Its 50k/100k/150k/200k probes are expected to REPRODUCE Tier 0's 36/7/19/28 of 200 — a free determinism check, recorded. |
 | **R-D** | **Advantage-weighted regression on Monte-Carlo returns** (Peng et al. 2019), offline on the clone's rollouts, then iterated online | gated SAC clone (37/200) | New module `pe2/awr.py`. **No bootstrapping anywhere**: V(s) is fit by regression to `G_t = γ^(L−t)·R` (the `mc_returns` already in `pe2/derisk.py`, γ = 0.999); the actor (the clone's own SAC actor, inside its SB3 model so every probe/eval path is unchanged) is updated by weighted regression of `tanh(μ(s))` onto the executed action with weights `exp((G_t − V(s)) / λ)` clipped at `w_max`. **λ = 0.5, w_max = 20** (AWR's clip; λ scaled to our ±1 return range), fixed now. Data: initial buffer = 300 stochastic clone episodes (seeds **820000+**, ≈ 300k steps, counted in the budget — this is the "offline" phase); then iterations of ≥ 50k fresh steps from the current stochastic policy, FIFO buffer of the last 300 episodes, value net (obs→256→256→1, Adam 1e-3, 20 epochs) then actor (Adam 3e-4, 10 epochs) per iteration. Chosen over IQL because IQL's expectile targets are still TD targets and the diagnosed mechanism is TD drift. |
-| **R-D-neg** (control) | R-D with the advantage **sign flipped** (`exp(−(G − V)/λ)`) | same clone, same seed 11, seeds **830000+** | 200k budget, probes at 100k and 200k. **Must collapse** by `control_collapsed` (final Wilson upper < 0.137). It validates that AWR's non-SB3 training loop and its probe path measure what they claim, and that the weighting — not the regression — does the work. If it does NOT collapse, R-D's verdict is **withheld** (UNDETERMINED, reason worded), exactly as Tier 0 withheld its arms behind CTRL. R-B and R-C run inside SB3's own loop, which Tier 0's CTRL already validated on this probe machinery; they need no new control. |
+| **R-D-neg** (control) | R-D with the advantage **sign flipped** (`exp(−(G − V)/λ)`) | same clone, same seed 11, seeds **830000+** | **500k budget** (AMENDED 2026-09-06 BEFORE ANY ARM RAN — see the amendment note below), probes every 100k. **Must collapse** by `control_collapsed` (final Wilson upper < 0.137). It validates that AWR's non-SB3 training loop and its probe path measure what they claim, and that the weighting — not the regression — does the work. If it does NOT collapse, R-D's verdict is **withheld** (UNDETERMINED, reason worded), exactly as Tier 0 withheld its arms behind CTRL. R-B and R-C run inside SB3's own loop, which Tier 0's CTRL already validated on this probe machinery; they need no new control. |
+
+**Amendment C3-a (recorded 2026-09-06, before any arm of this round ran).** The control's
+budget rises from 200,000 to 500,000 steps. Reason: arithmetic error in the original number,
+found in code review. `train_awr`'s offline phase collects `initial_episodes = 300`
+unconditionally, and the clone's measured mean episode length is 1020.6 steps
+(`results/derisk/t0_signal_audit_pursuer.json`, 1,000,161 steps / 980 episodes) — so the
+offline phase alone costs ≈ 306k steps, already 1.5× the stated 200k budget. At 200k the
+`while steps < total_timesteps` loop would never execute: the control would exercise ONLY
+the offline update, never the online iteration loop that ~700k of R-D's own budget consists
+of, and both its probes would score the same post-offline model, so `control_collapsed`
+would judge a window of two identical points. C3 requires the control to validate "AWR's
+non-SB3 training loop and its probe path"; at 200k it validates half of it. 500k gives the
+offline phase plus four online iterations (306k → 356k → 406k → 456k → 506k), the same code
+path R-D exercises. No criterion, threshold, seed stream or verdict rule changes; the
+control is still judged by `control_collapsed` from 100k. This amendment is recorded before
+any number from this round exists, which is what makes it an amendment and not a
+post-hoc adjustment (D83).
 
 Seed audit: 700000–790999 and 800000–810999 are consumed (Steps 5–6, Tier 0); tests use
 900000+. **820000+ and 830000+ are fresh.**
