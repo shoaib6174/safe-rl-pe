@@ -290,3 +290,162 @@ class TestTrainAwr:
         ]
         assert stats[0]["torch_seed"] != stats[1]["torch_seed"]
         assert stats[0]["first_action"] != stats[1]["first_action"]
+
+
+class TestAdaptiveTemperature:
+    """T0.5 spec §3.2: lambda_t = max(std(A_t), lam_floor) per iteration.
+
+    The point is scale-freeness — the weight distribution must be the same
+    at every iteration regardless of how far the value net has driven the
+    advantage spread down. T0.4 used a fixed 0.5 against a spread that
+    decayed 0.186 -> 0.095, so the +/-1 sigma weight ratio fell from 2.10
+    to 1.46 and the weighting was inert.
+    """
+
+    def test_fixed_is_the_default_and_returns_the_configured_value(self):
+        from pe2.awr import AwrConfig, resolve_lam
+
+        cfg = AwrConfig()
+        assert cfg.adaptive_lam is False and cfg.lam_floor == 0.01
+        adv = np.random.default_rng(0).normal(0.0, 0.2, size=5000)
+        assert resolve_lam(adv, cfg) == 0.5
+
+    def test_adaptive_returns_the_measured_spread(self):
+        from pe2.awr import AwrConfig, resolve_lam
+
+        cfg = AwrConfig(adaptive_lam=True)
+        adv = np.random.default_rng(1).normal(0.0, 0.2, size=200_000)
+        assert resolve_lam(adv, cfg) == pytest.approx(np.std(adv))
+        assert resolve_lam(adv, cfg) == pytest.approx(0.2, abs=0.01)
+
+    def test_floor_engages_on_a_degenerate_spread(self):
+        from pe2.awr import AwrConfig, resolve_lam
+
+        cfg = AwrConfig(adaptive_lam=True)
+        assert resolve_lam(np.full(100, 0.3), cfg) == 0.01  # zero spread
+        assert resolve_lam(np.random.default_rng(2).normal(0, 1e-6, 100), cfg) == 0.01
+
+    def test_the_weight_ratio_is_constant_under_adaptive_lambda(self):
+        """The property the whole change exists for."""
+        from pe2.awr import AwrConfig, resolve_lam, weight_ratio
+
+        cfg = AwrConfig(adaptive_lam=True)
+        rng = np.random.default_rng(3)
+        # The spread T0.4 actually traversed, first iteration to last.
+        for std in (0.1857, 0.1489, 0.1203, 0.0953):
+            adv = rng.normal(0.0, std, size=200_000)
+            lam = resolve_lam(adv, cfg)
+            assert weight_ratio(1.0, float(np.std(adv)), lam) == pytest.approx(
+                np.exp(2.0), rel=1e-9
+            )
+            assert weight_ratio(2.0, float(np.std(adv)), lam) == pytest.approx(
+                np.exp(4.0), rel=1e-9
+            )
+
+    def test_the_fixed_temperature_reproduces_the_t04_numbers(self):
+        """Guards the claim in the spec's own comparison table."""
+        from pe2.awr import weight_ratio
+
+        assert weight_ratio(1.0, 0.1857, 0.5) == pytest.approx(2.10, abs=0.01)
+        assert weight_ratio(1.0, 0.0953, 0.5) == pytest.approx(1.46, abs=0.01)
+
+    def test_predicted_clip_fraction_under_adaptive_lambda(self):
+        """Spec §3.2 predicts ~0.0014 of weights reach the w_max=20 ceiling."""
+        from pe2.awr import AwrConfig, advantage_weights, resolve_lam
+
+        cfg = AwrConfig(adaptive_lam=True)
+        adv = np.random.default_rng(4).normal(0.0, 0.15, size=400_000)
+        lam = resolve_lam(adv, cfg)
+        w = advantage_weights(adv, np.zeros_like(adv), lam, cfg.w_max, 1.0)
+        assert float((w >= cfg.w_max).mean()) == pytest.approx(0.00137, abs=0.0006)
+
+
+class TestAdaptiveTemperatureInTraining:
+    def _clone(self, tmp_path, cfg):
+        pytest.importorskip("stable_baselines3")
+        from stable_baselines3 import SAC
+
+        from pe2.exploitability import SingleAgentWrapper
+        from pe2.scripted import GreedyEvader
+
+        path = tmp_path / "clone.zip"
+        SAC(
+            "MlpPolicy",
+            SingleAgentWrapper(cfg, "pursuer", GreedyEvader),
+            seed=0,
+            verbose=0,
+            device="cpu",
+        ).save(path)
+        return path
+
+    def test_iterations_record_the_temperature_and_the_ratios(self, tmp_path):
+        from pe2.awr import AwrConfig, train_awr
+        from pe2.config import EnvConfig
+        from pe2.scripted import GreedyEvader
+
+        cfg = EnvConfig(max_steps=40)
+        clone = self._clone(tmp_path, cfg)
+        awr = AwrConfig(
+            adaptive_lam=True,
+            initial_episodes=6,
+            buffer_episodes=8,
+            steps_per_iter=100,
+            value_epochs=2,
+            actor_epochs=2,
+            batch_size=64,
+        )
+        _, stats = train_awr(
+            cfg,
+            "pursuer",
+            GreedyEvader,
+            clone,
+            400,
+            seed=3,
+            awr=awr,
+            probe_every=200,
+            probe=lambda m, s: None,
+            device="cpu",
+            rollout_seed0=990200,
+        )
+        assert stats["config"]["adaptive_lam"] is True
+        for it in stats["iterations"]:
+            assert it["lam_used"] > 0.0
+            assert set(it) >= {"lam_used", "weight_ratio_1sigma", "weight_ratio_2sigma"}
+            if it["lam_used"] > awr.lam_floor:  # floor not engaged
+                assert it["weight_ratio_1sigma"] == pytest.approx(np.exp(2.0), rel=1e-6)
+
+    def test_the_default_config_is_unchanged_by_this_feature(self, tmp_path):
+        """T0.4's runs are a frozen record; the fixed path must not move."""
+        from pe2.awr import AwrConfig, train_awr
+        from pe2.config import EnvConfig
+        from pe2.scripted import GreedyEvader
+
+        cfg = EnvConfig(max_steps=40)
+        clone = self._clone(tmp_path, cfg)
+        kw = {
+            "initial_episodes": 5,
+            "buffer_episodes": 6,
+            "steps_per_iter": 80,
+            "value_epochs": 1,
+            "actor_epochs": 1,
+            "batch_size": 64,
+        }
+        runs = [
+            train_awr(
+                cfg,
+                "pursuer",
+                GreedyEvader,
+                clone,
+                300,
+                seed=5,
+                awr=AwrConfig(**kw),
+                probe_every=150,
+                probe=lambda m, s: None,
+                device="cpu",
+                rollout_seed0=990300,
+            )[1]
+            for _ in range(2)
+        ]
+        assert runs[0]["first_action"] == runs[1]["first_action"]
+        for it in runs[0]["iterations"]:
+            assert it["lam_used"] == 0.5  # the fixed default, not the spread

@@ -7,7 +7,10 @@ survive. AWR bootstraps NOTHING. The baseline V(s) is a regression onto the
 Monte-Carlo return G_t = gamma^(L-t)·R of the episode the step came from
 (`pe2.derisk.mc_returns`), and the actor is updated by weighted supervised
 regression onto the actions it actually executed, with weights
-exp((G_t − V(s_t)) / lam) clipped at w_max. Weights favour the actions that
+exp((G_t − V(s_t)) / lam) clipped at w_max. `lam` is fixed by default; under
+`AwrConfig.adaptive_lam` it is the measured advantage spread each iteration
+(T0.5 spec §3.2), which keeps the weight distribution scale-free as the value
+net drives the spread down. Weights favour the actions that
 led to better-than-expected outcomes; a flipped sign (the round's control)
 favours the worse ones and must degrade the policy.
 
@@ -31,11 +34,14 @@ from pe2.obs import obs_dim
 
 LAM = 0.5  # temperature on our ±1 return range (AWR's 0.05 is for returns of tens)
 W_MAX = 20.0  # AWR's weight clip
+LAM_FLOOR = 0.01  # smallest admissible temperature; guards a degenerate spread
 
 
 @dataclass(frozen=True)
 class AwrConfig:
     lam: float = LAM
+    adaptive_lam: bool = False  # True: lambda_t = max(std(A_t), lam_floor)
+    lam_floor: float = LAM_FLOOR
     w_max: float = W_MAX
     advantage_sign: float = 1.0  # −1.0 is the negative control (R-D-neg)
     gamma: float = 0.999
@@ -94,6 +100,32 @@ def collect(
 def advantage_weights(returns, values, lam, w_max, sign) -> np.ndarray:
     adv = sign * (np.asarray(returns) - np.asarray(values))
     return np.minimum(np.exp(adv / lam), w_max)
+
+
+def resolve_lam(advantages, cfg: AwrConfig) -> float:
+    """The temperature this iteration uses.
+
+    Fixed by default, so T0.4's runs stay reproducible. Under
+    `adaptive_lam` it is the measured advantage spread (T0.5 spec §3.2):
+    dividing by the spread makes the weight distribution scale-free, so the
+    weighting is exercised identically at every iteration however far the
+    value net has driven the spread down. The floor guards the degenerate
+    case where the spread is ~0 and the weights would otherwise blow up.
+    """
+    if not cfg.adaptive_lam:
+        return cfg.lam
+    return max(float(np.std(np.asarray(advantages))), cfg.lam_floor)
+
+
+def weight_ratio(sigmas: float, adv_std: float, lam: float) -> float:
+    """Weight ratio between a +k sigma and a -k sigma sample: exp(2k*std/lam).
+
+    The reportable measure of whether the weighting is engaged at all. Under
+    `adaptive_lam` (lam == std) it is exp(2k) regardless of the spread; at
+    T0.4's fixed lam = 0.5 it fell from 2.10 to 1.46 as the spread decayed,
+    which is why that arm's weights were indistinguishable from uniform.
+    """
+    return float(np.exp(2.0 * sigmas * adv_std / lam))
 
 
 def make_value_net(obs_dim_: int, hidden: int, device):
@@ -234,7 +266,9 @@ def train_awr(
         )
         with torch.no_grad():
             values = value_net(obs).squeeze(-1).cpu().numpy()
-        w = advantage_weights(rets_np, values, awr.lam, awr.w_max, awr.advantage_sign)
+        adv_np = rets_np - values
+        lam_used = resolve_lam(adv_np, awr)
+        w = advantage_weights(rets_np, values, lam_used, awr.w_max, awr.advantage_sign)
         a_losses = awr_actor_update(
             model,
             a_opt,
@@ -256,6 +290,9 @@ def train_awr(
             "actor_loss_last": a_losses[-1],
             "advantage_mean": float((rets_np - values).mean()),
             "advantage_std": float((rets_np - values).std()),
+            "lam_used": lam_used,
+            "weight_ratio_1sigma": weight_ratio(1.0, float(adv_np.std()), lam_used),
+            "weight_ratio_2sigma": weight_ratio(2.0, float(adv_np.std()), lam_used),
             "weight_mean": float(w.mean()),
             "weight_clipped_fraction": float((w >= awr.w_max).mean()),
         }
