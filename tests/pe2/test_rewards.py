@@ -548,3 +548,70 @@ class TestVisTermDispatch:
         assert rep["terms"]["search"]["criterion"] == "non_constancy"
         assert rep["terms"]["search"]["stats_role"] == "criterion"
         assert rep["terms"]["search"]["passes"] is True
+
+
+class TestNegatedRewardWrapper:
+    """T1.0 spec §3's negative control: the pursuer is paid for NOT capturing.
+
+    Horizon-independent by construction, which is why it is the control for a
+    round whose hypothesis is about the horizon — the usual naive-fine-tune
+    control might legitimately SUCCEED here if the hypothesis is true, and a
+    control the hypothesis predicts may pass is no control at all.
+    """
+
+    def _wrapped(self, max_steps=40):
+        from pe2.config import EnvConfig
+        from pe2.exploitability import SingleAgentWrapper
+        from pe2.rewards import NegatedRewardWrapper
+        from pe2.scripted import GreedyEvader
+
+        cfg = EnvConfig(max_steps=max_steps)
+        return NegatedRewardWrapper(SingleAgentWrapper(cfg, "pursuer", GreedyEvader))
+
+    def test_reward_sign_is_flipped_and_the_true_value_is_kept(self):
+        env = self._wrapped()
+        env.reset(seed=970_000)
+        seen = []
+        while True:
+            _obs, reward, terminated, truncated, info = env.step(
+                np.array([1.0, 0.0], dtype=np.float32)
+            )
+            seen.append((reward, info["true_reward"]))
+            if terminated or truncated:
+                break
+        assert all(r == -t for r, t in seen)
+        # A terminal-only env pays exactly once, at the end.
+        assert seen[-1][1] != 0.0
+        assert all(t == 0.0 for _, t in seen[:-1])
+
+    def test_everything_but_the_reward_passes_through(self):
+        from pe2.config import EnvConfig
+        from pe2.exploitability import SingleAgentWrapper
+        from pe2.rewards import NegatedRewardWrapper
+        from pe2.scripted import GreedyEvader
+
+        cfg = EnvConfig(max_steps=40)
+        plain = SingleAgentWrapper(cfg, "pursuer", GreedyEvader)
+        wrapped = NegatedRewardWrapper(SingleAgentWrapper(cfg, "pursuer", GreedyEvader))
+        a = np.array([0.6, -0.2], dtype=np.float32)
+        o1, _ = plain.reset(seed=970_001)
+        o2, _ = wrapped.reset(seed=970_001)
+        assert np.array_equal(o1, o2)
+        for _ in range(20):
+            s1 = plain.step(a)
+            s2 = wrapped.step(a)
+            assert np.array_equal(s1[0], s2[0])  # obs
+            assert s1[2] == s2[2] and s1[3] == s2[3]  # terminated / truncated
+            assert s1[1] == -s2[1]  # reward, and only the reward
+            if s1[2] or s1[3]:
+                break
+
+    def test_it_is_a_training_wrapper_only(self):
+        """The eval path builds its own unshaped wrapper; a negated reward must
+        never reach a probe or the final evaluation."""
+        import inspect
+
+        from pe2 import exploitability
+
+        assert "Negated" not in inspect.getsource(exploitability.evaluate_sb3_policy)
+        assert "Negated" not in inspect.getsource(exploitability.CheckpointEvalProbe)

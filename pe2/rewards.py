@@ -399,3 +399,27 @@ def nondegeneracy_report(
             )
         out[name] = entry
     return {"terms": out, "all_pass": all(t["passes"] for t in out.values())}
+
+
+class NegatedRewardWrapper(gym.Wrapper):
+    """TRAINING-ONLY reward sign flip — the T1.0 round's negative control.
+
+    The pursuer is paid for NOT capturing, so a working learner must drive
+    the capture rate down. It is horizon-independent by construction, which
+    is exactly why this round uses it: T1.0's hypothesis is that the earlier
+    configurations failed because of the credit-assignment horizon, so the
+    usual D78 naive-fine-tune control might legitimately SUCCEED at the
+    short horizon, and a control the hypothesis predicts may pass validates
+    nothing.
+
+    `info["true_reward"]` carries the unnegated value so a diagnostic can
+    still read what the environment actually paid. Evaluation never uses
+    this wrapper: `evaluate_sb3_policy` and `CheckpointEvalProbe` build
+    their own unshaped `SingleAgentWrapper`, so the probes and the final
+    N=500 measurement always see true outcomes (D68's rule).
+    """
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        info = dict(info, true_reward=reward)
+        return obs, -reward, terminated, truncated, info
