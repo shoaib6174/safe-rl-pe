@@ -138,6 +138,29 @@ def make_structured_env(cfg, arm: str):
     return SearchMDP(cfg, GreedyEvader, seed0=SEED * 1000, hold=HOLD, **ARMS[arm])
 
 
+def require_not_measured() -> None:
+    """The stop rule (spec section 5): the bars are measured ONCE, before any
+    arm trains. A second --measure-start would re-draw the very bars the
+    verdicts are read against and re-create the init SA/SB/SZ are supposed to
+    share, so it is refused rather than silently overwriting either."""
+    if START_PATH.exists():
+        raise SystemExit(
+            f"bars already measured: {START_PATH} exists. The stop rule (spec "
+            "section 5) forbids re-measuring — the verdicts are read against "
+            "these bars. Delete the round's artefacts deliberately if this is a "
+            "restart from scratch."
+        )
+    arms = sorted(p.name for p in OUT.glob("s1_arm_*.json"))
+    # Only THIS round's checkpoint dirs: results/derisk is shared with every
+    # earlier round, whose ckpts_* dirs say nothing about S1.
+    ckpts = sorted(a for a in ARMS if (OUT / f"ckpts_{a}").is_dir())
+    if arms or ckpts:
+        raise SystemExit(
+            f"arms have already run ({arms or ckpts}); the bars may not be "
+            "re-measured after training has started (stop rule, spec section 5)."
+        )
+
+
 def measure_start(device: str) -> dict:
     from stable_baselines3 import PPO
 
@@ -149,6 +172,7 @@ def measure_start(device: str) -> dict:
     from pe2.structured import OrbitSearch, RandomSearch, evaluate_structured
 
     require_preflight()
+    require_not_measured()
     cfg = EnvConfig()
     out: dict = {}
 

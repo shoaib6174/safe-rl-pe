@@ -1,8 +1,0 @@
-{
-  "pass": true,
-  "n": 500,
-  "eval_seed0": 1010000,
-  "mismatches": 0,
-  "mismatch_seeds": [],
-  "teacher_rate": 0.464
-}

@@ -88,6 +88,36 @@ class TestProtocol:
         with pytest.raises(SystemExit, match="V1"):
             R.require_preflight()
 
+    def test_measure_start_refuses_to_re_measure_after_an_arm_has_run(
+        self, tmp_path, monkeypatch
+    ):
+        """Stop rule (spec section 5): re-measuring would move the bars the
+        verdicts were computed against, and re-create the init SA/SB/SZ share."""
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        monkeypatch.setattr(R, "PREFLIGHT_PATH", tmp_path / "s1_preflight.json")
+        monkeypatch.setattr(R, "START_PATH", tmp_path / "s1_start.json")
+        # Also redirected so a regressed guard cannot write real artefacts.
+        monkeypatch.setattr(R, "INIT_PATH", tmp_path / "s1_ppo_init.zip")
+        monkeypatch.setattr(R, "CP_CLONE", tmp_path / "clone.zip")
+        (tmp_path / "s1_preflight.json").write_text(json.dumps({"pass": True}))
+        (tmp_path / "s1_arm_SA.json").write_text("{}")
+        with pytest.raises(SystemExit, match="already"):
+            R.measure_start("cpu")
+
+    def test_the_stop_rule_guard_fires_on_bars_and_on_this_rounds_ckpts_only(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        monkeypatch.setattr(R, "START_PATH", tmp_path / "s1_start.json")
+        (tmp_path / "ckpts_RQNEW").mkdir()  # another round's artefacts: not ours
+        R.require_not_measured()
+        (tmp_path / "ckpts_SB").mkdir()
+        with pytest.raises(SystemExit, match="already run"):
+            R.require_not_measured()
+        (tmp_path / "s1_start.json").write_text("{}")
+        with pytest.raises(SystemExit, match="already measured"):
+            R.require_not_measured()
+
 
 class TestDirection:
     def test_incomplete(self):
