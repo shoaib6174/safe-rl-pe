@@ -414,3 +414,39 @@ class TrainingCaptureCounter:
                 }
             )
         return out
+
+
+STRUCTURED_VERDICTS = ("IMPROVED", "LEARNED", "FAILED", "UNDETERMINED")
+
+
+def structured_verdict(
+    final_k: int,
+    final_n: int,
+    bar_rate: float,
+    floor_hi: float,
+    start_hi: float,
+) -> tuple[str, str]:
+    """(verdict, reason) for an S1 structured arm (spec section 5) on its
+    final probe. IMPROVED: Wilson lower bound above the orbit bar's point
+    estimate. LEARNED: above BOTH the random floor's and the untrained
+    start's Wilson upper bounds, but not the bar. FAILED otherwise. The
+    reason names the numbers so a reader never meets a bare label."""
+    from pe2.eval import wilson_ci
+
+    lo, hi = wilson_ci(final_k, final_n)
+    final = (
+        f"final {final_k}/{final_n} = {final_k / final_n:.3f}, "
+        f"Wilson [{lo:.3f}, {hi:.3f}]"
+    )
+    if lo > bar_rate:
+        return "IMPROVED", f"{final}: lower bound above the orbit bar {bar_rate:.3f}"
+    ref = max(floor_hi, start_hi)
+    if lo > ref:
+        return "LEARNED", (
+            f"{final}: lower bound above the floor/start upper bounds "
+            f"(max {ref:.3f}) but not the orbit bar {bar_rate:.3f}"
+        )
+    return "FAILED", (
+        f"{final}: lower bound does not clear the floor/start upper bounds "
+        f"(max {ref:.3f})"
+    )

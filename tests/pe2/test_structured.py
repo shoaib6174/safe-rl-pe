@@ -1,6 +1,9 @@
 """pe2.structured — the S1 structured pursuer (spec:
 docs/pathway/structured_search_prereg_2026-09-12.md)."""
 
+import json
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -198,3 +201,100 @@ class TestSearchMDP:
         assert len(s) == len(e) == 2
         assert set(s[0]) == set(e[0]) == LOG_KEYS
         assert s[0]["seed"] == e[0]["seed"] == 900_600
+
+
+class TestStructuredEvalProbe:
+    def test_probes_on_the_env_step_grid_and_stops_at_total(self, tmp_path):
+        from pe2.structured import StructuredEvalProbe
+
+        class _VecEnv:
+            def __init__(self):
+                self.env_steps = 0
+
+            def get_attr(self, name):
+                return [getattr(self, name)]
+
+        class _Model:
+            def __init__(self, venv):
+                self.venv = venv
+
+            def get_env(self):  # what BaseCallback.training_env reads
+                return self.venv
+
+            def save(self, path):
+                pathlib.Path(path).write_bytes(b"ckpt")
+
+            def predict(self, obs, deterministic=True):
+                return np.array([1.0, 0.0], dtype=np.float32), None
+
+        probe = StructuredEvalProbe(
+            CFG,
+            GreedyEvader,
+            every=100,
+            total=300,
+            eval_n=2,
+            seed0=900_700,
+            ckpt_dir=tmp_path,
+            report_path=tmp_path / "r.json",
+            label="T",
+        )
+        cb, venv = probe.callback, _VecEnv()
+        cb.model = _Model(venv)  # what SB3's init_callback sets
+        venv.env_steps = 57
+        assert cb._on_step() is True and probe.rows == []
+        venv.env_steps = 130  # first decision boundary past the 100 mark
+        assert cb._on_step() is True
+        assert [(r["mark"], r["steps"]) for r in probe.rows] == [(100, 130)]
+        venv.env_steps = 310  # one stretch jumped over two marks
+        assert cb._on_step() is False  # total reached: learn() must stop
+        assert [(r["mark"], r["steps"]) for r in probe.rows] == [
+            (100, 130),
+            (200, 310),
+            (300, 310),
+        ]
+        assert (tmp_path / "T_300.zip").exists()
+        report = json.loads((tmp_path / "r.json").read_text())
+        assert [r["mark"] for r in report["checkpoints"]] == [100, 200, 300]
+        assert {"steps", "mark", "ckpt", "win_rate", "k", "n"} <= set(probe.rows[0])
+
+    def test_total_must_be_a_multiple_of_every(self, tmp_path):
+        from pe2.structured import StructuredEvalProbe
+
+        with pytest.raises(ValueError, match="multiple"):
+            StructuredEvalProbe(
+                CFG,
+                GreedyEvader,
+                every=100,
+                total=250,
+                eval_n=2,
+                seed0=900_700,
+                ckpt_dir=tmp_path,
+                report_path=tmp_path / "r.json",
+                label="T",
+            )
+
+    def test_rejects_a_vec_env_with_more_than_one_env(self, tmp_path):
+        from pe2.structured import StructuredEvalProbe
+
+        class _TwoEnvs:
+            def get_attr(self, name):
+                return [10, 10]
+
+        class _Model:
+            def get_env(self):
+                return _TwoEnvs()
+
+        probe = StructuredEvalProbe(
+            CFG,
+            GreedyEvader,
+            every=100,
+            total=300,
+            eval_n=2,
+            seed0=900_700,
+            ckpt_dir=tmp_path,
+            report_path=tmp_path / "r.json",
+            label="T",
+        )
+        probe.callback.model = _Model()
+        with pytest.raises(AssertionError, match="single env"):
+            probe.callback._on_step()

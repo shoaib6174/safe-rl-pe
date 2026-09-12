@@ -319,6 +319,12 @@ class StructuredEvalProbe:
     ):
         from stable_baselines3.common.callbacks import BaseCallback  # lazy
 
+        if total % every != 0:
+            raise ValueError(
+                f"total ({total}) must be a multiple of every ({every}) so the "
+                f"final mark is the final checkpoint"
+            )
+
         rows: list[dict] = []
 
         def evaluate_at(model, env_steps: int, mark: int) -> dict:
@@ -352,7 +358,11 @@ class StructuredEvalProbe:
                 inner_self.next_mark = every
 
             def _on_step(inner_self) -> bool:
-                env_steps = int(inner_self.training_env.get_attr("env_steps")[0])
+                counts = inner_self.training_env.get_attr("env_steps")
+                assert len(counts) == 1, (
+                    "StructuredEvalProbe assumes a single env (budget is in env steps)"
+                )
+                env_steps = int(counts[0])
                 while (
                     inner_self.next_mark <= total and env_steps >= inner_self.next_mark
                 ):

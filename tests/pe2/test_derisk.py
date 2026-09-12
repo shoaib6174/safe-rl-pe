@@ -412,3 +412,33 @@ class TestRoundVerdict:
             (self._rows([0.2]), 150),
         ):
             assert round_verdict(rows, k, 500, 0.185)[0] in VERDICTS
+
+
+class TestStructuredVerdict:
+    def test_improved_when_lower_bound_beats_the_orbit_bar(self):
+        from pe2.derisk import structured_verdict
+
+        v, reason = structured_verdict(
+            300, 500, bar_rate=0.49, floor_hi=0.38, start_hi=0.30
+        )
+        assert v == "IMPROVED" and "0.490" in reason
+
+    def test_learned_when_above_floor_and_start_but_not_the_bar(self):
+        from pe2.derisk import structured_verdict
+
+        v, reason = structured_verdict(
+            220, 500, bar_rate=0.49, floor_hi=0.38, start_hi=0.30
+        )
+        assert v == "LEARNED" and "0.380" in reason
+
+    def test_failed_when_not_separated_from_the_floor_or_the_start(self):
+        from pe2.derisk import structured_verdict
+
+        assert structured_verdict(180, 500, 0.49, 0.38, 0.30)[0] == "FAILED"
+        # a high START_S upper bound is as binding as the floor
+        assert structured_verdict(220, 500, 0.49, 0.30, 0.45)[0] == "FAILED"
+
+    def test_verdict_vocabulary(self):
+        from pe2.derisk import STRUCTURED_VERDICTS
+
+        assert STRUCTURED_VERDICTS == ("IMPROVED", "LEARNED", "FAILED", "UNDETERMINED")
