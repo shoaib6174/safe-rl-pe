@@ -283,8 +283,8 @@ def write_figure(results: dict, summary: dict, path) -> None:
             lo, hi = r["final"]["wilson"]
             ax.errorbar(
                 [r["timesteps"] + 20_000],
-                [r["final"]["win_rate"]],
-                yerr=[[r["final"]["win_rate"] - lo], [hi - r["final"]["win_rate"]]],
+                [r["final"]["rate"]],
+                yerr=[[r["final"]["rate"] - lo], [hi - r["final"]["rate"]]],
                 fmt="s",
                 capsize=3,
             )
