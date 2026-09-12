@@ -89,6 +89,61 @@ class GreedyEvader:
         return None if best is None else best[1]
 
 
+OPEN_SPACE_HEADINGS = 16  # candidate directions, evenly spaced
+OPEN_SPACE_HORIZON = 1.0  # seconds of straight-line lookahead
+
+
+class OpenSpaceEvader:
+    """Full-obs evader that flees WITHOUT cornering itself (F1 spec §2).
+
+    D104: `GreedyEvader` flees directly away from the pursuer with no wall
+    awareness, so it pins itself against the arena edge and a slow constant
+    arc collects it — a randomly initialised network scored 0.312 against it
+    while the hand-written `FovLimitedPursuer` scored 0.234. That makes a
+    single-opponent capture rate useless for ordering pursuers.
+
+    This evader considers OPEN_SPACE_HEADINGS evenly spaced directions,
+    projects each one OPEN_SPACE_HORIZON seconds ahead at top speed, discards
+    any whose endpoint leaves the arena or enters an obstacle, and takes the
+    survivor that ends furthest from the pursuer. Deterministic, stateless,
+    and it never chooses a heading that ends in a wall while a free one
+    exists -- which is exactly the failure a circling pursuer exploits.
+    """
+
+    uses_truth = True
+
+    def reset(self) -> None:
+        pass
+
+    def act(self, obs: np.ndarray, env: PursuitEvasionEnv) -> tuple[float, float]:
+        cfg = env.cfg
+        e, p = env.evader_pose, env.pursuer_pose
+        reach = cfg.evader_v_max * OPEN_SPACE_HORIZON
+        lim = cfg.arena_size / 2.0 - cfg.agent_radius
+        best_free, best_any = None, None
+        for i in range(OPEN_SPACE_HEADINGS):
+            theta = -np.pi + 2.0 * np.pi * i / OPEN_SPACE_HEADINGS
+            end = e[:2] + reach * np.array([np.cos(theta), np.sin(theta)])
+            score = float(np.hypot(*(end - p[:2])))  # distance from the pursuer
+            if best_any is None or score > best_any[0]:
+                best_any = (score, theta)
+            if abs(end[0]) > lim or abs(end[1]) > lim:
+                continue  # ends outside the arena
+            if any(
+                np.hypot(end[0] - o["x"], end[1] - o["y"])
+                < o["radius"] + cfg.agent_radius
+                for o in env.obstacles
+            ):
+                continue  # ends inside an obstacle
+            if best_free is None or score > best_free[0]:
+                best_free = (score, theta)
+        # Every heading blocked (pinned in a corner): fall back to the best of
+        # them rather than stopping, so the evader still runs.
+        _score, theta = best_free if best_free is not None else best_any
+        err = wrap_angle(theta - e[2])
+        return cfg.evader_v_max, _clip_omega(K_OMEGA * err, cfg)
+
+
 class ObstacleHuggingEvader:
     """Step 6 G3/G4 adversarial probe: flee with something solid in between.
 

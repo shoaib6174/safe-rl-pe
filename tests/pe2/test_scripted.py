@@ -329,6 +329,68 @@ class TestObstacleHuggingEvader:
         )
 
 
+class TestOpenSpaceEvader:
+    """F1 spec §2: the evader that punishes circling.
+
+    D104: `GreedyEvader` flees directly away with no wall awareness, corners
+    itself, and is therefore collected by a slow constant arc — a randomly
+    initialised net scored 0.312 against it while the hand-written pursuer
+    scored 0.234. This evader refuses headings that end in a wall or an
+    obstacle, so it cannot be cornered that way.
+    """
+
+    def _env(self, seed=930_000):
+        cfg = EnvConfig()
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=seed)
+        return cfg, env
+
+    def test_it_flees_the_pursuer_in_the_open(self):
+        from pe2.scripted import OpenSpaceEvader
+
+        cfg, env = self._env()
+        env.obstacles = []
+        env.pursuer_pose[:] = (0.0, 0.0, 0.0)
+        env.evader_pose[:] = (1.0, 0.0, 0.0)  # due east of the pursuer, facing east
+        v, omega = OpenSpaceEvader().act(env._get_obs()["evader"], env)
+        assert v == pytest.approx(cfg.evader_v_max)
+        assert abs(omega) < 0.5  # already pointing away: little correction
+
+    def test_it_refuses_to_drive_into_a_wall(self):
+        from pe2.scripted import OpenSpaceEvader
+
+        cfg, env = self._env()
+        env.obstacles = []
+        lim = cfg.arena_size / 2.0 - cfg.agent_radius
+        # Evader pinned at the +x wall, pursuer due west: fleeing "away" is +x,
+        # straight into the wall. It must pick a heading along the wall instead.
+        env.evader_pose[:] = (lim - 0.05, 0.0, 0.0)
+        env.pursuer_pose[:] = (lim - 3.0, 0.0, 0.0)
+        ev = OpenSpaceEvader()
+        _v, omega = ev.act(env._get_obs()["evader"], env)
+        assert abs(omega) > 1.0  # it turns hard, rather than driving on into +x
+
+    # REMOVED: test_it_does_not_get_cornered_by_a_constant_arc.
+    # It encoded D104's hypothesis — that a constant arc collects a
+    # self-cornering GreedyEvader — which D105 REFUTED by measurement: a true
+    # constant arc at seed 4's mean action (v = 0.5, omega = -0.078) catches
+    # GreedyEvader 0 times in 60 episodes. The real mechanism is the teacher
+    # standing still on 92.6 % of steps, not the evader cornering itself. The
+    # wall-refusal behaviour this evader provides is still worth having and is
+    # covered by test_it_refuses_to_drive_into_a_wall above; the arc-specific
+    # claim is not, and is not re-asserted here under a different name.
+
+    def test_it_is_deterministic_and_stateless(self):
+        from pe2.scripted import OpenSpaceEvader
+
+        _cfg, env = self._env()
+        a = OpenSpaceEvader()
+        b = OpenSpaceEvader()
+        b.reset()
+        obs = env._get_obs()["evader"]
+        assert a.act(obs, env) == b.act(obs, env)
+
+
 class TestSearchingPursuer:
     """T2 spec: the teacher that searches by MOVING.
 
