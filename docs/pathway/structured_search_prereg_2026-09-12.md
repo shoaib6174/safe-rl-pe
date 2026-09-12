@@ -170,7 +170,28 @@ A crashed arm is `UNDETERMINED` with its probe history preserved.
 | **V2 fails (weak PPO clone)** | CP reported with the caveat; structured verdicts unaffected. |
 
 **Stop rule.** Nothing is re-run, extended, retuned or re-seeded after any number of this round
-is seen. `HOLD`, `R_ACQ`, γ and the PPO defaults are fixed by this document.
+is seen. `HOLD`, `R_ACQ`, γ and the PPO defaults are fixed by this document. This applies
+per arm: an arm with a result file or a checkpoint directory has produced numbers, and the
+runner refuses to run it a second time.
+
+**Amendment A1 (2026-09-12, before any arm of this round has run).** The table above leaves
+three readings undefined; they are fixed now, while only the V1 pre-flight exists and no arm
+number has been seen. Nothing in sections 1–5 changes.
+
+- **CP `UNDETERMINED`, whatever its curve.** A CP that did not reach a judgeable verdict —
+  crashed, no final checkpoint, or V2 failed (§3: a prior that is not competent makes the
+  curve unreadable as a test of C) — carries the verdict `UNDETERMINED (weak prior)` for the
+  V2 case and `UNDETERMINED` otherwise. The label `round_verdict` would have given survives
+  only inside the arm's `reason`, never as the verdict itself.
+- **SA IMPROVED with CP `UNDETERMINED`.** The "C refuted" row of the table requires a CP that
+  actually collapsed or preserved. With an undetermined CP, hypothesis S is confirmed and
+  **C is untested**: Route C is withdrawn on S alone, and the CP arm must be re-run under a
+  fresh pre-registration before the ablation reading is claimed.
+- **SZ `UNDETERMINED` is not a valid negative control.** The harness row covers SZ *learning*.
+  An SZ that never reached a verdict is no evidence that only the reward moves the policy
+  either, so SA and SB are reported `UNDETERMINED (no control)`, the direction says the
+  negative control did not complete, and the "SB ≥ SA" reading — a reading of SA and SB — is
+  not made.
 
 ## 7. What this round does NOT do
 

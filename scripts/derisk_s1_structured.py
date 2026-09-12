@@ -254,7 +254,9 @@ def load_start() -> dict:
 # ----------------------------------------------------------------------------
 # arms
 # ----------------------------------------------------------------------------
-def run_structured_arm(arm: str, starts: dict, device: str) -> dict:
+def run_structured_arm(
+    arm: str, starts: dict, device: str, holder: dict | None = None
+) -> dict:
     from stable_baselines3 import PPO
 
     from pe2.structured import StructuredEvalProbe, evaluate_structured
@@ -274,6 +276,9 @@ def run_structured_arm(arm: str, starts: dict, device: str) -> dict:
         label=arm,
         hold=HOLD,
     )
+    # The live probe rows, so a crash still has its history to record.
+    if holder is not None:
+        holder["rows"] = probe.rows
     env = make_structured_env(cfg, arm)
     model = PPO.load(INIT_PATH, env=env, device=device, seed=SEED)
     # The budget is enforced in ENV steps by the probe (it stops learn());
@@ -316,7 +321,7 @@ def run_structured_arm(arm: str, starts: dict, device: str) -> dict:
     return result
 
 
-def run_control_arm(starts: dict, device: str) -> dict:
+def run_control_arm(starts: dict, device: str, holder: dict | None = None) -> dict:
     from stable_baselines3 import PPO
 
     from pe2.exploitability import (
@@ -340,6 +345,9 @@ def run_control_arm(starts: dict, device: str) -> dict:
         report_path=OUT / f"s1_probe_{arm}.json",
         label=arm,
     )
+    # The live probe rows, so a crash still has its history to record.
+    if holder is not None:
+        holder["rows"] = probe.rows
     finetune_ppo(
         cfg,
         "pursuer",
@@ -386,23 +394,61 @@ def run_control_arm(starts: dict, device: str) -> dict:
             from_step=PASS_FROM,
         )
     if not starts["START_CP"].get("v2_pass", True):
-        verdict = f"{verdict} (weak prior)"
-        reason += (
+        # Spec section 3, V2: the arm runs but its verdict is UNDETERMINED —
+        # a curve read against a prior that is not competent says nothing about
+        # hypothesis C. round_verdict's label survives only inside the reason.
+        reason = (
+            f"round_verdict would have said {verdict}: {reason}"
             f"; V2 failed: START_CP Wilson lo below {V2_MIN_LO}, not the "
-            "competent prior"
+            "competent prior, so the arm is reported UNDETERMINED whatever its "
+            "curve did"
         )
+        verdict = "UNDETERMINED (weak prior)"
     result["verdict"], result["reason"] = verdict, reason
     return result
 
 
+def require_arm_not_run(arm: str) -> None:
+    """The stop rule (spec section 5): nothing is re-run, extended, retuned or
+    re-seeded after any number of this round is seen. An arm that already has a
+    result file or a checkpoint directory has produced numbers, so a second run
+    of it is refused rather than overwriting them."""
+    seen = [p for p in (OUT / f"s1_arm_{arm}.json", OUT / f"ckpts_{arm}") if p.exists()]
+    if seen:
+        raise SystemExit(
+            f"arm {arm} has already run ({', '.join(str(p) for p in seen)}); the "
+            "stop rule (spec section 5) forbids re-running, extending, retuning "
+            "or re-seeding an arm after any number of this round is seen. Delete "
+            "the arm's artefacts deliberately if this is a restart from scratch."
+        )
+
+
 def run_arm(arm: str, device: str) -> dict:
     starts = load_start()  # FIRST: refuse before training if the bars are missing
-    if ARMS[arm] == "control":
-        result = run_control_arm(starts, device)
-    else:
-        if not INIT_PATH.exists():
-            raise SystemExit(f"init missing: {INIT_PATH}; re-run --measure-start.")
-        result = run_structured_arm(arm, starts, device)
+    require_arm_not_run(arm)
+    holder: dict = {}  # the probe's live rows, reachable if the arm crashes
+    try:
+        if ARMS[arm] == "control":
+            result = run_control_arm(starts, device, holder)
+        else:
+            if not INIT_PATH.exists():
+                raise SystemExit(f"init missing: {INIT_PATH}; re-run --measure-start.")
+            result = run_structured_arm(arm, starts, device, holder)
+    except Exception as e:
+        # Spec section 5: a crashed arm is UNDETERMINED with its probe history
+        # preserved. Record it, then let the failure propagate.
+        (OUT / f"s1_arm_{arm}.json").write_text(
+            json.dumps(
+                {
+                    "arm": arm,
+                    "verdict": "UNDETERMINED",
+                    "reason": f"crashed: {type(e).__name__}: {e}",
+                    "checkpoints": holder.get("rows", []),
+                },
+                indent=2,
+            )
+        )
+        raise
     (OUT / f"s1_arm_{arm}.json").write_text(json.dumps(result, indent=2))
     print(f"[{arm}] verdict={result['verdict']}: {result['reason']}", flush=True)
     return result
@@ -414,15 +460,33 @@ def run_arm(arm: str, device: str) -> dict:
 _RANK = {"FAILED": 0, "LEARNED": 1, "IMPROVED": 2}
 
 
+def _control_label(sz: str | None) -> str | None:
+    """The label SA/SB carry when SZ is not a valid negative control, or None
+    when it is. SZ is valid only if it ran and did not learn: a zero-reward arm
+    that moved invalidates the harness, and one that never reached a verdict
+    provides no evidence that only the reward moves the policy."""
+    if sz in ("LEARNED", "IMPROVED"):
+        return "UNDETERMINED (harness)"
+    if sz is not None and sz.startswith("UNDETERMINED"):
+        return "UNDETERMINED (no control)"
+    return None
+
+
 def direction(v: dict) -> str:
     sa, sb, sz, cp = (v.get(a) for a in ("SA", "SB", "SZ", "CP"))
     if any(x is None for x in (sa, sb, sz, cp)):
         return "incomplete: all four arms must run"
     if sz in ("LEARNED", "IMPROVED"):
         return (
-            "SZ LEARNED: harness invalid — the zero-reward control moved, so "
+            f"SZ {sz}: harness invalid — the zero-reward control moved, so "
             "something other than the reward is moving the policy; nothing else "
             "is read (spec section 6)."
+        )
+    if sz.startswith("UNDETERMINED"):
+        return (
+            f"SZ {sz}: the negative control did not complete, so there is no "
+            "evidence that only the reward moves this policy; the structured "
+            "verdicts are not read (spec section 6)."
         )
     cp_base = cp.split(" ")[0]
     if sa == "IMPROVED" and cp_base == "IMPROVED":
@@ -432,13 +496,21 @@ def direction(v: dict) -> str:
             "artefact; the structure is reported as an ablation, not the "
             "contribution. Route C withdrawn either way."
         )
-    if sa == "IMPROVED":
+    if sa == "IMPROVED" and cp_base in ("COLLAPSED", "PRESERVED"):
         return (
             f"SA IMPROVED, CP {cp}: hypothesis S confirmed, C refuted — the "
             "structure is what makes learning work here. Route C withdrawn. The "
             "paper becomes learned search under a fixed intercept law with a hard "
             "CBF shield; next pre-registration adds the shield to the structured "
             "pursuer. SB says whether density was needed."
+        )
+    if sa == "IMPROVED":
+        return (
+            f"SA IMPROVED, CP {cp}: hypothesis S confirmed; C is UNTESTED — the "
+            "control did not produce a judgeable curve, so nothing is known about "
+            "a non-bootstrapping learner on the unstructured problem. Route C is "
+            "withdrawn on S alone, and CP must be re-run under a fresh "
+            "pre-registration before the ablation reading is claimed."
         )
     if sa == "LEARNED":
         return (
@@ -461,14 +533,16 @@ def summarize(results: dict, starts: dict) -> dict:
     arms = {
         a: {"verdict": r["verdict"], "reason": r["reason"]} for a, r in results.items()
     }
-    if v.get("SZ") in ("LEARNED", "IMPROVED"):
+    label = _control_label(v.get("SZ"))
+    if label is not None:
         for a in STRUCTURED:
             if a in arms and a != "SZ":
-                arms[a]["verdict"] = "UNDETERMINED (harness)"
+                arms[a]["verdict"] = label
     d = direction(v)
     sa, sb = results.get("SA"), results.get("SB")
     if (
-        sa
+        label is None  # SA and SB are not read at all without a valid control
+        and sa
         and sb
         and "final" in sa
         and "final" in sb

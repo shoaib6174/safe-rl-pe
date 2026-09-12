@@ -118,6 +118,68 @@ class TestProtocol:
         with pytest.raises(SystemExit, match="already measured"):
             R.require_not_measured()
 
+    def _round_dir(self, tmp_path, monkeypatch):
+        """A tmp results dir with measured bars, and every path the runner
+        writes to redirected into it."""
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        monkeypatch.setattr(R, "START_PATH", tmp_path / "s1_start.json")
+        monkeypatch.setattr(R, "PREFLIGHT_PATH", tmp_path / "s1_preflight.json")
+        monkeypatch.setattr(R, "INIT_PATH", tmp_path / "s1_ppo_init.zip")
+        monkeypatch.setattr(R, "CP_CLONE", tmp_path / "clone.zip")
+        (tmp_path / "s1_start.json").write_text(json.dumps(_STARTS))
+        (tmp_path / "s1_ppo_init.zip").write_text("not a real zip")
+        return tmp_path
+
+    def test_an_arm_refuses_to_run_twice(self, tmp_path, monkeypatch):
+        """Stop rule (spec section 5): an arm with a result file or a checkpoint
+        dir has produced numbers; re-running it is refused, not overwritten."""
+        self._round_dir(tmp_path, monkeypatch)
+        (tmp_path / "s1_arm_SA.json").write_text("{}")
+        with pytest.raises(SystemExit, match="stop rule"):
+            R.run_arm("SA", "cpu")
+        (tmp_path / "s1_arm_SA.json").unlink()
+        (tmp_path / "ckpts_SA").mkdir()
+        with pytest.raises(SystemExit, match="stop rule"):
+            R.run_arm("SA", "cpu")
+        (tmp_path / "ckpts_CP").mkdir()
+        with pytest.raises(SystemExit, match="stop rule"):
+            R.run_arm("CP", "cpu")
+
+    def test_a_crashed_arm_is_recorded_undetermined_with_its_probe_history(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec section 5: a crashed arm is UNDETERMINED with its probe history
+        preserved — and the crash still propagates."""
+        self._round_dir(tmp_path, monkeypatch)
+        rows = [{"mark": 100_000, "steps": 100_137, "win_rate": 0.21}]
+
+        def boom(arm, starts, device, holder=None):
+            holder["rows"] = rows
+            raise RuntimeError("CUDA out of memory")
+
+        monkeypatch.setattr(R, "run_structured_arm", boom)
+        with pytest.raises(RuntimeError, match="CUDA"):
+            R.run_arm("SA", "cpu")
+        rec = json.loads((tmp_path / "s1_arm_SA.json").read_text())
+        assert rec["verdict"] == "UNDETERMINED"
+        assert rec["reason"] == "crashed: RuntimeError: CUDA out of memory"
+        assert rec["checkpoints"] == rows
+        assert rec["arm"] == "SA"
+
+    def test_a_crash_before_the_probe_exists_records_an_empty_history(
+        self, tmp_path, monkeypatch
+    ):
+        self._round_dir(tmp_path, monkeypatch)
+
+        def boom(starts, device, holder=None):
+            raise ValueError("clone missing")
+
+        monkeypatch.setattr(R, "run_control_arm", boom)
+        with pytest.raises(ValueError):
+            R.run_arm("CP", "cpu")
+        rec = json.loads((tmp_path / "s1_arm_CP.json").read_text())
+        assert rec["verdict"] == "UNDETERMINED" and rec["checkpoints"] == []
+
 
 class TestDirection:
     def test_incomplete(self):
@@ -130,7 +192,7 @@ class TestDirection:
         assert "harness invalid" in d
 
     def test_sa_improved_cp_not(self):
-        for cp in ("COLLAPSED", "PRESERVED", "UNDETERMINED"):
+        for cp in ("COLLAPSED", "PRESERVED"):
             d = R.direction(
                 {"SA": "IMPROVED", "SB": "FAILED", "SZ": "FAILED", "CP": cp}
             )
@@ -138,6 +200,16 @@ class TestDirection:
                 "structure is what makes learning work" in d
                 and "Route C withdrawn" in d
             )
+
+    def test_sa_improved_cp_undetermined_is_c_untested(self):
+        """A CP that never produced a judgeable curve refutes nothing: C is
+        untested, not refuted (spec section 6, amendment A1)."""
+        for cp in ("UNDETERMINED", "UNDETERMINED (weak prior)"):
+            d = R.direction(
+                {"SA": "IMPROVED", "SB": "FAILED", "SZ": "FAILED", "CP": cp}
+            )
+            assert "untested" in d.lower()
+            assert "c refuted" not in d.lower()
 
     def test_both_improved(self):
         d = R.direction(
@@ -156,6 +228,21 @@ class TestDirection:
             {"SA": "FAILED", "SB": "FAILED", "SZ": "FAILED", "CP": "COLLAPSED"}
         )
         assert "about the game" in d
+
+    def test_the_harness_message_names_szs_own_verdict(self):
+        assert "SZ IMPROVED: harness invalid" in R.direction(
+            {"SA": "IMPROVED", "SB": "LEARNED", "SZ": "IMPROVED", "CP": "COLLAPSED"}
+        )
+
+    def test_sz_undetermined_is_not_a_valid_control(self):
+        """A negative control that never reached a verdict is no evidence that
+        only the reward moves the policy, so SA/SB are not read."""
+        d = R.direction(
+            {"SA": "IMPROVED", "SB": "LEARNED", "SZ": "UNDETERMINED", "CP": "COLLAPSED"}
+        )
+        assert "negative control did not complete" in d
+        assert "not read" in d
+        assert "hypothesis S confirmed" not in d
 
 
 class TestSummarize:
@@ -188,8 +275,35 @@ class TestSummarize:
             "SA": _arm("SA", "FAILED"),
             "SB": _arm("SB", "FAILED"),
             "SZ": _arm("SZ", "FAILED"),
-            "CP": _arm("CP", "COLLAPSED (weak prior)"),
+            "CP": _arm("CP", "UNDETERMINED (weak prior)"),
         }
         s = R.summarize(results, starts)
-        assert "weak prior" in s["arms"]["CP"]["verdict"]
+        assert s["arms"]["CP"]["verdict"] == "UNDETERMINED (weak prior)"
         assert s["v2_pass"] is False
+
+    def test_sz_undetermined_marks_structured_arms_no_control(self):
+        results = {
+            "SA": _arm("SA", "IMPROVED"),
+            "SB": _arm("SB", "LEARNED", 0.6),
+            "SZ": _arm("SZ", "UNDETERMINED"),
+            "CP": _arm("CP", "COLLAPSED"),
+        }
+        s = R.summarize(results, _STARTS)
+        assert s["arms"]["SA"]["verdict"] == "UNDETERMINED (no control)"
+        assert s["arms"]["SB"]["verdict"] == "UNDETERMINED (no control)"
+        assert s["arms"]["SZ"]["verdict"] == "UNDETERMINED"
+        assert s["arms"]["CP"]["verdict"] == "COLLAPSED"
+        assert "negative control did not complete" in s["direction"]
+
+    def test_sb_at_least_sa_is_not_reported_without_a_valid_control(self):
+        """SB >= SA is a reading of SA and SB, so it is suppressed exactly when
+        their verdicts are not read."""
+        for sz in ("LEARNED", "UNDETERMINED"):
+            results = {
+                "SA": _arm("SA", "LEARNED", 0.40),
+                "SB": _arm("SB", "LEARNED", 0.42),
+                "SZ": _arm("SZ", sz, 0.2),
+                "CP": _arm("CP", "COLLAPSED", 0.0),
+            }
+            s = R.summarize(results, _STARTS)
+            assert "event reward added nothing" not in s["direction"]
