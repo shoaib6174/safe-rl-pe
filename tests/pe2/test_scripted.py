@@ -327,3 +327,117 @@ class TestObstacleHuggingEvader:
             "probe never drives the unshielded pursuer into contact — "
             "the probe is too weak (pre-registration: fix the probe, not G4)"
         )
+
+
+class TestSearchingPursuer:
+    """T2 spec: the teacher that searches by MOVING.
+
+    D105: `FovLimitedPursuer` stands still on 92.6 % of steps and its
+    demonstrations are 83.6 % 'stand still and rotate', so every learner in
+    four rounds cloned a policy that barely moves. This one orbits instead.
+    The orbit is a pure function of own pose (spec §2) — adding a coverage
+    map would reintroduce exactly the hidden-state defect that makes a
+    memoryless clone unable to follow its teacher (D79).
+    """
+
+    def _env(self, seed=970_000):
+        cfg = EnvConfig()
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=seed)
+        return cfg, env
+
+    def test_it_never_stands_still_while_searching(self):
+        """The whole point: the branch that used to return v = 0."""
+        from pe2.scripted import SearchingPursuer
+
+        cfg, env = self._env()
+        p = SearchingPursuer()
+        speeds = []
+        for x, y, th in ((0.0, 0.0, 0.0), (2.0, 0.0, 1.5), (-3.0, 1.0, -2.0)):
+            env.pursuer_pose[:] = (x, y, th)
+            # Put the evader directly BEHIND the pursuer so it is outside the
+            # 90 deg cone whatever the heading — otherwise this fixture tests
+            # the chase branch by accident.
+            env.evader_pose[:] = (x - 3.0 * np.cos(th), y - 3.0 * np.sin(th), 0.0)
+            obs = env._get_obs()["pursuer"]
+            assert obs[6] < 0.5, "fixture must be a not-visible state"
+            v, _omega = p.act(obs, env)
+            speeds.append(v)
+        assert all(s == pytest.approx(cfg.v_max) for s in speeds)
+
+    def test_the_search_heading_is_a_function_of_own_pose_alone(self):
+        """Spec §2: no hidden state. A used instance must agree with a fresh
+        one on the same pose."""
+        from pe2.scripted import SearchingPursuer
+
+        _cfg, env = self._env()
+        fresh = SearchingPursuer()
+        used = SearchingPursuer()
+        for x, y in ((3.0, 3.0), (-2.0, 2.0), (0.5, -3.5)):
+            env.pursuer_pose[:] = (x, y, 0.0)
+            env.evader_pose[:] = (x - 3.0, y, 0.0)  # behind, out of the cone
+            used.act(env._get_obs()["pursuer"], env)
+        env.pursuer_pose[:] = (1.0, -1.0, 0.3)
+        env.evader_pose[:] = (1.0 - 3.0 * np.cos(0.3), -1.0 - 3.0 * np.sin(0.3), 0.0)
+        obs = env._get_obs()["pursuer"]
+        assert obs[6] < 0.5
+        assert used.act(obs, env) == fresh.act(obs, env)
+
+    def test_it_orbits_rather_than_driving_to_the_centre(self):
+        from pe2.scripted import PATROL_RADIUS, SearchingPursuer
+
+        _cfg, env = self._env()
+        env.obstacles = []
+        env.evader_pose[:] = (4.5, 4.5, 0.0)
+        p = SearchingPursuer()
+        env.pursuer_pose[:] = (4.0, 0.0, 0.0)
+        radii = []
+        for _ in range(400):
+            obs = env._get_obs()["pursuer"]
+            v, omega = p.act(obs, env)
+            env.step([v, omega, 0.0, 0.0])
+            radii.append(float(np.hypot(*env.pursuer_pose[:2])))
+        tail = np.array(radii[-200:])
+        assert abs(tail.mean() - PATROL_RADIUS) < 1.5, tail.mean()
+        assert tail.min() > 0.5, "it collapsed to the centre"
+
+    def test_it_covers_ground(self):
+        """Contrast with the old teacher, which spins in place."""
+        from pe2.scripted import FovLimitedPursuer, SearchingPursuer
+
+        _cfg, env = self._env()
+        travelled = {}
+        for name, cls in (("old", FovLimitedPursuer), ("new", SearchingPursuer)):
+            obs, _ = env.reset(seed=970_001)
+            p = cls()
+            p.reset()
+            dist = 0.0
+            prev = env.pursuer_pose[:2].copy()
+            for _ in range(600):
+                v, omega = p.act(obs["pursuer"], env)
+                obs, _r, term, trunc, _i = env.step([v, omega, 0.0, 0.0])
+                dist += float(np.hypot(*(env.pursuer_pose[:2] - prev)))
+                prev = env.pursuer_pose[:2].copy()
+                if term or trunc:
+                    break
+            travelled[name] = dist
+        assert travelled["new"] > 3.0 * travelled["old"], travelled
+
+    def test_chase_and_last_seen_branches_are_unchanged(self):
+        """Spec: exactly ONE branch differs from FovLimitedPursuer."""
+        from pe2.scripted import FovLimitedPursuer, SearchingPursuer
+
+        _cfg, env = self._env()
+        env.pursuer_pose[:] = (0.0, 0.0, 0.0)
+        env.evader_pose[:] = (2.0, 0.3, 0.0)
+        obs = env._get_obs()["pursuer"]
+        assert obs[6] > 0.5, "fixture must be a visible state"
+        assert SearchingPursuer().act(obs, env) == FovLimitedPursuer().act(obs, env)
+
+        old, new = FovLimitedPursuer(), SearchingPursuer()
+        old.last_seen = np.array([4.0, 4.0])
+        new.last_seen = np.array([4.0, 4.0])
+        env.evader_pose[:] = (-4.5, -4.5, 0.0)
+        obs = env._get_obs()["pursuer"]
+        assert obs[6] < 0.5
+        assert new.act(obs, env) == old.act(obs, env)

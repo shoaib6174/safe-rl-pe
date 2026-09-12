@@ -201,6 +201,60 @@ class FovLimitedPursuer:
         return 0.0, 0.5 * cfg.omega_max  # scan in place
 
 
+PATROL_RADIUS = 2.5  # m — an orbit at this radius sweeps a 10x10 arena with
+PATROL_LEAD = 0.6  # rad — a 90 deg cone at 8 m range; lead keeps it moving on
+
+
+class SearchingPursuer:
+    """`FovLimitedPursuer` with ONE branch changed: it searches by MOVING.
+
+    D105 measured the old teacher standing still on 92.6 % of its steps, and
+    its demonstrations at 83.6 % 'stand still and rotate' with a mean
+    commanded speed of 0.164 m/s. Every learner in four rounds cloned that.
+    Chasing and driving to the last-seen point are copied unchanged; only
+    the fallback differs.
+
+    The orbit is a pure function of OWN POSE, which the observation carries
+    in full. That is deliberate (T2 spec §2): steering toward the stalest
+    cell of a coverage map would search better but would add a second hidden
+    variable, and a memoryless clone already cannot follow this teacher's
+    `last_seen` (D79). This round fixes standing still, not hidden state,
+    and keeping them separate is what makes the outcome readable.
+    """
+
+    uses_truth = False
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.last_seen: np.ndarray | None = None
+
+    def act(self, obs: np.ndarray, env: PursuitEvasionEnv) -> tuple[float, float]:
+        cfg = env.cfg
+        own = own_pose_from_obs(obs, cfg)
+        if obs[6] > 0.5:  # opponent visible — unchanged
+            self.last_seen = opponent_world_from_obs(obs, cfg)
+            bearing_b = np.arctan2(obs[4], obs[3])
+            return cfg.v_max, _clip_omega(K_OMEGA * bearing_b, cfg)
+        if self.last_seen is not None:  # go to last-seen — unchanged
+            to = self.last_seen - own[:2]
+            if float(np.hypot(*to)) > LAST_SEEN_TOL:
+                err = wrap_angle(np.arctan2(to[1], to[0]) - own[2])
+                return cfg.v_max, _clip_omega(K_OMEGA * err, cfg)
+            self.last_seen = None
+        # THE ONE CHANGED BRANCH: orbit instead of standing still.
+        angle = float(np.arctan2(own[1], own[0]))
+        target = PATROL_RADIUS * np.array(
+            [np.cos(angle + PATROL_LEAD), np.sin(angle + PATROL_LEAD)]
+        )
+        to = target - own[:2]
+        if float(np.hypot(*to)) < 1e-9:
+            return cfg.v_max, 0.0
+        err = wrap_angle(np.arctan2(to[1], to[0]) - own[2])
+        return cfg.v_max, _clip_omega(K_OMEGA * err, cfg)
+
+
 class FovLimitedEvader:
     """Acts on the observation only. Flees the observed pursuer; when the
     pursuer is not visible, keeps fleeing along the last-seen away-direction
