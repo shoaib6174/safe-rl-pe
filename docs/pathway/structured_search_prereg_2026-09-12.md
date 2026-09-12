@@ -192,6 +192,15 @@ number has been seen. Nothing in sections 1–5 changes.
   either, so SA and SB are reported `UNDETERMINED (no control)`, the direction says the
   negative control did not complete, and the "SB ≥ SA" reading — a reading of SA and SB — is
   not made.
+- **Update-count caveat on the FAILED row.** At the measured ≈10.6 env steps per decision,
+  1 M env steps is ≈94 k decisions ≈ 46 PPO iterations for SA/SB/SZ against ≈488 for CP on the
+  same env-step budget. A FAILED reading is therefore confounded with update count and must be
+  stated as "at ≈46 policy iterations", never as a budget-matched comparison with CP; the
+  runner records `decisions` for this. No threshold or budget changes.
+- **Hold is not a confound.** `BAR_ORBIT` is measured at HOLD = 1 (so V1 pins it to the
+  teacher) while the learner is held 10 steps. Checked before any bar: the orbit rule scores
+  identically at hold 1 and hold 10 on 200 eval seeds (97/200 both, trajectories differing in
+  10/60 episode lengths), so the bar is fair to the learner.
 
 ## 7. What this round does NOT do
 
