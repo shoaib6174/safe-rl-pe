@@ -1,5 +1,9 @@
 """pe2.anchored_ppo — PPO with a KL anchor to a frozen clone (S2, D109)."""
 
+import ast
+import inspect
+import textwrap
+
 import numpy as np
 import pytest
 
@@ -140,3 +144,65 @@ class TestKLAnchoredPPO:
         a0, _ = m.predict(obs.numpy(), deterministic=True)
         a1, _ = loaded.predict(obs.numpy(), deterministic=True)
         np.testing.assert_allclose(a0, a1)
+
+
+def _train_source_lines(path, cls_name):
+    """The source lines of `cls_name.train` in `path`."""
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines(keepends=True)
+    tree = ast.parse("".join(lines))
+    for cls in tree.body:
+        if isinstance(cls, ast.ClassDef) and cls.name == cls_name:
+            for fn in cls.body:
+                if isinstance(fn, ast.FunctionDef) and fn.name == "train":
+                    return lines[fn.lineno - 1 : fn.end_lineno]
+    raise AssertionError(f"no {cls_name}.train in {path}")
+
+
+def _parse_train(lines):
+    """Parse a run of `train` source lines back to a FunctionDef.
+
+    BOTH sides go through the same dedent. `PPO.train` carries a docstring,
+    and `ast` stores a docstring's indentation inside the string constant, so
+    dedenting one side only would re-indent that constant and report two
+    byte-identical methods as different.
+    """
+    return ast.parse(textwrap.dedent("".join(lines))).body[0]
+
+
+class TestLibraryCopyIsFaithful:
+    """The override is a copied library method; nothing else pins the version.
+
+    pyproject declares `stable-baselines3` with NO upper bound and CI installs
+    through it, so an upgrade could change PPO.train underneath this copy while
+    every other arm picks up the new one. The arms would then differ by more
+    than the anchor term and NOTHING would fail. This is that tripwire — and it
+    has to be PPO's own: the sibling check in test_anchored_sac.py compares
+    against SAC.train, so a release touching only PPO.train slips past it.
+    """
+
+    def test_train_is_the_installed_ppo_train_plus_only_marked_lines(self):
+        import stable_baselines3
+        from stable_baselines3.ppo.ppo import PPO as InstalledPPO
+
+        import pe2.anchored_ppo
+
+        lib = _train_source_lines(inspect.getsourcefile(InstalledPPO), "PPO")
+        mine = _train_source_lines(
+            inspect.getsourcefile(pe2.anchored_ppo), "KLAnchoredPPO"
+        )
+
+        # The module docstring promises a future reader that diffing this
+        # method against ppo.py shows ONLY `# ANCHOR` lines. Test exactly that
+        # promise: delete every marked line and what remains must BE the
+        # library's method — same body, same signature, same name.
+        stripped = [ln for ln in mine if "# ANCHOR" not in ln]
+        assert len(stripped) < len(mine), "no ANCHOR-marked lines found at all"
+
+        assert ast.dump(_parse_train(stripped)) == ast.dump(_parse_train(lib)), (
+            "KLAnchoredPPO.train no longer matches the installed "
+            f"stable_baselines3 {stable_baselines3.__version__} PPO.train once "
+            "the # ANCHOR lines are removed. Either an addition is unmarked, "
+            "or SB3 was upgraded and the copy must be re-taken from the new "
+            "source (see the pe2.anchored_ppo module docstring)."
+        )

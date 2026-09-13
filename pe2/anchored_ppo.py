@@ -25,7 +25,14 @@ no seam for adding a term to the PPO loss — the loss is assembled inside
 than a violation of "RL libraries are not rewritten". It is bounded: one
 method, one module, deletable in a single `rm`. To re-verify against a
 future SB3, diff this method against `ppo.py` and check that only the
-`# ANCHOR` lines (and the BEGIN/END markers) differ.
+`# ANCHOR` lines (and the BEGIN/END markers) differ. That check is
+AUTOMATED and enforced on every test run — see `TestLibraryCopyIsFaithful`
+in tests/pe2/test_anchored_ppo.py, which strips the marked lines and asserts
+what remains parses to the installed `PPO.train`. It has to be PPO's own:
+the sibling tripwire in tests/pe2/test_anchored_sac.py only ever compares
+against `SAC.train`, so a release that changed `PPO.train` alone would leave
+the suite green on a stale copy. pyproject pins no SB3 upper bound, so that
+test is what stops an upgrade from silently confounding the S2 arms.
 """
 
 from __future__ import annotations
@@ -66,7 +73,15 @@ class KLAnchoredPPO(PPO):
 
     def set_anchor(self, policy) -> None:
         """Freeze a deep copy of `policy` as the reference — a copy, so the
-        live policy keeps training while the anchor stays the clone."""
+        live policy keeps training while the anchor stays the clone.
+
+        `policy` must not have done a grad-enabled forward pass since its last
+        `no_grad` one: SB3 caches the action distribution on
+        `policy.action_dist.distribution`, and `copy.deepcopy` refuses a
+        `Normal` whose parameters are still grad-tracking. Anchoring a freshly
+        constructed or freshly loaded policy — what `finetune_ppo_anchored`
+        does — is the intended use and is never affected.
+        """
         self.anchor = copy.deepcopy(policy).to(self.device)
         for p in self.anchor.parameters():
             p.requires_grad_(False)
