@@ -442,3 +442,80 @@ class TestStructuredVerdict:
         from pe2.derisk import STRUCTURED_VERDICTS
 
         assert STRUCTURED_VERDICTS == ("IMPROVED", "LEARNED", "FAILED", "UNDETERMINED")
+
+
+class TestSelectCheckpoint:
+    def test_highest_win_rate_wins(self):
+        from pe2.derisk import select_checkpoint
+
+        rows = [
+            {"steps": 100, "win_rate": 0.5},
+            {"steps": 200, "win_rate": 0.7},
+            {"steps": 300, "win_rate": 0.6},
+        ]
+        assert select_checkpoint(rows)["steps"] == 200
+
+    def test_ties_go_to_the_earliest(self):
+        from pe2.derisk import select_checkpoint
+
+        rows = [
+            {"steps": 100, "win_rate": 0.5},
+            {"steps": 200, "win_rate": 0.7},
+            {"steps": 300, "win_rate": 0.7},
+        ]
+        assert select_checkpoint(rows)["steps"] == 200
+
+    def test_empty_is_an_error(self):
+        from pe2.derisk import select_checkpoint
+
+        with pytest.raises(ValueError):
+            select_checkpoint([])
+
+
+def _logs(wins, n, seed0=0):
+    return [
+        {
+            "seed": seed0 + i,
+            "role": "pursuer",
+            "outcome": "capture" if i < wins else "timeout",
+        }
+        for i in range(n)
+    ]
+
+
+class TestGatePass:
+    def test_passes_when_separated_and_significant(self):
+        from pe2.derisk import gate_pass
+
+        policy = _logs(300, 500)
+        ref = _logs(
+            235, 500
+        )  # the policy wins every episode the ref wins, plus 65 more
+        g = gate_pass(policy, ref)
+        assert g["pass"] is True and g["p"] < 0.05 and g["b"] == 65 and g["c"] == 0
+        assert g["rate"] == 0.6 and g["ref_rate"] == 0.47 and g["wilson"][0] > 0.47
+
+    def test_fails_on_significance_alone(self):
+        from pe2.derisk import gate_pass
+
+        policy = _logs(240, 500)
+        ref = _logs(235, 500)
+        g = gate_pass(policy, ref)
+        assert g["pass"] is False and g["p"] > 0.05
+
+    def test_fails_when_wilson_lower_bound_does_not_clear_the_reference(self):
+        from pe2.derisk import gate_pass
+
+        # 20 discordant wins, 0 losses: p ~ 2e-6, but lo(255/500) = 0.466 < 0.470
+        policy = _logs(255, 500)
+        ref = _logs(235, 500)
+        g = gate_pass(policy, ref)
+        assert g["p"] < 0.05 and g["pass"] is False
+
+    def test_fails_when_the_reference_wins_more_discordant_pairs(self):
+        from pe2.derisk import gate_pass
+
+        policy = _logs(235, 500)
+        ref = _logs(300, 500)
+        g = gate_pass(policy, ref)
+        assert g["pass"] is False and g["c"] > g["b"]

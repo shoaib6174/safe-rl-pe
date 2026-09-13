@@ -423,3 +423,15 @@ class NegatedRewardWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         info = dict(info, true_reward=reward)
         return obs, -reward, terminated, truncated, info
+
+
+class ZeroRewardWrapper(gym.Wrapper):
+    """TRAINING-ONLY: every reward is 0.0 — S2's negative control for the
+    selection rule. A run with no signal, probed ten times and "selected",
+    measures how much improvement best-of-ten manufactures by itself.
+    `info["true_reward"]` keeps what the env paid. Evaluation never uses this
+    wrapper (the probes build their own unshaped `SingleAgentWrapper`)."""
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        return obs, 0.0, terminated, truncated, dict(info, true_reward=reward)

@@ -615,3 +615,22 @@ class TestNegatedRewardWrapper:
 
         assert "Negated" not in inspect.getsource(exploitability.evaluate_sb3_policy)
         assert "Negated" not in inspect.getsource(exploitability.CheckpointEvalProbe)
+
+
+class TestZeroRewardWrapper:
+    def test_every_reward_is_zero_and_the_true_reward_is_kept(self):
+        from pe2.rewards import ZeroRewardWrapper
+
+        w = ZeroRewardWrapper(SingleAgentWrapper(CFG, "pursuer", GreedyEvader))
+        w.reset(seed=900_800)
+        seen_nonzero_true = False
+        while True:
+            _, r, term, trunc, info = w.step(np.array([1.0, 0.0], dtype=np.float32))
+            assert r == 0.0
+            assert "true_reward" in info
+            seen_nonzero_true |= info["true_reward"] != 0.0
+            if term or trunc:
+                break
+        assert (
+            seen_nonzero_true
+        )  # the terminal +/-1 was paid by the env, hidden by the wrapper

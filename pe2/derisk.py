@@ -450,3 +450,42 @@ def structured_verdict(
         f"{final}: lower bound does not clear the floor/start upper bounds "
         f"(max {ref:.3f})"
     )
+
+
+def select_checkpoint(rows: list[dict]) -> dict:
+    """S2 §3 selection rule, fixed before the run: the probe row with the
+    highest `win_rate`; ties go to the EARLIEST `steps`. Applied identically
+    to every arm, including the zero-reward NULL control that measures what
+    this rule manufactures on its own."""
+    if not rows:
+        raise ValueError("select_checkpoint: no probe rows")
+    return max(rows, key=lambda r: (r["win_rate"], -r["steps"]))
+
+
+def gate_pass(
+    logs_policy: list[dict],
+    logs_ref: list[dict],
+    role: str = "pursuer",
+    p_gate: float = 0.05,
+) -> dict:
+    """S2 §3 gate rule on the PAIRED gate stream: PASS iff the exact two-sided
+    McNemar test has p < p_gate with more discordant wins than losses
+    (b > c) AND the policy's Wilson lower bound exceeds the reference's point
+    estimate. Both conditions, so a pass is significant AND separated."""
+    from pe2.eval import mcnemar_pvalue, wilson_ci, win_count
+
+    p, b, c = mcnemar_pvalue(logs_policy, logs_ref, role)
+    k, n = win_count(logs_policy, role)
+    kr, nr = win_count(logs_ref, role)
+    lo, hi = wilson_ci(k, n)
+    return {
+        "pass": bool(p < p_gate and b > c and lo > kr / nr),
+        "p": p,
+        "b": b,
+        "c": c,
+        "k": k,
+        "n": n,
+        "rate": k / n,
+        "wilson": [lo, hi],
+        "ref_rate": kr / nr,
+    }
