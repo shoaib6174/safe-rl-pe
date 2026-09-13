@@ -33,7 +33,7 @@ PPO_CLONE = OUT / "ppo_bc_searching_pursuer.zip"
 SAC_CLONE = OUT / "sac_bc_searching_pursuer.zip"
 S1_INIT = OUT / "s1_ppo_init.zip"
 S1_START = OUT / "s1_start.json"
-S1_CP_PROBE = OUT / "s1_probe_CP.json"
+S1_CP_CKPTS = OUT / "ckpts_CP"  # S1's CP checkpoints, for the determinism note
 
 # --- pre-registered (spec sections 3-5). Do not tune. ---
 TOTAL = 1_000_000
@@ -310,10 +310,13 @@ def run_sblong(device: str, holder: dict | None = None) -> dict:
         "s1_bars": {k: s1[k]["rate"] for k in ("BAR_ORBIT", "FLOOR_RAND", "START_S")},
     }
     ckpt = d / f"{arm}_{TOTAL_LONG}.zip"
-    if not ckpt.exists():
-        result["verdict"], result["reason"] = (
-            "UNDETERMINED",
-            f"final checkpoint missing: {ckpt}",
+    if not any(r["mark"] == TOTAL_LONG for r in probe.rows) or not ckpt.exists():
+        result["verdict"] = "UNDETERMINED"
+        result["reason"] = (
+            f"final probe at mark {TOTAL_LONG} never fired (env steps reached "
+            f"{env.env_steps}, checkpoint {ckpt} "
+            f"{'exists' if ckpt.exists() else 'missing'}); judged with no final "
+            "probe rather than losing the probe history gathered before the crash"
         )
         return result
     logs = evaluate_structured(
@@ -382,7 +385,9 @@ def hypothesis_verdicts(results: dict) -> dict:
         if null is None or "selected" not in null
         else ("PASS" if null["selected"]["gate"]["PPO_CLONE"]["pass"] else "FAIL")
     )
-    if n_sel is None:
+    if n_sel is None or null_v == "INCOMPLETE":
+        # No negative control means no evidence that the selection rule did not
+        # manufacture the passes, so H-SEL may not be read either way (spec s5).
         h_sel = "INCOMPLETE"
     elif null_v == "PASS":
         h_sel = "UNDETERMINED (selection manufactures improvement)"
@@ -395,19 +400,32 @@ def hypothesis_verdicts(results: dict) -> dict:
     return {"H_SEL": h_sel, "H_SEL_passes": n_sel, "H_ANC": h_anc, "NULL": null_v}
 
 
-def determinism_note(rows_new: list[dict], rows_s1: list[dict]) -> str:
-    a = [(r["steps"], round(r["win_rate"], 6)) for r in rows_new]
-    b = [(r["steps"], round(r["win_rate"], 6)) for r in rows_s1]
-    if a == b:
-        return "reproduced"
-    diff = [s for (s, x), (_, y) in zip(a, b, strict=False) if x != y]
-    return f"not reproduced (first difference at {diff[0] if diff else 'length'})"
+def determinism_note(sel_ckpt_dir, s1_ckpt_dir, marks: list[int]) -> str:
+    """Spec section 5: did SEL7 reproduce S1's CP arm? Compared by WEIGHTS, not
+    by win rate — the two rounds probe on DIFFERENT eval streams (1 040 000+ vs
+    1 010 000+), so equal rates would say nothing about determinism and unequal
+    rates would be the streams, not the run. Two identical runs must produce
+    identical policy parameters at every probe mark."""
+    import torch
+    from stable_baselines3 import PPO
+
+    for k in marks:
+        a, b = sel_ckpt_dir / f"SEL7_{k}.zip", s1_ckpt_dir / f"CP_{k}.zip"
+        if not a.exists() or not b.exists():
+            return f"not comparable (missing checkpoint at {k})"
+        sa = PPO.load(a, device="cpu").policy.state_dict()
+        sb = PPO.load(b, device="cpu").policy.state_dict()
+        if set(sa) != set(sb) or not all(torch.equal(sa[n], sb[n]) for n in sa):
+            return f"not reproduced (first difference at {k})"
+    return "reproduced"
 
 
 def direction(h: dict) -> str:
     anc_pass = [n for n, v in h["H_ANC"].items() if v == "PASS"]
-    if h["H_SEL"] == "INCOMPLETE" or any(
-        v == "INCOMPLETE" for v in h["H_ANC"].values()
+    if (
+        h["H_SEL"] == "INCOMPLETE"
+        or h["NULL"] == "INCOMPLETE"
+        or any(v == "INCOMPLETE" for v in h["H_ANC"].values())
     ):
         return "incomplete: all SEL, ANC and NULL arms must run"
     if anc_pass:
@@ -439,10 +457,9 @@ def summarize(results: dict, starts: dict) -> dict:
     h = hypothesis_verdicts(results)
     d = direction(h)
     note = None
-    if "SEL7" in results and S1_CP_PROBE.exists():
+    if "SEL7" in results and S1_CP_CKPTS.exists():
         note = determinism_note(
-            results["SEL7"]["checkpoints"],
-            json.loads(S1_CP_PROBE.read_text())["checkpoints"],
+            OUT / "ckpts_SEL7", S1_CP_CKPTS, list(range(EVERY, TOTAL + 1, EVERY))
         )
     sb = results.get("SBLONG")
     return {
@@ -547,21 +564,24 @@ def write_figure(results: dict, starts: dict, summary: dict, path) -> None:
             color="tab:orange",
             label=f"SBLONG ({sb.get('verdict')})",
         )
-        for k, c in (
-            ("BAR_ORBIT", "tab:green"),
-            ("FLOOR_RAND", "tab:orange"),
-            ("START_S", "tab:purple"),
-        ):
-            ax.axhline(
-                sb["s1_bars"][k],
-                ls=":",
-                color=c,
-                lw=1.2,
-                label=f"{k} = {sb['s1_bars'][k]:.3f}",
-            )
+        # A crashed SBLONG has probe rows but never reached its bars.
+        if "s1_bars" in sb:
+            for k, c in (
+                ("BAR_ORBIT", "tab:green"),
+                ("FLOOR_RAND", "tab:orange"),
+                ("START_S", "tab:purple"),
+            ):
+                ax.axhline(
+                    sb["s1_bars"][k],
+                    ls=":",
+                    color=c,
+                    lw=1.2,
+                    label=f"{k} = {sb['s1_bars'][k]:.3f}",
+                )
     ax.set_xlabel("env steps")
     ax.set_title("SBLONG vs S1 bars (side arm)")
-    ax.legend(fontsize=7)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(fontsize=7)
     fig.suptitle(
         "S2 — CP selection + KL anchor"
         + ("" if summary["complete"] else " — INCOMPLETE")

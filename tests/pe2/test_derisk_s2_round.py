@@ -139,6 +139,16 @@ class TestHypotheses:
         h = R.hypothesis_verdicts({"SEL7": _arm("SEL7", True, False)})
         assert h["H_SEL"] == "INCOMPLETE"
 
+    def test_missing_null_makes_h_sel_incomplete(self):
+        """Without the negative control there is no evidence that the selection
+        rule did not manufacture the passes, so H-SEL may not be read."""
+        res = {f"SEL{s}": _arm(f"SEL{s}", True, False) for s in (7, 8, 9)}
+        res |= {f"ANC01_{s}": _arm(f"ANC01_{s}", False, False) for s in (7, 8, 9)}
+        res |= {f"ANC001_{s}": _arm(f"ANC001_{s}", False, False) for s in (7, 8, 9)}
+        h = R.hypothesis_verdicts(res)
+        assert h["NULL"] == "INCOMPLETE" and h["H_SEL"] == "INCOMPLETE"
+        assert "incomplete" in R.direction(h)
+
 
 class TestDirection:
     def test_anc_pass_is_the_artefact(self):
@@ -190,18 +200,83 @@ class TestDirection:
             }
         )
 
+    def test_a_missing_null_control_is_incomplete(self):
+        assert "incomplete" in R.direction(
+            {
+                "H_SEL": "PASS",
+                "H_ANC": {"ANC01": "FAIL", "ANC001": "FAIL"},
+                "NULL": "INCOMPLETE",
+            }
+        )
+
 
 class TestDeterminism:
-    def test_reproduced_when_curves_match(self):
-        rows = [
-            {"steps": s, "win_rate": r}
-            for s, r in zip(
-                range(100_000, 1_000_001, 100_000),
-                [0.64, 0.645, 0.585, 0.605, 0.51, 0.55, 0.56, 0.38, 0.285, 0.265],
-                strict=True,
-            )
-        ]
-        assert R.determinism_note(rows, rows) == "reproduced"
-        other = [dict(r) for r in rows]
-        other[3]["win_rate"] = 0.6
-        assert R.determinism_note(rows, other).startswith("not reproduced")
+    """SEL7 vs S1's CP is a WEIGHT comparison: the two rounds probe on
+    different eval streams (1 040 000+ vs 1 010 000+), so equal win rates
+    would prove nothing about determinism."""
+
+    @staticmethod
+    def _model(seed: int):
+        from stable_baselines3 import PPO
+
+        from pe2.config import EnvConfig
+        from pe2.exploitability import SingleAgentWrapper
+        from pe2.scripted import GreedyEvader
+
+        env = SingleAgentWrapper(EnvConfig(), "pursuer", GreedyEvader)
+        return PPO("MlpPolicy", env, seed=seed, device="cpu", verbose=0)
+
+    @staticmethod
+    def _dirs(tmp_path):
+        sel, cp = tmp_path / "ckpts_SEL7", tmp_path / "ckpts_CP"
+        sel.mkdir()
+        cp.mkdir()
+        return sel, cp
+
+    def test_identical_weights_are_reproduced(self, tmp_path):
+        sel, cp = self._dirs(tmp_path)
+        model = self._model(7)
+        model.save(sel / "SEL7_100000.zip")
+        model.save(cp / "CP_100000.zip")
+        assert R.determinism_note(sel, cp, [100_000]) == "reproduced"
+
+    def test_a_perturbed_weight_is_not_reproduced(self, tmp_path):
+        import torch
+
+        sel, cp = self._dirs(tmp_path)
+        model = self._model(7)
+        model.save(sel / "SEL7_100000.zip")
+        with torch.no_grad():
+            next(iter(model.policy.parameters())).add_(1.0)
+        model.save(cp / "CP_100000.zip")
+        assert (
+            R.determinism_note(sel, cp, [100_000])
+            == "not reproduced (first difference at 100000)"
+        )
+
+    def test_a_missing_checkpoint_is_not_comparable(self, tmp_path):
+        sel, cp = self._dirs(tmp_path)
+        self._model(7).save(sel / "SEL7_100000.zip")
+        assert (
+            R.determinism_note(sel, cp, [100_000])
+            == "not comparable (missing checkpoint at 100000)"
+        )
+
+
+class TestFigure:
+    def test_a_crashed_sblong_still_draws(self, tmp_path):
+        """A crashed SBLONG has probe rows but no `s1_bars`; the figure must
+        still be written rather than dying on a KeyError."""
+        starts = {r: {"rate": 0.4, "wilson": [0.3, 0.5], "logs": []} for r in R.REFS}
+        results = {
+            "SBLONG": {
+                "arm": "SBLONG",
+                "kind": "sblong",
+                "verdict": "UNDETERMINED",
+                "reason": "crashed: RuntimeError: boom",
+                "checkpoints": [{"steps": 1_000_000, "win_rate": 0.4}],
+            }
+        }
+        path = tmp_path / "s2_round.png"
+        R.write_figure(results, starts, {"complete": False}, path)
+        assert path.exists()
