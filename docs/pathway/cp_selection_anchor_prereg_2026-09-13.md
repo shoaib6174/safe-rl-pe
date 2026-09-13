@@ -120,6 +120,12 @@ selected step, the probe curve, and the per-probe `anchor_kl`.
 seen. β ∈ {0.1, 0.01}, the selection rule, the gate rule, the seeds and the streams are fixed by
 this document. No checkpoint other than "selected by the rule" and "final" is ever gated.
 
+**Amendment A1 (2026-09-13, before `--measure-start`; from the whole-branch review; no threshold, seed, stream or budget changes):**
+- **The anchor-KL traces are not commensurable with the §1 autopsy table.** §1 reports KL(clone ‖ π) on the *clone's own* states; the implemented and logged quantity (`anchor_kl`) is KL(π_θ ‖ π_anchor) on the *rollout* observations — the reverse divergence on a drifting state distribution, exactly as D102's `KLAnchoredSAC` defines it. The 0.6–1.7 / 5–9 landmarks of §1 must NOT be read off the figure's anchor-KL panel; the traces are read only relative to each other (β = 0 vs 0.1 vs 0.01).
+- **Determinism note.** SEL7 vs S1's CP is a per-mark comparison of checkpoint weights. CPU PyTorch training is not thread-count invariant, so the comparison is conclusive only at S1's thread count. SEL7 is therefore launched **alone first with `OMP_NUM_THREADS` unset** (S1's launcher set none; torch default), then the remaining ten arms at `OMP_NUM_THREADS=2`. Thread count is recorded in every arm record. A "not reproduced" result at a different thread count is inconclusive, not a finding.
+- **`≥ 2 of 3` with a missing seed.** The runner reads a hypothesis as `INCOMPLETE` if any of its three seed records is missing (crashed), even when two present seeds pass — more conservative than the literal §5 wording; recorded here so it is not read as a rule change after the fact.
+- Bars are keyed `PPO_CLONE` / `SAC_CLONE` / `TEACHER` in the artefacts (the spec's `GATE_*` names).
+
 ## 7. What this round does NOT do
 
 No shield, no evader family, no belief state, no structured-learner redesign (SBLONG is S1's SB
