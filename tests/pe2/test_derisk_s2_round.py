@@ -210,6 +210,20 @@ class TestDirection:
         )
 
 
+class TestProvenance:
+    def test_records_what_the_run_depended_on(self):
+        p = R.provenance()
+        assert set(p) == {
+            "git_commit",
+            "sb3_version",
+            "torch_threads",
+            "omp_num_threads",
+        }
+        assert isinstance(p["torch_threads"], int)
+        assert isinstance(p["sb3_version"], str)
+        assert p["git_commit"] is None or isinstance(p["git_commit"], str)
+
+
 class TestDeterminism:
     """SEL7 vs S1's CP is a WEIGHT comparison: the two rounds probe on
     different eval streams (1 040 000+ vs 1 010 000+), so equal win rates
@@ -249,10 +263,24 @@ class TestDeterminism:
         with torch.no_grad():
             next(iter(model.policy.parameters())).add_(1.0)
         model.save(cp / "CP_100000.zip")
-        assert (
-            R.determinism_note(sel, cp, [100_000])
-            == "not reproduced (first difference at 100000)"
+        assert R.determinism_note(sel, cp, [100_000]).startswith(
+            "not reproduced (first difference at 100000"
         )
+
+    def test_a_thread_count_caveats_the_negative(self, tmp_path):
+        """A weight mismatch is only evidence about the RUN if both rounds used
+        the same torch thread count, so the count travels with the answer."""
+        import torch
+
+        sel, cp = self._dirs(tmp_path)
+        model = self._model(7)
+        model.save(sel / "SEL7_100000.zip")
+        with torch.no_grad():
+            next(iter(model.policy.parameters())).add_(1.0)
+        model.save(cp / "CP_100000.zip")
+        note = R.determinism_note(sel, cp, [100_000], threads=8)
+        assert note.startswith("not reproduced (first difference at 100000")
+        assert "8 torch threads" in note and "same count" in note
 
     def test_a_missing_checkpoint_is_not_comparable(self, tmp_path):
         sel, cp = self._dirs(tmp_path)
@@ -280,3 +308,43 @@ class TestFigure:
         path = tmp_path / "s2_round.png"
         R.write_figure(results, starts, {"complete": False}, path)
         assert path.exists()
+
+    def test_a_complete_sblong_draws_the_verdict_lines(self, tmp_path):
+        """The SBLONG verdict is read against S1's Wilson UPPER bounds, so the
+        panel must draw those lines and not only the point estimates."""
+        starts = {r: {"rate": 0.4, "wilson": [0.3, 0.5], "logs": []} for r in R.REFS}
+        results = {
+            "SBLONG": {
+                "arm": "SBLONG",
+                "kind": "sblong",
+                "verdict": "FAIL",
+                "reason": "below START_S hi",
+                "checkpoints": [{"steps": 1_000_000, "win_rate": 0.4}],
+                "s1_bars": {"BAR_ORBIT": 0.9, "FLOOR_RAND": 0.1, "START_S": 0.3},
+                "s1_bars_hi": {"FLOOR_RAND": 0.15, "START_S": 0.36},
+            }
+        }
+        path = tmp_path / "s2_round_complete.png"
+        labels = self._axhline_labels(R.write_figure, results, starts, path)
+        assert path.exists()
+        assert "FLOOR_RAND hi (verdict line)" in labels
+        assert "START_S hi (verdict line)" in labels
+
+    @staticmethod
+    def _axhline_labels(write_figure, results, starts, path) -> list:
+        """Every horizontal line the figure drew, by label."""
+        import matplotlib.axes
+
+        seen = []
+        real = matplotlib.axes.Axes.axhline
+
+        def spy(self, y=0, *a, **kw):
+            seen.append(kw.get("label"))
+            return real(self, y, *a, **kw)
+
+        matplotlib.axes.Axes.axhline = spy
+        try:
+            write_figure(results, starts, {"complete": True}, path)
+        finally:
+            matplotlib.axes.Axes.axhline = real
+        return seen

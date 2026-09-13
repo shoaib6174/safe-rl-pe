@@ -70,6 +70,36 @@ def _ci(k: int, n: int) -> dict:
     return {"k": k, "n": n, "rate": k / n, "wilson": [lo, hi]}
 
 
+def provenance() -> dict:
+    """What produced a number in this round. The thread counts are part of the
+    claim, not decoration: CPU training is not thread-count invariant, so a
+    weight-level determinism comparison only means something between two runs
+    that used the same count."""
+    import os
+    import subprocess
+
+    import stable_baselines3
+    import torch
+
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        # no git binary, or not a checkout: provenance is worth recording as
+        # absent, never worth failing a 1M-step arm over.
+        sha = None
+    return {
+        "git_commit": sha,
+        "sb3_version": stable_baselines3.__version__,
+        "torch_threads": torch.get_num_threads(),
+        "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
+    }
+
+
 # ----------------------------------------------------------------------------
 # guards
 # ----------------------------------------------------------------------------
@@ -121,7 +151,11 @@ def measure_start(device: str) -> dict:
 
     require_not_measured()
     cfg = EnvConfig()
-    out: dict = {"gate_seed0": GATE_SEED0, "gate_n": GATE_N}
+    out: dict = {
+        "gate_seed0": GATE_SEED0,
+        "gate_n": GATE_N,
+        "provenance": provenance(),
+    }
     refs = {
         "PPO_CLONE": lambda: evaluate_sb3_policy(
             PPO.load(PPO_CLONE, device=device),
@@ -241,6 +275,7 @@ def run_ppo_arm(
         "sel_seed0": SEL_SEED0,
         "gate_seed0": GATE_SEED0,
         "checkpoints": probe.rows,
+        "provenance": provenance(),
     }
     final_ckpt = d / f"{arm}_{TOTAL}.zip"
     if not final_ckpt.exists():
@@ -308,6 +343,14 @@ def run_sblong(device: str, holder: dict | None = None) -> dict:
         "eval_seed0": S1_EVAL_SEED0,
         "checkpoints": probe.rows,
         "s1_bars": {k: s1[k]["rate"] for k in ("BAR_ORBIT", "FLOOR_RAND", "START_S")},
+        # The verdict compares against the Wilson UPPER bounds, not the point
+        # estimates, so the figure must be able to draw the lines it was judged
+        # against (structured_verdict below is handed exactly these two).
+        "s1_bars_hi": {
+            "FLOOR_RAND": s1["FLOOR_RAND"]["wilson"][1],
+            "START_S": s1["START_S"]["wilson"][1],
+        },
+        "provenance": provenance(),
     }
     ckpt = d / f"{arm}_{TOTAL_LONG}.zip"
     if not any(r["mark"] == TOTAL_LONG for r in probe.rows) or not ckpt.exists():
@@ -357,6 +400,7 @@ def run_arm(arm: str, device: str) -> dict:
                     "verdict": "UNDETERMINED",
                     "reason": f"crashed: {type(e).__name__}: {e}",
                     "checkpoints": holder.get("rows", []),
+                    "provenance": provenance(),
                 },
                 indent=2,
             )
@@ -400,12 +444,18 @@ def hypothesis_verdicts(results: dict) -> dict:
     return {"H_SEL": h_sel, "H_SEL_passes": n_sel, "H_ANC": h_anc, "NULL": null_v}
 
 
-def determinism_note(sel_ckpt_dir, s1_ckpt_dir, marks: list[int]) -> str:
+def determinism_note(
+    sel_ckpt_dir, s1_ckpt_dir, marks: list[int], threads: int | None = None
+) -> str:
     """Spec section 5: did SEL7 reproduce S1's CP arm? Compared by WEIGHTS, not
     by win rate — the two rounds probe on DIFFERENT eval streams (1 040 000+ vs
     1 010 000+), so equal rates would say nothing about determinism and unequal
     rates would be the streams, not the run. Two identical runs must produce
-    identical policy parameters at every probe mark."""
+    identical policy parameters at every probe mark.
+
+    `threads` is SEL7's torch thread count: a mismatch is only evidence about
+    the RUN if S1's CP ran at the same count, so the caveat travels with the
+    negative answer."""
     import torch
     from stable_baselines3 import PPO
 
@@ -416,7 +466,13 @@ def determinism_note(sel_ckpt_dir, s1_ckpt_dir, marks: list[int]) -> str:
         sa = PPO.load(a, device="cpu").policy.state_dict()
         sb = PPO.load(b, device="cpu").policy.state_dict()
         if set(sa) != set(sb) or not all(torch.equal(sa[n], sb[n]) for n in sa):
-            return f"not reproduced (first difference at {k})"
+            if threads is None:
+                return f"not reproduced (first difference at {k})"
+            return (
+                f"not reproduced (first difference at {k}; SEL7 ran at {threads} "
+                "torch threads — CPU training is not thread-count invariant, so "
+                "this is conclusive only if S1's CP ran at the same count)"
+            )
     return "reproduced"
 
 
@@ -459,7 +515,10 @@ def summarize(results: dict, starts: dict) -> dict:
     note = None
     if "SEL7" in results and S1_CP_CKPTS.exists():
         note = determinism_note(
-            OUT / "ckpts_SEL7", S1_CP_CKPTS, list(range(EVERY, TOTAL + 1, EVERY))
+            OUT / "ckpts_SEL7",
+            S1_CP_CKPTS,
+            list(range(EVERY, TOTAL + 1, EVERY)),
+            threads=(results["SEL7"].get("provenance") or {}).get("torch_threads"),
         )
     sb = results.get("SBLONG")
     return {
@@ -578,6 +637,13 @@ def write_figure(results: dict, starts: dict, summary: dict, path) -> None:
                     lw=1.2,
                     label=f"{k} = {sb['s1_bars'][k]:.3f}",
                 )
+        # The verdict is read against the Wilson UPPER bounds, so draw those
+        # too: a point estimate the curve clears is not the line it was judged
+        # against. `.get` — a crashed arm has neither and must still draw.
+        for k, c in (("FLOOR_RAND", "tab:orange"), ("START_S", "tab:purple")):
+            hi = sb.get("s1_bars_hi", {}).get(k)
+            if hi is not None:
+                ax.axhline(hi, ls="--", color=c, lw=1.2, label=f"{k} hi (verdict line)")
     ax.set_xlabel("env steps")
     ax.set_title("SBLONG vs S1 bars (side arm)")
     if ax.get_legend_handles_labels()[0]:
