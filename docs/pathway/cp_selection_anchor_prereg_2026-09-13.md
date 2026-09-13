@@ -126,6 +126,8 @@ this document. No checkpoint other than "selected by the rule" and "final" is ev
 - **`≥ 2 of 3` with a missing seed.** The runner reads a hypothesis as `INCOMPLETE` if any of its three seed records is missing (crashed), even when two present seeds pass — more conservative than the literal §5 wording; recorded here so it is not read as a rule change after the fact.
 - Bars are keyed `PPO_CLONE` / `SAC_CLONE` / `TEACHER` in the artefacts (the spec's `GATE_*` names).
 
+**Amendment A2 (2026-09-13 17:25, after the bars, before any arm record; launcher error corrected):** amendment A1 stated that S1's CP ran at the torch-default thread count. That was a factual error: S1's four arms were launched with `OMP_NUM_THREADS=2 MKL_NUM_THREADS=2` (session transcript, S125). SEL7 was therefore mis-launched with the variable unset and ran 100k env steps (one probe seen: 104/200 = 0.520 on 1 040 000+; ~8 min) before the error was noticed. It was stopped; its partial artefacts are archived, not deleted, under `results/derisk/archive_s2_sel7_omp_default_aborted/`. SEL7 is relaunched at `OMP_NUM_THREADS=2`, the same as S1's CP and as every other S2 arm, so the determinism check is conclusive and all eleven arms share one thread count. The one probe value seen played no part in this decision, which is forced by the thread-count discovery alone; no threshold, seed, stream, rule or budget changes.
+
 ## 7. What this round does NOT do
 
 No shield, no evader family, no belief state, no structured-learner redesign (SBLONG is S1's SB
