@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import pathlib
 
 from pe2.config import EnvConfig
@@ -89,7 +90,6 @@ def _ci(k: int, n: int) -> dict:
 
 
 def provenance() -> dict:
-    import os
     import subprocess
 
     import stable_baselines3
@@ -110,6 +110,14 @@ def provenance() -> dict:
         "torch_threads": torch.get_num_threads(),
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
     }
+
+
+def _write_json(path: pathlib.Path, obj) -> None:
+    """Write an artefact atomically: serialise to a sibling .tmp, then os.replace.
+    A census file is never left half-written if the process dies mid-write."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(obj, indent=2))
+    os.replace(tmp, path)
 
 
 def _cell_file(cell: str) -> pathlib.Path:
@@ -187,7 +195,7 @@ def run_cell(cell: str, device: str) -> dict:
         "logs": logs,
     }
     result["rate"] = result["score"]["rate"]
-    _cell_file(cell).write_text(json.dumps(result, indent=2))
+    _write_json(_cell_file(cell), result)
     sh = result["shield"]
     print(
         f"[{cell}] capture {result['rate']:.3f}; violation steps {sh['violation_steps']}; "
@@ -208,6 +216,20 @@ def run_train_arm(arm: str, device: str, holder: dict | None = None) -> dict:
     from pe2.structured import SearchMDP, evaluate_structured
 
     require_arm_not_run(arm)
+    # The gate needs both reference cells (spec amendment A4): read them BEFORE any
+    # directory, checkpoint or PPO exists, so a missing reference refuses immediately
+    # instead of after 10 M env steps.
+    refs = {}
+    for name, cell in (
+        ("STR14_SHIELD", "STR14:GREEDY12:SHIELD"),
+        ("TEACHER_NONE", "TEACHER:GREEDY12:NONE"),
+    ):
+        f = _cell_file(cell)
+        if not f.exists():
+            raise SystemExit(
+                f"{arm}: reference cell {cell} has not run; run the deployment cells first."
+            )
+        refs[name] = json.loads(f.read_text())["logs"]
     seed = ARMS[arm]["seed"]
     cfg = EnvConfig()
     d = OUT / f"ckpts_{arm}"
@@ -236,6 +258,8 @@ def run_train_arm(arm: str, device: str, holder: dict | None = None) -> dict:
         zero_reward=False,
         shield=CBFShield(cfg),
     )
+    if holder is not None:
+        holder["env"] = env
     model = PPO("MlpPolicy", env, seed=seed, gamma=GAMMA_S, verbose=0, device=device)
     model.save(OUT / f"s4_init_{seed}.zip")
     model.learn(total_timesteps=TOTAL_LONG, callback=probe.callback)
@@ -256,18 +280,8 @@ def run_train_arm(arm: str, device: str, holder: dict | None = None) -> dict:
             f"final probe at mark {TOTAL_LONG} never fired (env steps {env.env_steps})",
         )
         return result
-    # gate: shielded, on the primary stream, vs SHIELD STR14 and vs NONE TEACHER (their paired logs)
-    refs = {}
-    for name, cell in (
-        ("STR14_SHIELD", "STR14:GREEDY12:SHIELD"),
-        ("TEACHER_NONE", "TEACHER:GREEDY12:NONE"),
-    ):
-        f = _cell_file(cell)
-        if not f.exists():
-            raise SystemExit(
-                f"{arm}: reference cell {cell} has not run; run the deployment cells first."
-            )
-        refs[name] = json.loads(f.read_text())["logs"]
+    # gate: shielded, on the primary stream, vs SHIELD STR14 and vs NONE TEACHER (their
+    # paired logs, read at the top of this function)
     gcfg = cfg_for("GREEDY12")
     logs = evaluate_structured(
         PPO.load(ckpt, device=device),
@@ -349,8 +363,7 @@ class ShieldedStructuredProbe:
                 "intervention_rate": summarize_shield(logs)["intervention_rate"],
             }
             rows.append(row)
-            with open(report_path, "w") as f:
-                json.dump({"checkpoints": rows}, f, indent=2)
+            _write_json(report_path, {"checkpoints": rows})
             print(
                 f"  @{env_steps:>9} env steps (mark {mark}): shielded win rate "
                 f"{k}/{n} = {k / n:.3f}, violations {row['violations']}",
@@ -383,21 +396,27 @@ def run_arm(arm: str, device: str) -> dict:
     holder: dict = {}
     try:
         result = run_train_arm(arm, device, holder)
-    except Exception as e:
-        (OUT / f"s4_arm_{arm}.json").write_text(
-            json.dumps(
-                {
-                    "arm": arm,
-                    "verdict": "UNDETERMINED",
-                    "reason": f"crashed: {type(e).__name__}: {e}",
-                    "checkpoints": holder.get("rows", []),
-                    "provenance": provenance(),
-                },
-                indent=2,
-            )
+    except BaseException as e:
+        # BaseException, not Exception: a SystemExit (a stop-rule refusal) or a
+        # KeyboardInterrupt mid-run must still leave the census record, including the
+        # violation counts accumulated so far (spec amendment A4).
+        rows = holder.get("rows", [])
+        _write_json(
+            OUT / f"s4_arm_{arm}.json",
+            {
+                "arm": arm,
+                "verdict": "UNDETERMINED",
+                "reason": f"crashed: {type(e).__name__}: {e}",
+                "train_violations": int(
+                    getattr(holder.get("env"), "violations_total", 0)
+                ),
+                "probe_violations": int(sum(r.get("violations", 0) for r in rows)),
+                "checkpoints": rows,
+                "provenance": provenance(),
+            },
         )
         raise
-    (OUT / f"s4_arm_{arm}.json").write_text(json.dumps(result, indent=2))
+    _write_json(OUT / f"s4_arm_{arm}.json", result)
     print(f"[{arm}] {result['verdict']}: {result['reason']}", flush=True)
     return result
 
@@ -437,8 +456,11 @@ def h1_verdict(
         return {"verdict": "INCOMPLETE"}
     sh = paired_shift(s["logs"], u["logs"])
     _lo_s, hi_s = wilson_ci(*win_count(s["logs"], "pursuer"))
-    if sh["p"] < P_GATE and sh["c"] > sh["b"] and hi_s < sh["rate_unshielded"]:
-        v = "CONFIRMED"
+    if sh["p"] < P_GATE and sh["c"] > sh["b"]:
+        # amendment A3: significant in the predicted direction but the shielded Wilson
+        # upper bound does not clear the unshielded point — a real shift too small to
+        # separate at N = 500, reported with Delta and CI, never read as CONFIRMED.
+        v = "CONFIRMED" if hi_s < sh["rate_unshielded"] else "SHIFT NOT SEPARATED"
     elif sh["p"] < P_GATE and sh["b"] > sh["c"]:
         v = "REVERSED"
     else:
@@ -451,9 +473,13 @@ def hsafe_verdict(cells: dict, arms: dict) -> dict:
     steps = sum(v["shield"]["violation_steps"] for v in shielded.values())
     offenders = [k for k, v in shielded.items() if v["shield"]["violation_steps"] > 0]
     for a, r in arms.items():
+        probe = r.get("probe_violations")
+        if probe is None:
+            # an older or crashed record without the rolled-up count: read the rows
+            probe = sum(row.get("violations", 0) for row in r.get("checkpoints", []))
         tv = (
             int(r.get("train_violations", 0))
-            + int(r.get("probe_violations", 0))
+            + int(probe)
             + int((r.get("final") or {}).get("violations", 0))
         )
         steps += tv
@@ -465,8 +491,20 @@ def hsafe_verdict(cells: dict, arms: dict) -> dict:
         n = none["n"] if "n" in none else len(none["logs"])
         eps = none["shield"].get("episodes_with_violation")
         none_rate = (eps / n) if eps is not None else None
+    # amendment A4: H-SAFE is a census claim over every shielded cell and every training
+    # arm. A violation anywhere is FAILS whatever is missing; absent a violation, a
+    # partial census is INCOMPLETE, never HOLDS.
+    missing = [
+        c for c in CELLS if c.endswith((":SHIELD", ":ROBUST")) and c not in cells
+    ]
+    missing += [a for a in ARMS if "final" not in (arms.get(a) or {})]
+    if steps == 0 and missing:
+        verdict = "INCOMPLETE"
+    else:
+        verdict = "HOLDS" if steps == 0 else "FAILS"
     return {
-        "verdict": "HOLDS" if steps == 0 else "FAILS",
+        "verdict": verdict,
+        "missing": missing,
         "shielded_violation_steps": steps,
         "offenders": offenders,
         "none_greedy12_violation_episode_rate": none_rate,
@@ -499,6 +537,11 @@ def direction(h: dict) -> str:
             "H-SAFE FAILS: a shielded arm recorded a contact step. Stop; the census is written; no further round "
             "without a user ruling (Step 6 stop rule)."
         )
+    if h["hsafe"] == "INCOMPLETE":
+        return (
+            "incomplete: H-SAFE is a census claim (spec amendment A4) — it cannot be read until all 14 "
+            "shielded cells and all 3 training arms have run; see summary['hsafe']['missing']."
+        )
     if h["h1"] == "INCOMPLETE":
         return (
             "incomplete: the primary cells STR14:GREEDY12:{NONE,SHIELD} must both run"
@@ -507,6 +550,12 @@ def direction(h: dict) -> str:
         d = (
             "H1 CONFIRMED at zero violations: R1 is measured on a learned agent with the sign the exact twin predicted — "
             "the paper's central result. Magnitude and costs go to the results section; next: Step 9 (shield-attacker) on STR14-SHIELD."
+        )
+    elif h["h1"] == "SHIFT NOT SEPARATED":
+        d = (
+            "H1 SHIFT NOT SEPARATED at zero violations: the shield moves the learned pursuer in the predicted "
+            "direction but the shift is not separated at N = 500 — report Δ with its paired CI and the cost table; "
+            "next: Step 9 (shield-attacker) on STR14-SHIELD."
         )
     elif h["h1"] == "NO SHIFT":
         d = (
@@ -564,13 +613,20 @@ def summarize(cells: dict, arms: dict) -> dict:
         arm: h1_verdict(cells, "TEACHER", "GREEDY12", arm)
         for arm in ("SHIELD", "ROBUST")
     }
+    # H-COST is reported in full (spec section 4 / D89): the rate split, the tier
+    # histogram and both clearance floors.
     cost_keys = (
         "intervention_rate",
         "infeasibility_rate",
         "backup_rate",
         "stall_step_rate",
+        "immobile_step_rate",
         "deadlock_episode_rate",
+        "pinned_episode_rate",
+        "tier_histogram",
+        "violation_episode_rate",
         "min_clearance_floor",
+        "min_clearance_hard_floor",
     )
     cost = {
         k: {ck: v["shield"].get(ck) for ck in cost_keys} | {"rate": v["rate"]}
@@ -591,7 +647,9 @@ def summarize(cells: dict, arms: dict) -> dict:
             a: {"verdict": r.get("verdict"), "reason": r.get("reason")}
             for a, r in arms.items()
         },
-        "complete": all(c in cells for c in CELLS) and all(a in arms for a in ARMS),
+        # a crashed arm record (no "final") does not complete the round
+        "complete": all(c in cells for c in CELLS)
+        and all("final" in (arms.get(a) or {}) for a in ARMS),
         "direction": direction(h),
     }
 
@@ -702,13 +760,17 @@ def write_gif(path, device: str, every: int = 4) -> None:
     """Visual gate (spec section 6): STR14 unshielded vs shielded on the same
     GREEDY12 episodes — one where the shield changes the outcome, one where it
     does not — with the FOV cone and the ShieldOverlay (nominal vs executed)."""
-    import matplotlib.pyplot as plt
-    import numpy as np
+    # Deliberate, unsorted import order (hence the suppression below): pe2.render selects
+    # the Agg backend and must be imported before matplotlib.pyplot, or a headless run
+    # picks up the default backend.
+    import numpy as np  # noqa: I001
     from stable_baselines3 import PPO
 
     from pe2.render import FovOverlay, Renderer, ShieldOverlay, Trails, save_gif
     from pe2.shield import CBFShield, NoOpShield
     from pe2.structured import SearchMDP
+
+    import matplotlib.pyplot as plt
 
     cfg = cfg_for("GREEDY12")
     predict = PPO.load(STR14_CKPT, device=device).predict
@@ -771,26 +833,33 @@ def write_gif(path, device: str, every: int = 4) -> None:
         m.finish(log["outcome"], log["steps"])
         return m.frames, log
 
+    # one pass over the candidate seeds, both arms per seed, cached: the two searches
+    # below share it instead of replaying every episode a second time.
+    scan = {}
+    for s in range(OPPONENTS["GREEDY12"]["seed0"], OPPONENTS["GREEDY12"]["seed0"] + 80):
+        u = SearchMDP(
+            cfg, GreedyEvader, hold=HOLD, shield=NoOpShield(cfg)
+        ).play_episode(predict, s)
+        sh = SearchMDP(
+            cfg, GreedyEvader, hold=HOLD, shield=CBFShield(cfg)
+        ).play_episode(predict, s)
+        scan[s] = (u, sh)
+
     def find(pred):
-        for s in range(
-            OPPONENTS["GREEDY12"]["seed0"], OPPONENTS["GREEDY12"]["seed0"] + 80
-        ):
-            u = SearchMDP(
-                cfg, GreedyEvader, hold=HOLD, shield=NoOpShield(cfg)
-            ).play_episode(predict, s)
-            sh = SearchMDP(
-                cfg, GreedyEvader, hold=HOLD, shield=CBFShield(cfg)
-            ).play_episode(predict, s)
-            if pred(u, sh):
-                return s
-        return None
+        return next((s for s, (u, sh) in scan.items() if pred(u, sh)), None)
 
     changed = find(lambda u, sh: u["outcome"] != sh["outcome"])
     same = find(lambda u, sh: u["outcome"] == sh["outcome"] == "capture")
+    if changed is None:
+        raise SystemExit(
+            "visual gate: no seed in the first 80 flips the outcome under the shield"
+        )
+    if same is None:
+        raise SystemExit(
+            "visual gate: no seed in the first 80 keeps a capture under both arms"
+        )
     frames = []
     for s in (changed, same):
-        if s is None:
-            continue
         fu, _ = play(s, NoOpShield(cfg), "STR14 unshielded")
         fs, _ = play(s, CBFShield(cfg), "STR14 shielded (δ=0)")
         n = max(len(fu), len(fs))
@@ -820,9 +889,7 @@ def main() -> None:
     if args.summarize:
         cells, arms = load_cells(), load_arms()
         summary = summarize(cells, arms)
-        (OUT / "s4_round.json").write_text(
-            json.dumps({"summary": summary, "arms": arms}, indent=2)
-        )
+        _write_json(OUT / "s4_round.json", {"summary": summary, "arms": arms})
         write_figure(cells, arms, summary, OUT / "s4_round.png")
         print(
             json.dumps(

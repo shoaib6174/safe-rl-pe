@@ -1,6 +1,7 @@
 """scripts/derisk_s4_shield.py — the shielded-learned-pursuer round's own decisions."""
 
 import importlib.util
+import json
 import pathlib
 
 import pytest
@@ -39,16 +40,50 @@ def _cell(policy, opp, arm, wins, violations=0, n=500):
         "shield": {
             "violation_steps": violations,
             "episodes_with_violation": 1 if violations else 0,
+            "violation_episode_rate": (1 if violations else 0) / n,
             "intervention_rate": 0.1,
             "infeasibility_rate": 0.0,
             "backup_rate": 0.0,
             "stall_step_rate": 0.2,
+            "immobile_step_rate": 0.05,
             "deadlock_episode_rate": 0.1,
+            "pinned_episode_rate": 0.02,
             "min_clearance_floor": 0.01,
+            "min_clearance_hard_floor": 0.005,
             "tier_histogram": {"exact": n, "relaxed": 0, "backup": 0, "none": 0},
         },
         "rate": wins / n,
     }
+
+
+def _arm_record(k=330, passes=True, violations=0):
+    return {
+        "train_violations": 0,
+        "probe_violations": 0,
+        "final": {
+            "violations": violations,
+            "gate": {
+                "STR14_SHIELD": {"pass": passes, "rate": k / 500},
+                "TEACHER_NONE": {"pass": True, "rate": k / 500},
+            },
+        },
+    }
+
+
+def _census(none_violations=30):
+    """The complete round: all 21 cells (the 14 shielded ones clean, the NONE controls
+    carrying their own contacts) and all three training arms with a final block."""
+    cells = {}
+    for c in R.CELLS:
+        policy, opp, arm = c.split(":")
+        cells[c] = _cell(
+            policy,
+            opp,
+            arm,
+            300,
+            violations=none_violations if arm == "NONE" else 0,
+        )
+    return cells, {a: _arm_record() for a in R.ARMS}
 
 
 class TestProtocol:
@@ -143,28 +178,47 @@ class TestShift:
         }
         assert R.h1_verdict(cells)["verdict"] == "REVERSED"
 
+    def test_h1_shift_not_separated(self):
+        # amendment A3: 0.650 vs 0.680 — b = 0, c = 15, p < 0.05, but the shielded
+        # Wilson upper bound (~0.691) does not clear the unshielded point 0.680
+        cells = {
+            "STR14:GREEDY12:NONE": _cell("STR14", "GREEDY12", "NONE", 340),
+            "STR14:GREEDY12:SHIELD": _cell("STR14", "GREEDY12", "SHIELD", 325),
+        }
+        r = R.h1_verdict(cells)
+        assert r["verdict"] == "SHIFT NOT SEPARATED"
+        assert r["b"] == 0 and r["c"] == 15 and r["p"] < 0.05
+
     def test_h1_incomplete(self):
         assert R.h1_verdict({})["verdict"] == "INCOMPLETE"
 
 
 class TestSafety:
-    def test_hsafe_holds_when_all_shielded_cells_and_arms_are_clean(self):
-        cells = {
-            "STR14:GREEDY12:SHIELD": _cell("STR14", "GREEDY12", "SHIELD", 300),
-            "STR14:GREEDY12:ROBUST": _cell("STR14", "GREEDY12", "ROBUST", 290),
-            "STR14:GREEDY12:NONE": _cell(
-                "STR14", "GREEDY12", "NONE", 340, violations=30
-            ),
-        }
-        arms = {
-            "STRSH16": {
-                "train_violations": 0,
-                "probe_violations": 0,
-                "final": {"violations": 0},
-            }
-        }
+    def test_hsafe_holds_only_on_a_complete_clean_census(self):
+        cells, arms = _census()
         h = R.hsafe_verdict(cells, arms)
         assert h["verdict"] == "HOLDS" and h["shielded_violation_steps"] == 0
+        assert h["missing"] == []
+
+    def test_hsafe_incomplete_on_a_partial_census(self):
+        # amendment A4: a clean but partial census is INCOMPLETE, never HOLDS
+        cells, arms = _census()
+        del cells["STR14:FOV:ROBUST"]
+        del arms["STRSH18"]
+        arms["STRSH17"] = {"verdict": "UNDETERMINED", "checkpoints": []}  # crashed
+        h = R.hsafe_verdict(cells, arms)
+        assert h["verdict"] == "INCOMPLETE"
+        assert set(h["missing"]) == {"STR14:FOV:ROBUST", "STRSH17", "STRSH18"}
+        assert "incomplete" in R.direction(
+            {"hsafe": "INCOMPLETE", "h1": "CONFIRMED", "h3": "RECOVERED"}
+        )
+
+    def test_hsafe_counts_the_14_shielded_cells(self):
+        cells, arms = _census()
+        shielded = [c for c in R.CELLS if c.rsplit(":", 1)[1] in ("SHIELD", "ROBUST")]
+        assert len(shielded) == 14
+        h = R.hsafe_verdict({c: cells[c] for c in shielded}, arms)
+        assert h["verdict"] == "HOLDS" and h["missing"] == []
 
     def test_hsafe_fails_on_any_shielded_violation(self):
         cells = {"STR14:FOV:SHIELD": _cell("STR14", "FOV", "SHIELD", 300, violations=1)}
@@ -178,6 +232,18 @@ class TestSafety:
             }
         }
         assert R.hsafe_verdict(cells, arms)["verdict"] == "FAILS"
+
+    def test_hsafe_reads_a_crash_records_probe_rows(self):
+        # no rolled-up probe_violations (a crashed arm): fall back to the checkpoint rows
+        cells, arms = _census()
+        arms["STRSH16"] = {
+            "verdict": "UNDETERMINED",
+            "train_violations": 0,
+            "checkpoints": [{"violations": 0}, {"violations": 4}],
+        }
+        h = R.hsafe_verdict(cells, arms)
+        assert h["verdict"] == "FAILS" and h["shielded_violation_steps"] == 4
+        assert "STRSH16" in h["offenders"]
 
     def test_none_arm_weakness_is_reported(self):
         cells = {
@@ -232,3 +298,86 @@ class TestDirection:
         assert "incomplete" in R.direction(
             {"hsafe": "HOLDS", "h1": "INCOMPLETE", "h3": "INCOMPLETE"}
         )
+        d = R.direction(
+            {"hsafe": "HOLDS", "h1": "SHIFT NOT SEPARATED", "h3": "RECOVERED"}
+        )
+        assert "not separated at N = 500" in d and "RECOVERED" in d
+
+    def test_hsafe_fails_outranks_an_incomplete_census(self):
+        assert "Stop" in R.direction(
+            {"hsafe": "FAILS", "h1": "INCOMPLETE", "h3": "INCOMPLETE"}
+        )
+
+
+class TestRunnerRecords:
+    def test_reference_cells_are_checked_before_any_training(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        with pytest.raises(SystemExit, match="reference cell"):
+            R.run_train_arm("STRSH16", "cpu")
+        assert not (tmp_path / "ckpts_STRSH16").exists()
+
+    def test_crash_record_carries_the_violation_counts(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+
+        class _Env:
+            violations_total = 3
+
+        def _boom(arm, device, holder=None):
+            holder["env"] = _Env()
+            holder["rows"] = [{"violations": 1}, {"violations": 2}]
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(R, "run_train_arm", _boom)
+        with pytest.raises(RuntimeError):
+            R.run_arm("STRSH16", "cpu")
+        rec = json.loads((tmp_path / "s4_arm_STRSH16.json").read_text())
+        assert rec["verdict"] == "UNDETERMINED"
+        assert rec["train_violations"] == 3 and rec["probe_violations"] == 3
+
+    def test_systemexit_mid_run_still_leaves_a_record(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+
+        def _refuse(arm, device, holder=None):
+            raise SystemExit("reference cell STR14:GREEDY12:SHIELD has not run")
+
+        monkeypatch.setattr(R, "run_train_arm", _refuse)
+        with pytest.raises(SystemExit):
+            R.run_arm("STRSH16", "cpu")
+        rec = json.loads((tmp_path / "s4_arm_STRSH16.json").read_text())
+        assert rec["verdict"] == "UNDETERMINED" and "reference cell" in rec["reason"]
+        assert rec["train_violations"] == 0 and rec["probe_violations"] == 0
+
+    def test_writes_are_atomic_and_leave_no_tmp(self, tmp_path):
+        p = tmp_path / "x.json"
+        R._write_json(p, {"a": 1})
+        assert json.loads(p.read_text()) == {"a": 1}
+        assert list(tmp_path.iterdir()) == [p]
+
+
+class TestSummary:
+    def test_complete_needs_a_final_block_in_every_arm(self):
+        cells, arms = _census()
+        assert R.summarize(cells, arms)["complete"]
+        arms["STRSH17"] = {"verdict": "UNDETERMINED", "checkpoints": []}
+        assert not R.summarize(cells, arms)["complete"]
+
+    def test_cost_table_carries_the_full_h_cost_split(self):
+        cells, arms = _census()
+        c = R.summarize(cells, arms)["cost"]["STR14:GREEDY12:SHIELD"]
+        for k in (
+            "intervention_rate",
+            "infeasibility_rate",
+            "backup_rate",
+            "stall_step_rate",
+            "immobile_step_rate",
+            "deadlock_episode_rate",
+            "pinned_episode_rate",
+            "tier_histogram",
+            "violation_episode_rate",
+            "min_clearance_floor",
+            "min_clearance_hard_floor",
+            "rate",
+        ):
+            assert c[k] is not None, k
