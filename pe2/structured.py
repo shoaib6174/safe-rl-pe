@@ -153,6 +153,8 @@ class SearchMDP(gym.Env):
         self._visible = False
         self._los_breaks = 0
         self._info: dict = {}
+        # optional per-step record (visible, branch, v, w) for characterise(); off by default
+        self.trace: list | None = None
 
     # -- internals -------------------------------------------------------
     def _begin(self, seed: int | None) -> np.ndarray:
@@ -163,13 +165,17 @@ class SearchMDP(gym.Env):
         self._info = {}
         return obs
 
-    def _step_inner(self, action: np.ndarray):
+    def _step_inner(self, action: np.ndarray, branch: str = "law"):
         prev = self._visible
         obs, r, term, trunc, info = self.inner.step(action)
         self.env_steps += 1
         self._visible = bool(obs[6] > 0.5)
         self._los_breaks += int(prev and not self._visible)
         self._info = info
+        if self.trace is not None:
+            self.trace.append(
+                (self._visible, branch, float(action[0]), float(action[1]))
+            )
         onset = int((not prev) and self._visible)
         return obs, float(r), onset, term, trunc
 
@@ -207,7 +213,7 @@ class SearchMDP(gym.Env):
         reward, onsets, term, trunc = 0.0, 0, False, False
         obs = None
         for _ in range(self.hold):
-            obs, r, onset, term, trunc = self._step_inner(a)
+            obs, r, onset, term, trunc = self._step_inner(a, "search")
             reward += r
             onsets += onset
             if term or trunc or self._visible:
@@ -373,3 +379,63 @@ class StructuredEvalProbe:
         self.rows = rows
         self.callback = _CB()
         self.evaluate_at = evaluate_at
+
+
+def characterise(
+    predict,
+    cfg: EnvConfig,
+    opponent_factory: Callable[[], object],
+    n_episodes: int,
+    seed0: int,
+    hold: int = HOLD,
+) -> dict:
+    """Behavioural statistics of a search policy inside SearchMDP (spec S3
+    section 5, reported only): what the learned search actually does, on the
+    same footing as the teacher (characterise OrbitSearch at hold=1 for the
+    teacher — V1 proved that identical to SearchingPursuer). Speeds are
+    physical: v = (a+1)/2 * v_max, omega = a * omega_max."""
+    mdp = SearchMDP(cfg, opponent_factory, hold=hold)
+    first_sight: list[int] = []
+    stretches: list[int] = []
+    n_vis = n_search = n_steps = captures = 0
+    speed_sum = omega_sum = 0.0
+    for i in range(n_episodes):
+        mdp.trace = []
+        log = mdp.play_episode(predict, seed0 + i)
+        captures += log["outcome"] == "capture"
+        cur = 0
+        seen = False
+        for t, (vis, branch, v, w) in enumerate(mdp.trace, start=1):
+            n_steps += 1
+            n_vis += vis
+            if vis and not seen:
+                seen = True
+                first_sight.append(t)
+            if branch == "search":
+                n_search += 1
+                cur += 1
+                speed_sum += (v + 1.0) / 2.0 * cfg.v_max
+                omega_sum += abs(w) * cfg.omega_max
+            elif cur:
+                stretches.append(cur)
+                cur = 0
+        if cur:
+            stretches.append(cur)
+    mdp.trace = None
+
+    def _q(xs: list[int], q: float) -> float:
+        return float(np.percentile(xs, q)) if xs else float("nan")
+
+    return {
+        "n_episodes": n_episodes,
+        "capture_rate": captures / n_episodes,
+        "visible_frac": n_vis / n_steps if n_steps else float("nan"),
+        "found_frac": len(first_sight) / n_episodes,
+        "first_sight_median": _q(first_sight, 50),
+        "first_sight_p90": _q(first_sight, 90),
+        "stretch_median": _q(stretches, 50),
+        "stretch_p90": _q(stretches, 90),
+        "search_frac": n_search / n_steps if n_steps else float("nan"),
+        "search_speed_mean": speed_sum / n_search if n_search else float("nan"),
+        "search_abs_omega_mean": omega_sum / n_search if n_search else float("nan"),
+    }

@@ -3,6 +3,7 @@ docs/pathway/structured_search_prereg_2026-09-12.md)."""
 
 import json
 import pathlib
+from itertools import pairwise
 
 import numpy as np
 import pytest
@@ -298,3 +299,60 @@ class TestStructuredEvalProbe:
         probe.callback.model = _Model()
         with pytest.raises(AssertionError, match="single env"):
             probe.callback._on_step()
+
+
+class TestTraceAndCharacterise:
+    def test_trace_records_every_env_step_with_its_branch(self):
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader, hold=10)
+        m.trace = []
+        log = m.play_episode(OrbitSearch(CFG).predict, 900_900)
+        assert len(m.trace) == log["steps"]
+        branches = {b for _, b, _, _ in m.trace}
+        assert branches <= {"law", "search"} and "search" in branches
+        vis = [v for v, _, _, _ in m.trace]
+        # every recorded "law" step follows a visible or last-seen state; the
+        # count of visible->invisible transitions must equal the log's los_breaks
+        breaks = sum(1 for a, b in pairwise(vis) if a and not b)
+        assert breaks == log["los_breaks"]
+        for _, _, v, w in m.trace:
+            assert -1.0 <= v <= 1.0 and -1.0 <= w <= 1.0
+
+    def test_trace_is_off_by_default(self):
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader)
+        assert m.trace is None
+        m.play_episode(OrbitSearch(CFG).predict, 900_901)
+        assert m.trace is None
+
+    def test_characterise_orbit_matches_the_design_numbers_in_shape(self):
+        from pe2.structured import characterise
+
+        c = characterise(
+            OrbitSearch(CFG).predict, CFG, GreedyEvader, 12, 900_910, hold=1
+        )
+        assert c["n_episodes"] == 12
+        assert 0.0 < c["visible_frac"] < 1.0
+        assert 0.0 < c["search_frac"] < 1.0
+        assert c["first_sight_median"] <= c["first_sight_p90"]
+        assert c["stretch_median"] <= c["stretch_p90"]
+        assert c["search_speed_mean"] == pytest.approx(
+            CFG.v_max, abs=1e-6
+        )  # the orbit drives full speed
+        assert 0.0 <= c["search_abs_omega_mean"] <= CFG.omega_max
+        assert 0.0 <= c["capture_rate"] <= 1.0 and 0.0 <= c["found_frac"] <= 1.0
+
+    def test_characterise_stand_still_has_zero_search_speed(self):
+        from pe2.structured import characterise
+
+        class Still:
+            def predict(self, obs, deterministic=True):
+                return np.array([-1.0, 0.5], dtype=np.float32), None
+
+        c = characterise(Still().predict, CFG, GreedyEvader, 4, 900_920, hold=10)
+        assert c["search_speed_mean"] == pytest.approx(0.0, abs=1e-6)
+        assert c["search_abs_omega_mean"] == pytest.approx(
+            0.5 * CFG.omega_max, abs=1e-6
+        )
