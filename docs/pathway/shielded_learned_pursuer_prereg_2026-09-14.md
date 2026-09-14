@@ -75,7 +75,10 @@ the static map (as in Step 6). The learner's observation is unchanged; only exec
 - **H1 (shift, primary):** on Greedy-1.2, **SHIELD STR14 captures less than NONE STR14** —
   McNemar p < 0.05 with more shielded losses than wins (c > b) AND the shielded Wilson upper
   bound below the unshielded point estimate. Verdict `CONFIRMED` / `NO SHIFT` (p ≥ 0.05) /
-  `REVERSED` (significant in the other direction). The effect size Δ = rate(SHIELD) − rate(NONE)
+  `REVERSED` (significant in the other direction) / **`SHIFT NOT SEPARATED`** (amendment A3, before
+  any cell: p < 0.05 with c > b but the shielded Wilson upper bound not below the unshielded point —
+  a real shift in the predicted direction too small to separate at N = 500; reported with Δ and CI,
+  not read as CONFIRMED). The effect size Δ = rate(SHIELD) − rate(NONE)
   with a paired CI is reported and compared to the teacher's Δ on the same stream and to Step
   6's −7.6 points.
 - **H1-family (secondary, reported):** the same test on each of the other five opponents and
@@ -109,6 +112,14 @@ seen. δ = 0.05, N, streams, seeds 16–18, the gate rule and the ≥ 2/3 rule a
 overlay and `ShieldOverlay`, one episode where the shield changes the outcome and one where it
 does not; signed in the worklog.
 
+**Amendment A4 (2026-09-14, before any cell; disclosure).** During the pre-launch code review the
+reviewer timed 10 episodes of STR14 on the GREEDY12 stream (seeds 1 090 000–1 090 009) under NONE and
+SHIELD and thereby saw 7/10 and 5/10 captures on a slice of the primary comparison. No constant, seed,
+stream, rule or budget changed as a result; the cells recompute those episodes deterministically. Recorded
+under the stop rule. Also fixed before any cell: H-SAFE is `INCOMPLETE` (never `HOLDS`) while any of the
+14 shielded cells or 3 training arms is missing; a crashed training arm's record carries its training and
+probe violation counts; the reference cells must exist before a training arm starts.
+
 ## 7. What this round does NOT do
 
 No learned evader (Step 8-alt by design), no NashConv, no shield on the evader, no attacker
@@ -116,7 +127,8 @@ No learned evader (Step 8-alt by design), no NashConv, no shield on the evader, 
 
 ## 8. Artefacts
 
-`results/derisk/s4_cells.json` (all 21 deployment cells: paired logs, `summarize_shield`
-blocks, gate results), `s4_arm_STRSH{16,17,18}.json`, `s4_probe_STRSH*.json`,
+`results/derisk/s4_cell_{POLICY}_{OPPONENT}_{ARM}.json` — one file per deployment cell (amendment
+A2, before any cell: one process per cell with its own stop-rule guard, so no single `s4_cells.json`;
+`s4_round.json` is the aggregate) with paired logs, `summarize_shield` block and score, `s4_arm_STRSH{16,17,18}.json`, `s4_probe_STRSH*.json`,
 `ckpts_STRSH*/`, `s4_round.{json,png}` (shift per opponent with CIs, cost table, STRSH
 curves), `step_08_shield.gif`. Signed in the worklog.
