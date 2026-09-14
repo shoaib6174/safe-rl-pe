@@ -155,14 +155,19 @@ class SearchMDP(gym.Env):
         self._visible = False
         self._los_breaks = 0
         self._info: dict = {}
-        # optional per-step record (visible, branch, v, w) for characterise(); off by default
+        # optional per-step record (visible, branch, v, w) for characterise();
+        # off by default. (v, w) is the EXECUTED normalised action — post-shield,
+        # and equal to the clipped nominal when there is no shield.
         self.trace: list | None = None
         # S4 (spec section 2): optional CBF shield on EVERY executed pursuer
         # command — the law's and the learner's alike — using the true pose and
         # the static map, as in Step 6 (D97). The learner's observation is
         # untouched; only execution differs. ShieldMetrics is per episode.
         self.shield = shield
-        self.shield_metrics = None
+        # Built here as well as in `_begin` so a caller that drives `step()`
+        # straight after `inner.reset()` (the unit-test path) has somewhere to
+        # record; `_begin` rebuilds it so the metrics are per episode.
+        self.shield_metrics = ShieldMetrics() if shield is not None else None
         self.violations_total = 0  # cumulative pursuer contact steps, shield or not
         self.episode_violations = 0
         self._last_sinfo = None  # last step's shield info (None without a shield)
@@ -175,6 +180,7 @@ class SearchMDP(gym.Env):
         self._los_breaks = 0
         self._info = {}
         self.episode_violations = 0
+        self._last_sinfo = None
         self.shield_metrics = ShieldMetrics() if self.shield is not None else None
         return obs
 
@@ -185,9 +191,13 @@ class SearchMDP(gym.Env):
         if self.shield is not None:
             cfg = self.cfg
             env = self.inner.env
-            v_nom, w_nom = (a[0] + 1.0) / 2.0 * cfg.v_max, a[1] * cfg.omega_max
+            # float64 throughout: a float32 nominal makes the NoOpShield
+            # round-trip differ from the unshielded action by ~1 ulp, and the
+            # pre-registered NONE control must be the unshielded episode exactly.
+            v_nom = (float(a[0]) + 1.0) / 2.0 * cfg.v_max
+            w_nom = float(a[1]) * cfg.omega_max
             (v, w), sinfo = self.shield.filter(
-                (float(v_nom), float(w_nom)),
+                (v_nom, w_nom),
                 env.pursuer_pose,
                 env.obstacles,
                 v_max=cfg.v_max,

@@ -375,6 +375,25 @@ class TestShieldInSearchMDP:
         assert m.shield is None and m.shield_metrics is None
         assert m.violations_total >= 0
 
+    def test_noop_shield_round_trip_is_exact(self):
+        # nominal -> NoOpShield -> renormalise must be the identity on the
+        # clipped Box action, or the NONE arm is not the unshielded episode
+        from pe2.shield import NoOpShield
+
+        shield = NoOpShield(CFG)
+        pose = np.array([0.0, 0.0, 0.0])
+        rng = np.random.default_rng(0)
+        actions = rng.uniform(-1.0, 1.0, size=(20_000, 2)).astype(np.float32)
+        for action in actions:
+            a = np.clip(action, -1.0, 1.0)
+            v_nom = (float(a[0]) + 1.0) / 2.0 * CFG.v_max
+            w_nom = float(a[1]) * CFG.omega_max
+            (v, w), _ = shield.filter((v_nom, w_nom), pose, [], v_max=CFG.v_max)
+            back = np.array(
+                [2.0 * v / CFG.v_max - 1.0, w / CFG.omega_max], dtype=np.float32
+            )
+            assert np.array_equal(back, a)
+
     def test_noop_shield_reproduces_the_unshielded_episode_and_measures(self):
         from pe2.metrics import summarize_shield
         from pe2.shield import NoOpShield
@@ -390,6 +409,8 @@ class TestShieldInSearchMDP:
             plain["steps"],
             plain["los_breaks"],
         )
+        # exact, not approx: the NONE control must be the unshielded episode
+        assert log["final_distance"] == plain["final_distance"]
         assert log["shielded_role"] == "pursuer"
         assert log["shield"]["n_steps"] == log["steps"]
         assert log["shield"]["tier_histogram"]["none"] == log["steps"]
