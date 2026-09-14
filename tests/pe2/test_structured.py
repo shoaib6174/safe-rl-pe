@@ -305,16 +305,23 @@ class TestTraceAndCharacterise:
     def test_trace_records_every_env_step_with_its_branch(self):
         from pe2.structured import SearchMDP
 
+        seed = 900_900
         m = SearchMDP(CFG, GreedyEvader, hold=10)
         m.trace = []
-        log = m.play_episode(OrbitSearch(CFG).predict, 900_900)
+        log = m.play_episode(OrbitSearch(CFG).predict, seed)
         assert len(m.trace) == log["steps"]
         branches = {b for _, b, _, _ in m.trace}
         assert branches <= {"law", "search"} and "search" in branches
         vis = [v for v, _, _, _ in m.trace]
+        # The trace records visibility only AFTER each step, but _los_breaks uses
+        # the reset visibility as the first `prev` — so seed the sequence with it
+        # (the wrapper's reset is deterministic per seed) or a visible-at-reset ->
+        # invisible-after-step-1 episode would be counted by one side only.
+        obs0, _ = SingleAgentWrapper(CFG, "pursuer", GreedyEvader).reset(seed=seed)
+        reset_vis = bool(obs0[6] > 0.5)
         # every recorded "law" step follows a visible or last-seen state; the
         # count of visible->invisible transitions must equal the log's los_breaks
-        breaks = sum(1 for a, b in pairwise(vis) if a and not b)
+        breaks = sum(1 for a, b in pairwise([reset_vis, *vis]) if a and not b)
         assert breaks == log["los_breaks"]
         for _, _, v, w in m.trace:
             assert -1.0 <= v <= 1.0 and -1.0 <= w <= 1.0
