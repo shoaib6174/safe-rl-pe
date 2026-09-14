@@ -28,6 +28,7 @@ import numpy as np
 from pe2.config import EnvConfig
 from pe2.eval import win_count
 from pe2.exploitability import SingleAgentWrapper
+from pe2.metrics import ShieldMetrics
 from pe2.obs import opponent_world_from_obs, own_pose_from_obs
 from pe2.scripted import (
     K_OMEGA,
@@ -139,6 +140,7 @@ class SearchMDP(gym.Env):
         hold: int = HOLD,
         r_acq: float = R_ACQ,
         zero_reward: bool = False,
+        shield=None,
     ):
         super().__init__()
         self.cfg = cfg
@@ -155,6 +157,15 @@ class SearchMDP(gym.Env):
         self._info: dict = {}
         # optional per-step record (visible, branch, v, w) for characterise(); off by default
         self.trace: list | None = None
+        # S4 (spec section 2): optional CBF shield on EVERY executed pursuer
+        # command — the law's and the learner's alike — using the true pose and
+        # the static map, as in Step 6 (D97). The learner's observation is
+        # untouched; only execution differs. ShieldMetrics is per episode.
+        self.shield = shield
+        self.shield_metrics = None
+        self.violations_total = 0  # cumulative pursuer contact steps, shield or not
+        self.episode_violations = 0
+        self._last_sinfo = None  # last step's shield info (None without a shield)
 
     # -- internals -------------------------------------------------------
     def _begin(self, seed: int | None) -> np.ndarray:
@@ -163,19 +174,40 @@ class SearchMDP(gym.Env):
         self._visible = bool(obs[6] > 0.5)
         self._los_breaks = 0
         self._info = {}
+        self.episode_violations = 0
+        self.shield_metrics = ShieldMetrics() if self.shield is not None else None
         return obs
 
     def _step_inner(self, action: np.ndarray, branch: str = "law"):
         prev = self._visible
-        obs, r, term, trunc, info = self.inner.step(action)
+        a = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+        sinfo = None
+        if self.shield is not None:
+            cfg = self.cfg
+            env = self.inner.env
+            v_nom, w_nom = (a[0] + 1.0) / 2.0 * cfg.v_max, a[1] * cfg.omega_max
+            (v, w), sinfo = self.shield.filter(
+                (float(v_nom), float(w_nom)),
+                env.pursuer_pose,
+                env.obstacles,
+                v_max=cfg.v_max,
+            )
+            a = np.array(
+                [2.0 * v / cfg.v_max - 1.0, w / cfg.omega_max], dtype=np.float32
+            )
+        self._last_sinfo = sinfo
+        obs, r, term, trunc, info = self.inner.step(a)
         self.env_steps += 1
+        contact = bool(info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"])
+        self.violations_total += int(contact)
+        self.episode_violations += int(contact)
+        if sinfo is not None:
+            self.shield_metrics.record(sinfo, violation=contact)
         self._visible = bool(obs[6] > 0.5)
         self._los_breaks += int(prev and not self._visible)
         self._info = info
         if self.trace is not None:
-            self.trace.append(
-                (self._visible, branch, float(action[0]), float(action[1]))
-            )
+            self.trace.append((self._visible, branch, float(a[0]), float(a[1])))
         onset = int((not prev) and self._visible)
         return obs, float(r), onset, term, trunc
 
@@ -236,7 +268,7 @@ class SearchMDP(gym.Env):
         while not (term or trunc):
             a, _ = predict(obs, deterministic=True)
             obs, _r, term, trunc, _i = self.step(a)
-        return {
+        log = {
             "seed": seed,
             "role": "pursuer",
             "outcome": self._info["outcome"],
@@ -244,6 +276,13 @@ class SearchMDP(gym.Env):
             "final_distance": float(self._info["distance"]),
             "los_breaks": self._los_breaks,
         }
+        if self.shield is not None:
+            log |= {
+                "shielded_role": "pursuer",
+                "violations": self.episode_violations,
+                "shield": self.shield_metrics.summary(),
+            }
+        return log
 
 
 def evaluate_structured(
@@ -253,11 +292,21 @@ def evaluate_structured(
     n_episodes: int,
     seed0: int,
     hold: int = HOLD,
+    shield_factory: Callable[[], object] | None = None,
 ) -> list[dict]:
     """Paired-seed evaluation of a search policy inside SearchMDP (seeds
     seed0 + i, deterministic predict, frozen opponent). Same log schema as
-    evaluate_sb3_policy so win_count / Wilson / McNemar apply unchanged."""
-    mdp = SearchMDP(cfg, opponent_factory, hold=hold)
+    evaluate_sb3_policy so win_count / Wilson / McNemar apply unchanged.
+
+    `shield_factory()` builds ONE shield for the whole call (a shield carries
+    no cross-episode state; ShieldMetrics is rebuilt per episode), and the
+    logs then carry the shield block as well."""
+    mdp = SearchMDP(
+        cfg,
+        opponent_factory,
+        hold=hold,
+        shield=shield_factory() if shield_factory is not None else None,
+    )
     return [mdp.play_episode(model.predict, seed0 + i) for i in range(n_episodes)]
 
 

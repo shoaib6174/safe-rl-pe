@@ -363,3 +363,95 @@ class TestTraceAndCharacterise:
         assert c["search_abs_omega_mean"] == pytest.approx(
             0.5 * CFG.omega_max, abs=1e-6
         )
+
+
+class TestShieldInSearchMDP:
+    def test_no_shield_leaves_logs_unchanged(self):
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader)
+        log = m.play_episode(OrbitSearch(CFG).predict, 900_930)
+        assert "shield" not in log and "shielded_role" not in log
+        assert m.shield is None and m.shield_metrics is None
+        assert m.violations_total >= 0
+
+    def test_noop_shield_reproduces_the_unshielded_episode_and_measures(self):
+        from pe2.metrics import summarize_shield
+        from pe2.shield import NoOpShield
+        from pe2.structured import SearchMDP
+
+        plain = SearchMDP(CFG, GreedyEvader, hold=1).play_episode(
+            OrbitSearch(CFG).predict, 900_931
+        )
+        m = SearchMDP(CFG, GreedyEvader, hold=1, shield=NoOpShield(CFG))
+        log = m.play_episode(OrbitSearch(CFG).predict, 900_931)
+        assert (log["outcome"], log["steps"], log["los_breaks"]) == (
+            plain["outcome"],
+            plain["steps"],
+            plain["los_breaks"],
+        )
+        assert log["shielded_role"] == "pursuer"
+        assert log["shield"]["n_steps"] == log["steps"]
+        assert log["shield"]["tier_histogram"]["none"] == log["steps"]
+        assert log["violations"] == m.episode_violations
+        s = summarize_shield([log])
+        assert s["n_episodes"] == 1 and s["violation_steps"] == log["violations"]
+
+    def test_cbf_shield_filters_every_step_and_counts_no_violation(self):
+        from pe2.metrics import TIERS
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader, hold=10, shield=CBFShield(CFG))
+        for i in range(3):
+            log = m.play_episode(RandomSearch(i).predict, 900_940 + i)
+            assert log["shield"]["n_steps"] == log["steps"]
+            assert log["shield"]["tier_histogram"]["none"] == 0
+            assert log["violations"] == 0  # D97: zero contact steps at delta = 0
+            assert m._last_sinfo["method"] in TIERS  # R1: Task 2's overlay source
+        assert m.violations_total == 0
+
+    def test_unshielded_random_search_does_hit_walls(self):
+        # the contact counter must be live without a shield, and a full-speed
+        # random searcher collides somewhere in a few episodes (G4's logic)
+        from pe2.structured import SearchMDP
+
+        class Straight:
+            def predict(self, obs, deterministic=True):
+                return np.array([1.0, 0.0], dtype=np.float32), None
+
+        m = SearchMDP(CFG, GreedyEvader, hold=10)
+        for i in range(5):
+            m.play_episode(Straight().predict, 900_950 + i)
+        assert m.violations_total > 0
+
+    def test_shield_is_applied_to_the_law_branch_too(self):
+        # every executed command goes through the filter: n_steps equals env steps
+        # even on an episode where the law (chase) plays most of the steps
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader, hold=1, shield=CBFShield(CFG))
+        m.trace = []
+        log = m.play_episode(OrbitSearch(CFG).predict, 900_960)
+        assert any(b == "law" for _, b, _, _ in m.trace)
+        assert log["shield"]["n_steps"] == len(m.trace) == log["steps"]
+
+    def test_evaluate_structured_shield_factory(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import evaluate_structured
+
+        logs = evaluate_structured(
+            RandomSearch(0),
+            CFG,
+            GreedyEvader,
+            2,
+            900_970,
+            hold=10,
+            shield_factory=lambda: CBFShield(CFG),
+        )
+        assert all("shield" in lg and lg["shielded_role"] == "pursuer" for lg in logs)
+        plain = evaluate_structured(
+            RandomSearch(0), CFG, GreedyEvader, 2, 900_970, hold=10
+        )
+        assert all("shield" not in lg for lg in plain)
