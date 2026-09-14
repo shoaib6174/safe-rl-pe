@@ -36,7 +36,7 @@ the static map (as in Step 6). The learner's observation is unchanged; only exec
   `shield = metrics.summary()`, so `pe2.metrics.summarize_shield` applies unchanged. Training
   with a shield uses the same path (the reward is the unshaped terminal ±1; the shield never
   touches it).
-- `pe2.structured.evaluate_structured(…, shield_factory=None)`: one fresh shield per episode.
+- `pe2.structured.evaluate_structured(…, shield_factory=None)`: one shield per call (the shield is stateless across episodes; `ShieldMetrics` is rebuilt per episode). Amendment A1 (2026-09-14, before any cell): wording corrected from "per episode"; and the executed command differs from the shield's chosen u by at most one float32 ulp through the gym action round-trip — the H-SAFE guarantee is the env's contact flag, unchanged.
 - Runner `scripts/derisk_s4_shield.py`.
 
 ## 3. Protocol
