@@ -508,8 +508,11 @@ def h2_verdicts(results: dict, starts: dict) -> dict:
     }
 
 
-def hsafe_verdict(results: dict) -> dict:
-    steps, offenders = 0, []
+def hsafe_verdict(results: dict, starts: dict | None = None) -> dict:
+    """H-SAFE (spec section 5): 0 pursuer contact steps anywhere in the round —
+    every arm's training, probes and gate, AND the scripted comparators, whose
+    500 shielded episodes per defender are just as much part of the round."""
+    steps, offenders, unverified = 0, [], []
     missing = [a for a in ARMS if a not in results or "final" not in results[a]]
     for a, r in results.items():
         v = (
@@ -524,10 +527,22 @@ def hsafe_verdict(results: dict) -> dict:
         steps += v
         if v:
             offenders.append(a)
+    for d in DEFENDERS:
+        for c in COMPARATORS:
+            e = ((starts or {}).get(d) or {}).get(c)
+            if e is None or "pursuer_violations" not in e:
+                if starts is not None:
+                    unverified.append(f"comparator:{d}/{c}")
+                continue
+            v = int(e["pursuer_violations"] or 0)
+            steps += v
+            if v:
+                offenders.append(f"comparator:{d}/{c}")
     return {
         "verdict": "FAILS" if steps else ("INCOMPLETE" if missing else "HOLDS"),
         "pursuer_violation_steps": steps,
         "offenders": offenders,
+        "comparators_unverified": unverified,
         "missing": missing,
     }
 
@@ -558,7 +573,7 @@ def load_results() -> dict:
 
 def summarize(results: dict, starts: dict) -> dict:
     h = h2_verdicts(results, starts)
-    hs = hsafe_verdict(results)
+    hs = hsafe_verdict(results, starts)
     d = direction(
         {
             "hsafe": hs["verdict"],
@@ -586,6 +601,7 @@ def summarize(results: dict, starts: dict) -> dict:
             c: {
                 "deadlock_rate": starts[d_][c]["pursuer"]["deadlock_episode_rate"],
                 "escape_rate": starts[d_][c]["pursuer"]["escape_rate"],
+                "pursuer_violations": starts[d_][c].get("pursuer_violations"),
             }
             for c in COMPARATORS
         }

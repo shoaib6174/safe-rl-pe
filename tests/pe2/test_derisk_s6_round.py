@@ -51,13 +51,22 @@ def _arm(name, deadlocks, viol=0):
     }
 
 
+def _comp(deadlock, escape):
+    return {
+        "deadlock_ind": _ind(deadlock),
+        "escape_ind": _ind(escape),
+        "pursuer_violations": 0,
+        "pursuer": {"deadlock_episode_rate": deadlock, "escape_rate": escape},
+    }
+
+
 def _starts():
     out = {}
     for d in ("D1", "D2"):
         out[d] = {
-            "SPLITHUG": {"deadlock_ind": _ind(0.50), "escape_ind": _ind(0.4)},
-            "HUG7": {"deadlock_ind": _ind(0.61), "escape_ind": _ind(0.5)},
-            "GREEDY": {"deadlock_ind": _ind(0.54), "escape_ind": _ind(0.6)},
+            "SPLITHUG": _comp(0.50, 0.4),
+            "HUG7": _comp(0.61, 0.5),
+            "GREEDY": _comp(0.54, 0.6),
         }
     return out
 
@@ -175,6 +184,29 @@ class TestSafety:
         res = _full()
         del res["EZ-D222"]
         assert R.hsafe_verdict(res)["verdict"] == "INCOMPLETE"
+
+    def test_comparator_violations_fail_hsafe(self):
+        starts = _starts()
+        starts["D1"]["HUG7"]["pursuer_violations"] = 1
+        h = R.hsafe_verdict(_full(), starts)
+        assert h["verdict"] == "FAILS"
+        assert h["pursuer_violation_steps"] == 1
+        assert h["offenders"] == ["comparator:D1/HUG7"]
+
+    def test_comparator_without_the_key_is_unverified(self):
+        starts = _starts()
+        del starts["D2"]["GREEDY"]["pursuer_violations"]
+        h = R.hsafe_verdict(_full(), starts)
+        assert h["verdict"] == "HOLDS"
+        assert h["comparators_unverified"] == ["comparator:D2/GREEDY"]
+
+
+class TestSummary:
+    def test_summarize_runs_on_the_fixture(self):
+        s = R.summarize(_full(), _starts())
+        assert s["complete"] is True
+        assert s["hsafe"]["verdict"] == "HOLDS"
+        assert s["comparators"]["D1"]["HUG7"]["pursuer_violations"] == 0
 
 
 class TestDirection:
