@@ -519,3 +519,16 @@ class TestGatePass:
         ref = _logs(300, 500)
         g = gate_pass(policy, ref)
         assert g["pass"] is False and g["c"] > g["b"]
+
+
+class TestPairedIndicatorTest:
+    def test_direction_and_significance(self):
+        from pe2.derisk import paired_indicator_test
+
+        a = [True] * 60 + [False] * 40
+        b = [True] * 40 + [False] * 60  # a-only on 20, b-only on 0
+        r = paired_indicator_test(a, b)
+        assert r["b"] == 20 and r["c"] == 0 and r["p"] < 0.05 and r["pass"] is True
+        assert r["rate_a"] == 0.6 and r["rate_b"] == 0.4
+        assert paired_indicator_test(b, a)["pass"] is False  # reversed never passes
+        assert paired_indicator_test(a, a)["p"] == 1.0

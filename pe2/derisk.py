@@ -489,3 +489,33 @@ def gate_pass(
         "wilson": [lo, hi],
         "ref_rate": kr / nr,
     }
+
+
+def paired_indicator_test(
+    ind_a: list[bool], ind_b: list[bool], p_gate: float = 0.05
+) -> dict:
+    """S6 deadlock test: paired exact two-sided binomial on the discordant
+    pairs of a per-episode indicator (b = a-only, c = b-only). PASS iff
+    p < p_gate and b > c — 'a' produces the event more often than 'b' on
+    the same episodes."""
+    from pe2.eval import binomial_pvalue
+
+    if len(ind_a) != len(ind_b):
+        raise ValueError("paired indicators must have equal length")
+    b = sum(1 for x, y in zip(ind_a, ind_b, strict=True) if x and not y)
+    c = sum(1 for x, y in zip(ind_a, ind_b, strict=True) if y and not x)
+    p = (
+        1.0
+        if b + c == 0
+        else binomial_pvalue(b, b + c, p0=0.5, alternative="two-sided")
+    )
+    n = len(ind_a)
+    return {
+        "pass": bool(p < p_gate and b > c),
+        "p": p,
+        "b": b,
+        "c": c,
+        "rate_a": sum(map(bool, ind_a)) / n,
+        "rate_b": sum(map(bool, ind_b)) / n,
+        "n": n,
+    }
