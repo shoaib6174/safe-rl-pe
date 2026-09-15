@@ -60,6 +60,15 @@ later, not this round's question.
   scripted comparator for H2-implicit (identical structure, no learning).
 - Runner `scripts/derisk_s6_attacker.py`.
 
+**Amendment A1 (2026-09-15, before any comparator or arm; from Task 1's review).** V1-P compares two
+routes that seat the scripted evader differently: as `SearchMDP`'s opponent its float64 command reaches the
+env untouched, while inside `SingleAgentWrapper(role="evader")` it occupies the learner's seat and passes
+through the float32 action Box (a ~4e-8 difference in the EVADER's ω that compounds over an episode;
+pursuer commands were bit-identical). The reference side therefore uses `BoxRoundTripEvader` — `GreedyEvader`
+with the same Box round-trip — so V1-P isolates the pursuer object. The compared tuple is outcome, steps,
+pursuer violations, stall count, step count, intervention count and longest stall run. No threshold, seed,
+stream, rule or budget changes.
+
 ## 3. Protocol
 
 - Defenders (frozen, shielded δ = 0, pursuer role, `EnvConfig()` defaults, evader speed 1.2):
