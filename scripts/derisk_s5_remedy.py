@@ -243,7 +243,9 @@ class ShieldedStructuredProbe:
             raise ValueError(f"total ({total}) must be a multiple of every ({every})")
         rows: list[dict] = []
 
-        def evaluate_at(model, env_steps: int, mark: int) -> dict:
+        def evaluate_at(
+            model, env_steps: int, mark: int, train_violations: int
+        ) -> dict:
             path = ckpt_dir / f"{label}_{mark}.zip"
             model.save(path)
             logs = evaluate_structured(
@@ -266,6 +268,7 @@ class ShieldedStructuredProbe:
                 "k": k,
                 "n": n,
                 "violations": int(sum(lg["violations"] for lg in logs)),
+                "train_violations": int(train_violations),
                 "intervention_rate": sh["intervention_rate"],
                 "stall_step_rate": sh["stall_step_rate"],
                 "deadlock_episode_rate": sh["deadlock_episode_rate"],
@@ -274,7 +277,8 @@ class ShieldedStructuredProbe:
             _write_json(report_path, {"checkpoints": rows})
             print(
                 f"  @{env_steps:>9} env steps (mark {mark}): shielded win rate {k}/{n} = {k / n:.3f}, "
-                f"violations {row['violations']}, stall {row['stall_step_rate']:.3f}, deadlock eps {row['deadlock_episode_rate']:.3f}",
+                f"violations {row['violations']} (train {row['train_violations']}), stall {row['stall_step_rate']:.3f}, "
+                f"deadlock eps {row['deadlock_episode_rate']:.3f}",
                 flush=True,
             )
             return row
@@ -288,10 +292,11 @@ class ShieldedStructuredProbe:
                 counts = inner_self.training_env.get_attr("env_steps")
                 assert len(counts) == 1
                 env_steps = int(counts[0])
+                viol = int(inner_self.training_env.get_attr("violations_total")[0])
                 while (
                     inner_self.next_mark <= total and env_steps >= inner_self.next_mark
                 ):
-                    evaluate_at(inner_self.model, env_steps, inner_self.next_mark)
+                    evaluate_at(inner_self.model, env_steps, inner_self.next_mark, viol)
                     inner_self.next_mark += every
                 return env_steps < total
 
@@ -307,7 +312,6 @@ def run_train_arm(
     from pe2.shield import CBFShield
     from pe2.structured import SearchMDP, evaluate_structured
 
-    require_arm_not_run(arm)
     spec = ARMS[arm]
     cfg = EnvConfig()
     d = OUT / f"ckpts_{arm}"
@@ -397,6 +401,7 @@ def run_train_arm(
 
 
 def run_arm(arm: str, device: str) -> dict:
+    require_arm_not_run(arm)  # refuse BEFORE reading or writing anything
     starts = load_start()
     holder: dict = {}
     try:
@@ -482,13 +487,25 @@ def choose_artefact(results: dict, h3: dict) -> str | None:
     return min(cands)[3] if cands else None
 
 
+def train_violations_of(r: dict) -> int:
+    """The arm's cumulative training violations. A record written by the crash
+    handler (or an orphan probe file) has no top-level count, so fall back to the
+    last probe row that carried one."""
+    if "train_violations" in r:
+        return int(r["train_violations"])
+    for row in reversed(r.get("checkpoints") or []):
+        if "train_violations" in row:
+            return int(row["train_violations"])
+    return 0
+
+
 def hsafe_verdict(results: dict) -> dict:
     steps = 0
     offenders = []
     missing = [a for a in ARMS if a not in results or "final" not in results[a]]
     for a, r in results.items():
         v = (
-            int(r.get("train_violations", 0))
+            train_violations_of(r)
             + int(r.get("probe_violations", 0))
             + int((r.get("final") or {}).get("violations", 0))
         )
@@ -538,9 +555,31 @@ def load_results() -> dict:
     }
 
 
+def orphan_records(results: dict) -> dict:
+    """Probe files with no arm record: the process died before `run_arm` could
+    write one. Their rows are evidence and must reach the H-SAFE census."""
+    out = {}
+    for path in sorted(OUT.glob("s5_probe_*.json")):
+        arm = path.stem.removeprefix("s5_probe_")
+        if arm in results:
+            continue
+        spec = ARMS.get(arm)
+        out[arm] = {
+            "arm": arm,
+            "family": spec["family"] if spec else arm[:2],
+            "seed": spec["seed"] if spec else None,
+            "verdict": "UNDETERMINED",
+            "reason": "orphan probe file (process died without a record)",
+            "probe": str(path),
+            "checkpoints": json.loads(path.read_text()).get("checkpoints", []),
+        }
+    return out
+
+
 def summarize(results: dict, starts: dict) -> dict:
     h = hypothesis_verdicts(results)
-    hs = hsafe_verdict(results)
+    orphans = orphan_records(results)
+    hs = hsafe_verdict(results | orphans)
     cost_keys = (
         "intervention_rate",
         "infeasibility_rate",
@@ -553,27 +592,18 @@ def summarize(results: dict, starts: dict) -> dict:
         for a, r in results.items()
         if "final" in r
     }
-    ingredient = {
-        fam: {
+    ingredient = {}
+    for fam in FAMILIES:
+        finals = [
+            results[f"{fam}{s}"]["final"]["score"]["rate"]
+            for s in SEEDS
+            if f"{fam}{s}" in results and "final" in results[f"{fam}{s}"]
+        ]
+        ingredient[fam] = {
             "passes": sum(bool(_pass(results.get(f"{fam}{s}"))) for s in SEEDS),
-            "mean_rate": (
-                sum(
-                    results[f"{fam}{s}"]["final"]["score"]["rate"]
-                    for s in SEEDS
-                    if f"{fam}{s}" in results and "final" in results[f"{fam}{s}"]
-                )
-                / max(
-                    1,
-                    sum(
-                        1
-                        for s in SEEDS
-                        if f"{fam}{s}" in results and "final" in results[f"{fam}{s}"]
-                    ),
-                )
-            ),
+            "mean_rate": (sum(finals) / len(finals)) if finals else None,
+            "n_finished": len(finals),
         }
-        for fam in FAMILIES
-    }
     d = direction(
         {"hsafe": hs["verdict"], "H3_overall": h["H3_overall"], "RZ": h["RZ"]}
     )
@@ -588,6 +618,18 @@ def summarize(results: dict, starts: dict) -> dict:
         "arms": {
             a: {"verdict": r.get("verdict"), "reason": r.get("reason")}
             for a, r in results.items()
+        },
+        "orphans": {
+            a: {
+                "probe": r["probe"],
+                "reason": r["reason"],
+                "checkpoints": len(r["checkpoints"]),
+                "probe_violations": int(
+                    sum(x.get("violations", 0) for x in r["checkpoints"])
+                ),
+                "train_violations": train_violations_of(r),
+            }
+            for a, r in orphans.items()
         },
         "cost": cost,
         "ingredient": ingredient,
