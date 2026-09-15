@@ -476,3 +476,110 @@ class TestShieldInSearchMDP:
             RandomSearch(0), CFG, GreedyEvader, 2, 900_970, hold=10
         )
         assert all("shield" not in lg for lg in plain)
+
+
+class TestShieldAwareIngredients:
+    def test_features_default_without_a_shield(self):
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader, shield_obs=True)
+        np.testing.assert_allclose(m.shield_features(), [0.0, 2.0, 0.0])
+        assert m.observation_space.shape == (14,)
+        obs, _ = m.reset(seed=900_980)
+        assert obs.shape == (14,) and obs.dtype == np.float32
+        np.testing.assert_allclose(obs[-3:], [0.0, 2.0, 0.0])
+
+    def test_features_come_from_the_last_executed_step(self):
+        from pe2.metrics import DEADLOCK_STEPS
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        # 900_989, not 900_981: at 900_981 the law has nothing to act on at
+        # reset, so no step is executed and `_last_sinfo` is still None --
+        # there is no "last executed step" to compare the features against.
+        m = SearchMDP(
+            CFG, GreedyEvader, hold=10, shield=CBFShield(CFG), shield_obs=True
+        )
+        obs, _ = m.reset(seed=900_989)
+        assert obs.shape == (14,)
+        f = m.shield_features()
+        s = m._last_sinfo
+        assert f[0] == float(bool(s["intervention"]))
+        assert f[1] == pytest.approx(float(np.clip(s["min_clearance"], -0.5, 2.0)))
+        assert f[2] == pytest.approx(
+            float(
+                np.clip(m.shield_metrics._current_stall_run / DEADLOCK_STEPS, 0.0, 2.0)
+            )
+        )
+        # the law still sees the raw 11-dim observation: play a full episode without error
+        log = m.play_episode(RandomSearch(1).predict, 900_989)
+        assert log["violations"] == 0
+
+    def test_shield_obs_off_leaves_the_observation_unchanged(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader, hold=10, shield=CBFShield(CFG))
+        obs, _ = m.reset(seed=900_982)
+        assert obs.shape == (11,) and m.observation_space.shape == (11,)
+
+    def test_stall_penalty_subtracts_per_stalled_step_in_the_span(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        class Wall:  # drive straight into the nearest wall: the shield must stall it
+            def predict(self, obs, deterministic=True):
+                return np.array([1.0, 0.0], dtype=np.float32), None
+
+        m = SearchMDP(
+            CFG, GreedyEvader, hold=10, shield=CBFShield(CFG), stall_penalty=1e-3
+        )
+        obs, _ = m.reset(seed=900_983)
+        total_stalled = 0
+        total_penalty = 0.0
+        done = False
+        while not done:
+            obs, r, term, trunc, info = m.step(Wall().predict(obs)[0])
+            done = term or trunc
+            assert info["stalled_steps"] == m.span_stalled
+            total_stalled += info["stalled_steps"]
+            total_penalty += r - info["raw_reward"]
+        assert total_stalled > 0
+        assert total_penalty == pytest.approx(-1e-3 * total_stalled)
+
+    def test_stall_penalty_is_zero_under_zero_reward(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(
+            CFG,
+            GreedyEvader,
+            hold=10,
+            shield=CBFShield(CFG),
+            stall_penalty=1e-3,
+            zero_reward=True,
+        )
+        m.reset(seed=900_984)
+        _, r, _, _, _ = m.step(np.array([1.0, 0.0], dtype=np.float32))
+        assert r == 0.0
+
+    def test_evaluate_structured_with_shield_obs(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import evaluate_structured
+
+        class Echo:
+            def predict(self, obs, deterministic=True):
+                assert obs.shape == (14,)
+                return np.array([0.5, 0.0], dtype=np.float32), None
+
+        logs = evaluate_structured(
+            Echo(),
+            CFG,
+            GreedyEvader,
+            2,
+            900_990,
+            hold=10,
+            shield_factory=lambda: CBFShield(CFG),
+            shield_obs=True,
+        )
+        assert len(logs) == 2 and all("shield" in lg for lg in logs)

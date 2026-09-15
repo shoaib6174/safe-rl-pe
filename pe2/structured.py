@@ -24,12 +24,13 @@ from typing import ClassVar
 
 import gymnasium as gym
 import numpy as np
+from gymnasium import spaces
 
 from pe2.config import EnvConfig
 from pe2.eval import win_count
 from pe2.exploitability import SingleAgentWrapper
-from pe2.metrics import ShieldMetrics
-from pe2.obs import opponent_world_from_obs, own_pose_from_obs
+from pe2.metrics import DEADLOCK_STEPS, ShieldMetrics
+from pe2.obs import obs_dim, opponent_world_from_obs, own_pose_from_obs
 from pe2.scripted import (
     K_OMEGA,
     LAST_SEEN_TOL,
@@ -141,6 +142,8 @@ class SearchMDP(gym.Env):
         r_acq: float = R_ACQ,
         zero_reward: bool = False,
         shield=None,
+        shield_obs: bool = False,
+        stall_penalty: float = 0.0,
     ):
         super().__init__()
         self.cfg = cfg
@@ -171,6 +174,21 @@ class SearchMDP(gym.Env):
         self.violations_total = 0  # cumulative pursuer contact steps, shield or not
         self.episode_violations = 0
         self._last_sinfo = None  # last step's shield info (None without a shield)
+        # S5 (spec section 2, D112): shield-aware ingredients. `shield_obs`
+        # appends the last executed step's shield state to the LEARNER's
+        # observation — intervention flag, min_clearance (m, clipped), stall
+        # run / DEADLOCK_STEPS (clipped) — because S4 showed a learner that
+        # never sees the filter acting cannot learn around the states where it
+        # is pinned. The scripted law keeps the raw observation. `stall_penalty`
+        # subtracts w per stalled env step in a learner's span; NOT
+        # potential-based by design (the objective must change).
+        self.shield_obs = bool(shield_obs)
+        self.stall_penalty = float(stall_penalty)
+        self.span_stalled = 0
+        if self.shield_obs:
+            self.observation_space = spaces.Box(
+                low=-2.0, high=2.0, shape=(obs_dim(cfg) + 3,), dtype=np.float32
+            )
 
     # -- internals -------------------------------------------------------
     def _begin(self, seed: int | None) -> np.ndarray:
@@ -181,6 +199,7 @@ class SearchMDP(gym.Env):
         self._info = {}
         self.episode_violations = 0
         self._last_sinfo = None
+        self.span_stalled = 0
         self.shield_metrics = ShieldMetrics() if self.shield is not None else None
         return obs
 
@@ -213,6 +232,7 @@ class SearchMDP(gym.Env):
         self.episode_violations += int(contact)
         if sinfo is not None:
             self.shield_metrics.record(sinfo, violation=contact)
+            self.span_stalled += int(sinfo["stalled"])
         self._visible = bool(obs[6] > 0.5)
         self._los_breaks += int(prev and not self._visible)
         self._info = info
@@ -235,7 +255,33 @@ class SearchMDP(gym.Env):
         return obs, reward, onsets, term, trunc
 
     def _shaped(self, reward: float, onsets: int) -> float:
-        return 0.0 if self.zero_reward else reward + self.r_acq * onsets
+        if self.zero_reward:
+            return 0.0
+        return reward + self.r_acq * onsets - self.stall_penalty * self.span_stalled
+
+    def shield_features(self) -> np.ndarray:
+        """[intervention, min_clearance clipped to [-0.5, 2], stall_run /
+        DEADLOCK_STEPS clipped to [0, 2]] of the last executed step; the
+        defaults (0, 2, 0) mean 'no shield acted'."""
+        s = self._last_sinfo
+        if s is None or self.shield_metrics is None:
+            return np.array([0.0, 2.0, 0.0], dtype=np.float32)
+        run = self.shield_metrics._current_stall_run / DEADLOCK_STEPS
+        return np.array(
+            [
+                float(bool(s["intervention"])),
+                float(np.clip(s["min_clearance"], -0.5, 2.0)),
+                float(np.clip(run, 0.0, 2.0)),
+            ],
+            dtype=np.float32,
+        )
+
+    def _learner_obs(self, obs: np.ndarray) -> np.ndarray:
+        if not self.shield_obs:
+            return obs
+        return np.concatenate(
+            [np.asarray(obs, dtype=np.float32), self.shield_features()]
+        )
 
     # -- gym API (training) ---------------------------------------------
     def reset(self, *, seed: int | None = None, options: dict | None = None):
@@ -244,13 +290,14 @@ class SearchMDP(gym.Env):
             obs = self._begin(seed)
             obs, _r, _o, term, trunc = self._advance(obs)
             if not (term or trunc):
-                return obs, {"env_steps": self.env_steps}
+                return self._learner_obs(obs), {"env_steps": self.env_steps}
             # The law finished this episode before any decision (evader
             # visible at reset, then captured or timed out): the learner had
             # no influence, so start the next episode from the stream.
             seed = None
 
     def step(self, action):
+        self.span_stalled = 0
         a = np.asarray(action, dtype=np.float32)
         reward, onsets, term, trunc = 0.0, 0, False, False
         obs = None
@@ -265,9 +312,13 @@ class SearchMDP(gym.Env):
             reward += r2
             onsets += o2
         info = dict(
-            self._info, env_steps=self.env_steps, onsets=onsets, raw_reward=reward
+            self._info,
+            env_steps=self.env_steps,
+            onsets=onsets,
+            raw_reward=reward,
+            stalled_steps=self.span_stalled,
         )
-        return obs, self._shaped(reward, onsets), term, trunc, info
+        return self._learner_obs(obs), self._shaped(reward, onsets), term, trunc, info
 
     # -- evaluation ------------------------------------------------------
     def play_episode(self, predict, seed: int) -> dict:
@@ -275,6 +326,7 @@ class SearchMDP(gym.Env):
         decides at decision points, the law plays the rest."""
         obs = self._begin(seed)
         obs, _r, _o, term, trunc = self._advance(obs)
+        obs = self._learner_obs(obs)
         while not (term or trunc):
             a, _ = predict(obs, deterministic=True)
             obs, _r, term, trunc, _i = self.step(a)
@@ -303,6 +355,7 @@ def evaluate_structured(
     seed0: int,
     hold: int = HOLD,
     shield_factory: Callable[[], object] | None = None,
+    shield_obs: bool = False,
 ) -> list[dict]:
     """Paired-seed evaluation of a search policy inside SearchMDP (seeds
     seed0 + i, deterministic predict, frozen opponent). Same log schema as
@@ -316,6 +369,7 @@ def evaluate_structured(
         opponent_factory,
         hold=hold,
         shield=shield_factory() if shield_factory is not None else None,
+        shield_obs=shield_obs,
     )
     return [mdp.play_episode(model.predict, seed0 + i) for i in range(n_episodes)]
 
