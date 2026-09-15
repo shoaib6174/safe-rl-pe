@@ -593,6 +593,7 @@ class StructuredPursuerPolicy:
         self.decisions = 0
         self._held = None
         self._hold_left = 0
+        self._recorded = True
         self.reset()
 
     def reset(self) -> None:
@@ -604,6 +605,9 @@ class StructuredPursuerPolicy:
         self.decisions = 0
         self._held = None
         self._hold_left = 0
+        # True = this step's shield info has already been recorded (or there is
+        # nothing to record yet), so a stray second `record` is a no-op.
+        self._recorded = True
 
     def _features(self) -> np.ndarray:
         s = self.last_sinfo
@@ -620,6 +624,7 @@ class StructuredPursuerPolicy:
         )
 
     def act(self, obs: np.ndarray, env) -> tuple[float, float]:
+        self._recorded = False
         a = self.law.act(obs)
         if a is None:
             if self._hold_left <= 0:
@@ -663,5 +668,11 @@ class StructuredPursuerPolicy:
         return self.last_exec
 
     def record(self, contact: bool) -> None:
+        """Log the step just executed. At most once per `act`: `last_sinfo` is
+        kept for the next decision's features, so a second call in the same
+        step would double-count it."""
+        if self._recorded:
+            return
+        self._recorded = True
         if self.last_sinfo is not None and self.metrics is not None:
             self.metrics.record(self.last_sinfo, violation=bool(contact))

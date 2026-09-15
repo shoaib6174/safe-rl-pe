@@ -89,6 +89,34 @@ class GreedyEvader:
         return None if best is None else best[1]
 
 
+class BoxRoundTripEvader(GreedyEvader):
+    """`GreedyEvader` whose command takes the SAME float32 Box round-trip that
+    `SingleAgentWrapper._scale_action` applies to a learner's action.
+
+    V1-P compares two routes that put the scripted evader in different seats:
+    in `SearchMDP` it is the opponent (its float64 (v, omega) reaches the env
+    untouched), while in `SingleAgentWrapper(role="evader")` it stands in for
+    the learner, so its omega passes through a float32 Box. That is a ~4e-8
+    difference in the EVADER's command — nothing to do with the pursuer under
+    test — and it compounds over 1200 steps (measured: seed 9001003 diverged
+    at env step 14 with the pursuer commands still bit-identical). Giving the
+    reference side this evader equalises that one path, so any remaining
+    difference is the pursuer's, which is what V1-P is for.
+
+    It lives here rather than in the tests because the runner's 200-seed V1-P
+    preflight needs it too."""
+
+    def act(self, obs: np.ndarray, env: PursuitEvasionEnv) -> tuple[float, float]:
+        v, w = super().act(obs, env)
+        cfg = env.cfg
+        # exactly SingleAgentWrapper._scale_action for the evader role
+        a = np.array(
+            [2.0 * v / cfg.evader_v_max - 1.0, w / cfg.omega_max], dtype=np.float32
+        )
+        a64 = np.clip(np.asarray(a, dtype=float), -1.0, 1.0)
+        return (a64[0] + 1.0) / 2.0 * cfg.evader_v_max, a64[1] * cfg.omega_max
+
+
 OPEN_SPACE_HEADINGS = 16  # candidate directions, evenly spaced
 OPEN_SPACE_HORIZON = 1.0  # seconds of straight-line lookahead
 

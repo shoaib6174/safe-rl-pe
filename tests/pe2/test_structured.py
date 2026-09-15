@@ -10,7 +10,7 @@ import pytest
 
 from pe2.config import EnvConfig
 from pe2.exploitability import SingleAgentWrapper
-from pe2.scripted import GreedyEvader, SearchingPursuer
+from pe2.scripted import BoxRoundTripEvader, GreedyEvader, SearchingPursuer
 from pe2.structured import (
     HOLD,
     R_ACQ,
@@ -585,30 +585,6 @@ class TestShieldAwareIngredients:
         assert len(logs) == 2 and all("shield" in lg for lg in logs)
 
 
-class BoxRoundTripEvader(GreedyEvader):
-    """`GreedyEvader` whose command takes the SAME float32 Box round-trip that
-    `SingleAgentWrapper._scale_action` applies to a learner's action.
-
-    V1-P compares two routes that put the scripted evader in different seats:
-    in `SearchMDP` it is the opponent (its float64 (v, omega) reaches the env
-    untouched), while in `SingleAgentWrapper(role="evader")` it stands in for
-    the learner, so its omega passes through a float32 Box. That is a ~4e-8
-    difference in the EVADER's command — nothing to do with the pursuer under
-    test — and it compounds over 1200 steps (measured: seed 9001003 diverged
-    at env step 14 with the pursuer commands still bit-identical). Giving the
-    reference side this evader equalises that one path, so any remaining
-    difference is the pursuer's, which is what V1-P is for."""
-
-    def act(self, obs, env):
-        v, w = super().act(obs, env)
-        cfg = env.cfg
-        a = np.array(
-            [2.0 * v / cfg.evader_v_max - 1.0, w / cfg.omega_max], dtype=np.float32
-        )
-        a64 = np.clip(np.asarray(a, dtype=float), -1.0, 1.0)
-        return (a64[0] + 1.0) / 2.0 * cfg.evader_v_max, a64[1] * cfg.omega_max
-
-
 class TestStructuredPursuerPolicy:
     @staticmethod
     def _model():
@@ -657,12 +633,18 @@ class TestStructuredPursuerPolicy:
                 w.env.current_step,
                 pol.metrics.n_violations,
                 pol.metrics.n_stalled,
+                pol.metrics.n_steps,
+                pol.metrics.n_interventions,
+                pol.metrics.longest_stall_run,
             )
             exp = (
                 ref["outcome"],
                 ref["steps"],
                 ref["violations"],
                 ref["shield"]["n_stalled"],
+                ref["shield"]["n_steps"],
+                ref["shield"]["n_interventions"],
+                ref["shield"]["longest_stall_run"],
             )
             assert got == exp, f"seed {seed}: {got} != {exp}"
 
@@ -693,6 +675,30 @@ class TestStructuredPursuerPolicy:
                 break
         assert (info["outcome"], w.env.current_step) == (ref["outcome"], ref["steps"])
         assert w._opponent.metrics is None and w._opponent.last_sinfo is None
+
+    def test_record_is_a_no_op_when_called_twice_in_one_step(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import StructuredPursuerPolicy
+
+        w = SingleAgentWrapper(
+            CFG,
+            "evader",
+            lambda: StructuredPursuerPolicy(
+                OrbitSearch(CFG), CFG, CBFShield(CFG), HOLD, False
+            ),
+        )
+        w.reset(seed=900_1300)
+        pol = w._opponent
+        for _ in range(5):
+            _, _, term, trunc, info = w.step(np.array([1.0, 0.0], dtype=np.float32))
+            contact = bool(
+                info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"]
+            )
+            pol.record(contact)
+            pol.record(contact)  # duplicate: must not double-count
+            if term or trunc:
+                break
+        assert pol.metrics.n_steps == w.env.current_step
 
     def test_shield_obs_policy_feeds_14_dim_features(self):
         from pe2.shield import CBFShield

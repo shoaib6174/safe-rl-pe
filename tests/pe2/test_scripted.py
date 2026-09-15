@@ -6,6 +6,7 @@ import pytest
 from pe2.config import EnvConfig
 from pe2.env import OUTCOME_CAPTURE, PursuitEvasionEnv
 from pe2.scripted import (
+    BoxRoundTripEvader,
     FovLimitedEvader,
     FovLimitedPursuer,
     GreedyEvader,
@@ -64,6 +65,25 @@ class TestGreedyEvader:
         v, w = GreedyEvader().act(None, env)
         assert v == pytest.approx(cfg.evader_v_max)
         assert abs(w) < 1e-6  # dead-ahead flee, no turn
+
+
+class TestBoxRoundTripEvader:
+    def test_equals_greedy_evader_after_the_scale_action_round_trip(self):
+        """It must be GreedyEvader put through exactly the float32 Box that
+        SingleAgentWrapper._scale_action applies to an evader-role action."""
+        cfg = EnvConfig(n_obstacles=1)
+        env = PursuitEvasionEnv(cfg)
+        env.reset(seed=0)
+        env.obstacles = [{"x": 0.0, "y": 0.0, "radius": 0.8}]
+        env.pursuer_pose = np.array([0.0, -3.0, np.pi / 2])
+        env.evader_pose = np.array([2.5, 0.5, 0.0])
+        v, w = GreedyEvader().act(None, env)
+        a = np.array(
+            [2.0 * v / cfg.evader_v_max - 1.0, w / cfg.omega_max], dtype=np.float32
+        )
+        a64 = np.clip(np.asarray(a, dtype=float), -1.0, 1.0)
+        expected = ((a64[0] + 1.0) / 2.0 * cfg.evader_v_max, a64[1] * cfg.omega_max)
+        assert BoxRoundTripEvader().act(None, env) == expected
 
 
 class TestFovLimitedPursuer:
