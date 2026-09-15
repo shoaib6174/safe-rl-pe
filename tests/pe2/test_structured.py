@@ -583,3 +583,143 @@ class TestShieldAwareIngredients:
             shield_obs=True,
         )
         assert len(logs) == 2 and all("shield" in lg for lg in logs)
+
+
+class BoxRoundTripEvader(GreedyEvader):
+    """`GreedyEvader` whose command takes the SAME float32 Box round-trip that
+    `SingleAgentWrapper._scale_action` applies to a learner's action.
+
+    V1-P compares two routes that put the scripted evader in different seats:
+    in `SearchMDP` it is the opponent (its float64 (v, omega) reaches the env
+    untouched), while in `SingleAgentWrapper(role="evader")` it stands in for
+    the learner, so its omega passes through a float32 Box. That is a ~4e-8
+    difference in the EVADER's command — nothing to do with the pursuer under
+    test — and it compounds over 1200 steps (measured: seed 9001003 diverged
+    at env step 14 with the pursuer commands still bit-identical). Giving the
+    reference side this evader equalises that one path, so any remaining
+    difference is the pursuer's, which is what V1-P is for."""
+
+    def act(self, obs, env):
+        v, w = super().act(obs, env)
+        cfg = env.cfg
+        a = np.array(
+            [2.0 * v / cfg.evader_v_max - 1.0, w / cfg.omega_max], dtype=np.float32
+        )
+        a64 = np.clip(np.asarray(a, dtype=float), -1.0, 1.0)
+        return (a64[0] + 1.0) / 2.0 * cfg.evader_v_max, a64[1] * cfg.omega_max
+
+
+class TestStructuredPursuerPolicy:
+    @staticmethod
+    def _model():
+        from stable_baselines3 import PPO
+
+        return PPO.load("results/derisk/ckpts_STR14/STR14_10000000.zip", device="cpu")
+
+    def test_v1p_reproduces_searchmdp_shielded_against_a_scripted_evader(self):
+        # Spec section 2, V1-P, on 20 seeds here (the runner's preflight does 200).
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP, StructuredPursuerPolicy
+
+        model = self._model()
+        for i in range(20):
+            seed = 900_1000 + i
+            m = SearchMDP(CFG, BoxRoundTripEvader, hold=HOLD, shield=CBFShield(CFG))
+            ref = m.play_episode(model.predict, seed)
+            w = SingleAgentWrapper(
+                CFG,
+                "evader",
+                lambda: StructuredPursuerPolicy(
+                    model, CFG, CBFShield(CFG), HOLD, False
+                ),
+            )
+            w.reset(seed=seed)
+            pol = w._opponent
+            ev = GreedyEvader()
+            ev.reset()
+            while True:
+                v, om = ev.act(w._last_joint_obs["evader"], w.env)
+                _, _, term, trunc, info = w.step(
+                    np.array(
+                        [2 * v / CFG.evader_v_max - 1, om / CFG.omega_max],
+                        dtype=np.float32,
+                    )
+                )
+                pol.record(
+                    bool(
+                        info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"]
+                    )
+                )
+                if term or trunc:
+                    break
+            got = (
+                info["outcome"],
+                w.env.current_step,
+                pol.metrics.n_violations,
+                pol.metrics.n_stalled,
+            )
+            exp = (
+                ref["outcome"],
+                ref["steps"],
+                ref["violations"],
+                ref["shield"]["n_stalled"],
+            )
+            assert got == exp, f"seed {seed}: {got} != {exp}"
+
+    def test_unshielded_policy_reproduces_searchmdp_too(self):
+        from pe2.structured import SearchMDP, StructuredPursuerPolicy
+
+        model = self._model()
+        seed = 900_1100
+        ref = SearchMDP(CFG, BoxRoundTripEvader, hold=HOLD).play_episode(
+            model.predict, seed
+        )
+        w = SingleAgentWrapper(
+            CFG,
+            "evader",
+            lambda: StructuredPursuerPolicy(model, CFG, None, HOLD, False),
+        )
+        w.reset(seed=seed)
+        ev = GreedyEvader()
+        ev.reset()
+        while True:
+            v, om = ev.act(w._last_joint_obs["evader"], w.env)
+            _, _, term, trunc, info = w.step(
+                np.array(
+                    [2 * v / CFG.evader_v_max - 1, om / CFG.omega_max], dtype=np.float32
+                )
+            )
+            if term or trunc:
+                break
+        assert (info["outcome"], w.env.current_step) == (ref["outcome"], ref["steps"])
+        assert w._opponent.metrics is None and w._opponent.last_sinfo is None
+
+    def test_shield_obs_policy_feeds_14_dim_features(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import StructuredPursuerPolicy
+
+        class Spy:
+            def __init__(self):
+                self.shapes = []
+
+            def predict(self, obs, deterministic=True):
+                self.shapes.append(obs.shape)
+                return np.array([1.0, 0.0], dtype=np.float32), None
+
+        spy = Spy()
+        w = SingleAgentWrapper(
+            CFG,
+            "evader",
+            lambda: StructuredPursuerPolicy(spy, CFG, CBFShield(CFG), HOLD, True),
+        )
+        w.reset(seed=900_1200)
+        for _ in range(60):
+            _, _, term, trunc, info = w.step(np.array([1.0, 0.0], dtype=np.float32))
+            w._opponent.record(
+                bool(info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"])
+            )
+            if term or trunc:
+                break
+        assert spy.shapes and all(s == (14,) for s in spy.shapes)
+        assert w._opponent.decisions == len(spy.shapes)
+        assert w._opponent.last_exec is not None and len(w._opponent.last_exec) == 2

@@ -97,3 +97,24 @@ def build_observation(
         out[8 + 2 * k] = dy_b / cfg.arena_size
 
     return out
+
+
+def full_state_observation(
+    own_pose: np.ndarray,
+    opponent_pose: np.ndarray,
+    obstacles: list[dict],
+    cfg: EnvConfig,
+) -> np.ndarray:
+    """FULL-STATE observation for one agent: `build_observation` with the
+    opponent features always filled and the flag set to 1. S6 (Step 9)
+    grants the attacking evader full state — the worst-case adversary is
+    the informative one for a safety guarantee — so this is what its
+    learner sees. Equal to `build_observation` whenever the opponent is
+    visible."""
+    out = build_observation(own_pose, opponent_pose, obstacles, cfg)
+    dx_b, dy_b = _body_frame(own_pose, (opponent_pose[0], opponent_pose[1]))
+    out[3] = dx_b / cfg.arena_size
+    out[4] = dy_b / cfg.arena_size
+    out[5] = wrap_angle(opponent_pose[2] - own_pose[2]) / np.pi
+    out[6] = 1.0
+    return out

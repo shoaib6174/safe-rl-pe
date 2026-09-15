@@ -552,3 +552,116 @@ def characterise(
         "search_speed_mean": speed_sum / n_search if n_search else float("nan"),
         "search_abs_omega_mean": omega_sum / n_search if n_search else float("nan"),
     }
+
+
+class StructuredPursuerPolicy:
+    """The frozen structured pursuer as an OPPONENT object (S6, Step 9): the
+    intercept law when it applies, else the PPO decision held `hold` env
+    steps, ending early when the law applies again; the shield filters the
+    executed command with the true pose — exactly `SearchMDP`'s semantics,
+    so a shielded defender can sit inside `SingleAgentWrapper(role="evader")`
+    while an attacker learns against it. Validity check V1-P: episode-for-
+    episode equal to `SearchMDP.play_episode` against the same scripted
+    evader (the executed command goes through the identical float32 Box
+    round-trip that `SingleAgentWrapper._scale_action` applies).
+
+    The environment must call `record(contact)` after every env step with
+    the pursuer's contact flag, so `metrics` matches what `SearchMDP` would
+    have logged (D97/D89 semantics)."""
+
+    # acts on its own observation; the shield reads the true pose, as in Step 6
+    uses_truth = False
+
+    def __init__(
+        self,
+        model,
+        cfg: EnvConfig,
+        shield=None,
+        hold: int = HOLD,
+        shield_obs: bool = False,
+    ):
+        self.model = model
+        self.cfg = cfg
+        self.shield = shield
+        self.hold = int(hold)
+        self.shield_obs = bool(shield_obs)
+        self.law = InterceptLaw(cfg)
+        self.metrics = None
+        self.last_sinfo = None
+        self.last_nom = None
+        self.last_exec = None
+        self.decisions = 0
+        self._held = None
+        self._hold_left = 0
+        self.reset()
+
+    def reset(self) -> None:
+        self.law.reset()
+        self.metrics = ShieldMetrics() if self.shield is not None else None
+        self.last_sinfo = None
+        self.last_nom = None
+        self.last_exec = None
+        self.decisions = 0
+        self._held = None
+        self._hold_left = 0
+
+    def _features(self) -> np.ndarray:
+        s = self.last_sinfo
+        if s is None or self.metrics is None:
+            return np.array([0.0, 2.0, 0.0], dtype=np.float32)
+        run = self.metrics._current_stall_run / DEADLOCK_STEPS
+        return np.array(
+            [
+                float(bool(s["intervention"])),
+                float(np.clip(s["min_clearance"], -0.5, 2.0)),
+                float(np.clip(run, 0.0, 2.0)),
+            ],
+            dtype=np.float32,
+        )
+
+    def act(self, obs: np.ndarray, env) -> tuple[float, float]:
+        a = self.law.act(obs)
+        if a is None:
+            if self._hold_left <= 0:
+                lobs = (
+                    np.concatenate(
+                        [np.asarray(obs, dtype=np.float32), self._features()]
+                    )
+                    if self.shield_obs
+                    else obs
+                )
+                self._held, _ = self.model.predict(lobs, deterministic=True)
+                self._hold_left = self.hold
+                self.decisions += 1
+            a = self._held
+            self._hold_left -= 1
+        else:
+            # the law acted: the next decision is fresh (SearchMDP's hold ends
+            # on visibility)
+            self._hold_left = 0
+        cfg = self.cfg
+        a = np.clip(np.asarray(a, dtype=np.float32), -1.0, 1.0)
+        self.last_nom = (
+            (float(a[0]) + 1.0) / 2.0 * cfg.v_max,
+            float(a[1]) * cfg.omega_max,
+        )
+        if self.shield is not None:
+            v_nom, w_nom = self.last_nom
+            (v, w), sinfo = self.shield.filter(
+                (v_nom, w_nom), env.pursuer_pose, env.obstacles, v_max=cfg.v_max
+            )
+            self.last_sinfo = sinfo
+            a = np.array(
+                [2.0 * v / cfg.v_max - 1.0, w / cfg.omega_max], dtype=np.float32
+            )
+        else:
+            self.last_sinfo = None
+        # the identical Box round-trip SingleAgentWrapper._scale_action performs, so the
+        # executed command is bit-identical to SearchMDP's route
+        a64 = np.clip(np.asarray(a, dtype=float), -1.0, 1.0)
+        self.last_exec = ((a64[0] + 1.0) / 2.0 * cfg.v_max, a64[1] * cfg.omega_max)
+        return self.last_exec
+
+    def record(self, contact: bool) -> None:
+        if self.last_sinfo is not None and self.metrics is not None:
+            self.metrics.record(self.last_sinfo, violation=bool(contact))

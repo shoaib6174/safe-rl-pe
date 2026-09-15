@@ -125,3 +125,33 @@ class TestEnvIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestFullStateObservation:
+    def test_equals_build_observation_when_visible(self):
+        from pe2.obs import build_observation, full_state_observation
+
+        cfg = EnvConfig()
+        own = np.array([0.0, 0.0, 0.0])
+        opp = np.array([2.0, 0.5, 1.0])
+        obstacles = [
+            {"x": 3.0, "y": 3.0, "radius": 0.5},
+            {"x": -2.0, "y": 1.0, "radius": 0.4},
+        ]
+        a = build_observation(own, opp, obstacles, cfg)
+        b = full_state_observation(own, opp, obstacles, cfg)
+        assert a[6] == 1.0
+        np.testing.assert_array_equal(a, b)
+
+    def test_fills_opponent_features_when_invisible(self):
+        from pe2.obs import build_observation, full_state_observation
+
+        cfg = EnvConfig()
+        own = np.array([0.0, 0.0, 0.0])
+        opp = np.array([-3.0, 0.0, 0.0])  # directly behind
+        obstacles = []
+        a = build_observation(own, opp, obstacles, cfg)
+        b = full_state_observation(own, opp, obstacles, cfg)
+        assert a[6] == 0.0 and a[3] == 0.0
+        assert b[6] == 1.0 and b[3] == pytest.approx(-3.0 / cfg.arena_size)
+        assert b.dtype == np.float32 and b.shape == a.shape
