@@ -104,7 +104,7 @@ def measure_start(device: str) -> dict:
 
     if START_PATH.exists():
         raise SystemExit(f"{START_PATH} already exists (stop rule, spec section 5).")
-    if any(OUT.glob("s6b_arm_*.json")) or any(
+    if any(OUT.glob(f"{S6.ARTEFACT_PREFIX}_arm_*.json")) or any(
         (OUT / f"ckpts_{a}").exists() for a in ARMS
     ):
         raise SystemExit(
@@ -258,6 +258,15 @@ def direction(h: dict) -> str:
     if h["hsafe"] == "INCOMPLETE" or h["H2_overall"] == "INCOMPLETE":
         return "incomplete: all twelve arms must run"
     if h["H2_overall"] == "PASS":
+        passing = [v for v in h["H2"].values() if v.startswith("PASS")]
+        if all(v == "PASS (vs EZ only)" for v in passing):
+            # Every passing defender had a STRUCTURE-DRIVEN harness: the HUG7 clause
+            # was set aside, so no margin over the scripted probe was established.
+            return (
+                "H2 PASSES vs the zero-reward twin only: learning adds to unrewarded positioning, but the structure itself "
+                "already exceeds the best scripted probe, so no claim beyond the hugging geometry is made — R2 measured "
+                "relative to the structure."
+            )
         return (
             "H2 PASSES with a valid control: a learned opponent weaponises a hard shield beyond its unrewarded twin and beyond the "
             "best scripted probe — R2 measured. Figure 1 candidate; R3-b says whether the S5 remedy resists it."
@@ -267,8 +276,8 @@ def direction(h: dict) -> str:
 
 def load_results() -> dict:
     return {
-        p.stem.removeprefix("s6b_arm_"): json.loads(p.read_text())
-        for p in sorted(OUT.glob("s6b_arm_*.json"))
+        p.stem.removeprefix(f"{S6.ARTEFACT_PREFIX}_arm_"): json.loads(p.read_text())
+        for p in sorted(OUT.glob(f"{S6.ARTEFACT_PREFIX}_arm_*.json"))
     }
 
 
@@ -308,7 +317,9 @@ def summarize(results: dict, starts: dict) -> dict:
         "arms": table,
         "comparators": comps,
         "complete": all(a in results and "final" in results[a] for a in ARMS),
-        "direction": direction({"hsafe": hs["verdict"], "H2_overall": h["H2_overall"]}),
+        "direction": direction(
+            {"hsafe": hs["verdict"], "H2_overall": h["H2_overall"], "H2": h["H2"]}
+        ),
     }
 
 
@@ -352,7 +363,6 @@ def write_figure(results: dict, starts: dict, summary: dict, path) -> None:
 def write_gif(path, results: dict, device: str) -> None:
     """Visual gate (spec section 4): the best CTL-D1 seed vs its EZ twin on a seed
     where CTL deadlocks the pursuer and EZ does not."""
-    S6.GATE_SEED0 = GATE_SEED0
     ctl = max(
         (a for a in results if a.startswith("CTL-D1") and "final" in results[a]),
         key=lambda a: results[a]["final"]["pursuer"]["deadlock_episode_rate"],

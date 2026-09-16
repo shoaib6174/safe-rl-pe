@@ -192,11 +192,44 @@ class TestSafety:
         assert R.hsafe_verdict(res, _starts())["verdict"] == "INCOMPLETE"
 
 
+_BOTH_PASS = {"D1": "PASS", "D2": "PASS"}
+
+
 class TestDirection:
     def test_rows(self):
-        assert "weaponises" in R.direction({"hsafe": "HOLDS", "H2_overall": "PASS"})
-        assert "no R2" in R.direction({"hsafe": "HOLDS", "H2_overall": "FAIL"})
-        assert "Stop" in R.direction({"hsafe": "FAILS", "H2_overall": "PASS"})
-        assert "incomplete" in R.direction(
-            {"hsafe": "INCOMPLETE", "H2_overall": "INCOMPLETE"}
+        assert "weaponises" in R.direction(
+            {"hsafe": "HOLDS", "H2_overall": "PASS", "H2": _BOTH_PASS}
         )
+        assert "no R2" in R.direction(
+            {"hsafe": "HOLDS", "H2_overall": "FAIL", "H2": {"D1": "FAIL", "D2": "FAIL"}}
+        )
+        assert "Stop" in R.direction(
+            {"hsafe": "FAILS", "H2_overall": "PASS", "H2": _BOTH_PASS}
+        )
+        assert "incomplete" in R.direction(
+            {
+                "hsafe": "INCOMPLETE",
+                "H2_overall": "INCOMPLETE",
+                "H2": {"D1": "INCOMPLETE", "D2": "INCOMPLETE"},
+            }
+        )
+
+    def test_structure_driven_pass_claims_no_scripted_margin(self):
+        d = R.direction(
+            {
+                "hsafe": "HOLDS",
+                "H2_overall": "PASS",
+                "H2": {"D1": "PASS (vs EZ only)", "D2": "FAIL"},
+            }
+        )
+        assert "twin only" in d and "beyond the best scripted probe" not in d
+
+    def test_one_full_pass_keeps_the_scripted_claim(self):
+        d = R.direction(
+            {
+                "hsafe": "HOLDS",
+                "H2_overall": "PASS",
+                "H2": {"D1": "PASS (vs EZ only)", "D2": "PASS"},
+            }
+        )
+        assert "beyond the best scripted probe" in d
