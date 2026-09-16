@@ -28,6 +28,10 @@ from pe2.structured import HOLD
 OUT = pathlib.Path("results/derisk")
 START_PATH = OUT / "s6_start.json"
 PREFLIGHT_PATH = OUT / "s6_preflight.json"
+# Artefact namespace. The S6b runner (scripts/derisk_s6b_attacker.py) reuses this
+# module's machinery with ARTEFACT_PREFIX = "s6b", so every artefact path the
+# round writes or looks for must come from the helpers below.
+ARTEFACT_PREFIX = "s6"
 
 # --- pre-registered (spec sections 3-5). Do not tune. ---
 BETA = 1e-3
@@ -105,6 +109,18 @@ def _write_json(path: pathlib.Path, obj) -> None:
     os.replace(tmp, path)
 
 
+def _arm_file(arm: str) -> pathlib.Path:
+    return OUT / f"{ARTEFACT_PREFIX}_arm_{arm}.json"
+
+
+def _probe_file(arm: str) -> pathlib.Path:
+    return OUT / f"{ARTEFACT_PREFIX}_probe_{arm}.json"
+
+
+def _init_file(arm: str) -> pathlib.Path:
+    return OUT / f"{ARTEFACT_PREFIX}_init_{arm}.zip"
+
+
 def provenance() -> dict:
     import subprocess
 
@@ -143,7 +159,7 @@ def require_preflight() -> None:
 def require_not_measured() -> None:
     if START_PATH.exists():
         raise SystemExit(f"{START_PATH} already exists (stop rule, spec section 6).")
-    if any(OUT.glob("s6_arm_*.json")) or any(
+    if any(OUT.glob(f"{ARTEFACT_PREFIX}_arm_*.json")) or any(
         (OUT / f"ckpts_{a}").exists() for a in ARMS
     ):
         raise SystemExit(
@@ -152,7 +168,7 @@ def require_not_measured() -> None:
 
 
 def require_arm_not_run(arm: str) -> None:
-    if (OUT / f"s6_arm_{arm}.json").exists() or (OUT / f"ckpts_{arm}").exists():
+    if _arm_file(arm).exists() or (OUT / f"ckpts_{arm}").exists():
         raise SystemExit(
             f"arm {arm} has already run; the stop rule (spec section 6) forbids re-running it."
         )
@@ -335,7 +351,7 @@ def run_train_arm(
         eval_n=EVAL_N,
         seed0=PROBE_SEED0,
         ckpt_dir=d,
-        report_path=OUT / f"s6_probe_{arm}.json",
+        report_path=_probe_file(arm),
         label=arm,
         hold=HOLD,
         d_pos=D_POS,
@@ -356,7 +372,7 @@ def run_train_arm(
     model = PPO(
         "MlpPolicy", env, seed=spec["seed"], gamma=GAMMA, verbose=0, device=device
     )
-    model.save(OUT / f"s6_init_{arm}.zip")
+    model.save(_init_file(arm))
     model.learn(total_timesteps=TOTAL_LONG, callback=probe.callback)
     result = {
         "arm": arm,
@@ -407,7 +423,7 @@ def run_arm(arm: str, device: str) -> dict:
         result = run_train_arm(arm, starts, device, holder)
     except BaseException as e:
         _write_json(
-            OUT / f"s6_arm_{arm}.json",
+            _arm_file(arm),
             {
                 "arm": arm,
                 **ARMS[arm],
@@ -424,7 +440,7 @@ def run_arm(arm: str, device: str) -> dict:
             },
         )
         raise
-    _write_json(OUT / f"s6_arm_{arm}.json", result)
+    _write_json(_arm_file(arm), result)
     print(f"[{arm}] {result['verdict']}: {result['reason']}", flush=True)
     return result
 
@@ -566,8 +582,8 @@ def direction(h: dict) -> str:
 
 def load_results() -> dict:
     return {
-        p.stem.removeprefix("s6_arm_"): json.loads(p.read_text())
-        for p in sorted(OUT.glob("s6_arm_*.json"))
+        p.stem.removeprefix(f"{ARTEFACT_PREFIX}_arm_"): json.loads(p.read_text())
+        for p in sorted(OUT.glob(f"{ARTEFACT_PREFIX}_arm_*.json"))
     }
 
 
@@ -654,10 +670,12 @@ def write_figure(results: dict, starts: dict, summary: dict, path) -> None:
     plt.close(fig)
 
 
-def write_gif(path, results: dict, device: str, every: int = 4) -> None:
-    """Visual gate (spec section 5): the best ATK-D1 seed vs CTL on the same seed,
-    on an episode where the attacker produced a pursuer deadlock; pursuer FOV +
-    ShieldOverlay on the pursuer."""
+def write_gif_pair(
+    path, results: dict, device: str, left: str, right: str, every: int = 4
+) -> None:
+    """Render two D1 arms side by side on the first seed in GATE_SEED0..+60 where
+    `right` deadlocks the pursuer and `left` does not; pursuer FOV +
+    ShieldOverlay on the pursuer. Raises SystemExit if no such seed exists."""
     import matplotlib.pyplot as plt
     import numpy as np
     from stable_baselines3 import PPO
@@ -666,13 +684,8 @@ def write_gif(path, results: dict, device: str, every: int = 4) -> None:
     from pe2.render import FovOverlay, Renderer, ShieldOverlay, Trails, save_gif
 
     cfg = EnvConfig()
-    atk = max(
-        (a for a in results if a.startswith("ATK-D1") and "final" in results[a]),
-        key=lambda a: results[a]["final"]["pursuer"]["deadlock_episode_rate"],
-    )
-    ctl = "CTL-D1" + atk[len("ATK-D1") :]
     models = {
-        n: PPO.load(results[n]["final"]["ckpt"], device=device) for n in (atk, ctl)
+        n: PPO.load(results[n]["final"]["ckpt"], device=device) for n in (right, left)
     }
     f = defender_factory("D1", device)
 
@@ -727,27 +740,27 @@ def write_gif(path, results: dict, device: str, every: int = 4) -> None:
 
     scan = {}
     for s in range(GATE_SEED0, GATE_SEED0 + 60):
-        la = EvadeMDP(cfg, f, hold=HOLD, d_pos=D_POS).play_episode(
-            models[atk].predict, s
+        lr = EvadeMDP(cfg, f, hold=HOLD, d_pos=D_POS).play_episode(
+            models[right].predict, s
         )
-        lc = EvadeMDP(cfg, f, hold=HOLD, d_pos=D_POS).play_episode(
-            models[ctl].predict, s
+        ll = EvadeMDP(cfg, f, hold=HOLD, d_pos=D_POS).play_episode(
+            models[left].predict, s
         )
-        scan[s] = (la, lc)
+        scan[s] = (lr, ll)
     seed = next(
         (
             s
-            for s, (la, lc) in scan.items()
-            if la["pursuer_deadlock"] and not lc["pursuer_deadlock"]
+            for s, (lr, ll) in scan.items()
+            if lr["pursuer_deadlock"] and not ll["pursuer_deadlock"]
         ),
         None,
     )
     if seed is None:
         raise SystemExit(
-            "visual gate: no seed in the first 60 where the attacker deadlocks the pursuer and the control does not"
+            f"visual gate: no seed in the first 60 where {right} deadlocks the pursuer and {left} does not"
         )
     pair = []
-    for name in (ctl, atk):
+    for name in (left, right):
         m = Rec(cfg, f, hold=HOLD, d_pos=D_POS, label=name)
         log = m.play_episode(models[name].predict, seed)
         m.finish(log["outcome"], log["steps"])
@@ -757,8 +770,25 @@ def write_gif(path, results: dict, device: str, every: int = 4) -> None:
     frames = [np.concatenate([a, b], axis=1) for a, b in zip(*pair, strict=True)]
     save_gif(frames, str(path), fps=15)
     print(
-        f"wrote {path} ({len(frames)} frames; seed {seed}; {ctl} left, {atk} right)",
+        f"wrote {path} ({len(frames)} frames; seed {seed}; {left} left, {right} right)",
         flush=True,
+    )
+
+
+def write_gif(path, results: dict, device: str, every: int = 4) -> None:
+    """Visual gate (spec section 5): the best ATK-D1 seed vs CTL on the same seed,
+    on an episode where the attacker produced a pursuer deadlock."""
+    atk = max(
+        (a for a in results if a.startswith("ATK-D1") and "final" in results[a]),
+        key=lambda a: results[a]["final"]["pursuer"]["deadlock_episode_rate"],
+    )
+    write_gif_pair(
+        path,
+        results,
+        device,
+        left="CTL-D1" + atk[len("ATK-D1") :],
+        right=atk,
+        every=every,
     )
 
 
