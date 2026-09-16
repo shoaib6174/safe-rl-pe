@@ -188,6 +188,12 @@ class TestSafety:
         clean = {"pursuer_violation_steps": 0, "offenders": []}
         assert R.hsafe_verdict(_full(), _starts(), clean)["verdict"] == "HOLDS"
 
+    def test_hsafe_counts_a_crash_records_partial_gate(self):
+        res = _full()
+        del res["RCM30"]["final"]  # crashed inside the gate
+        res["RCM30"]["gate_violations"] = 1
+        assert R.hsafe_verdict(res, _starts())["verdict"] == "FAILS"
+
 
 def _race_arm(viol_train=0, viol_probe=0, viol_gate=0, rate=0.45):
     return {
@@ -237,6 +243,72 @@ class TestRace:
         dirty = dict(clean, **{"ATK2-32": _race_arm(viol_train=1, viol_gate=2)})
         r = R.race_summary(dirty)
         assert r["pursuer_violation_steps"] == 3 and r["offenders"] == ["ATK2-32"]
+
+    def test_race_summary_counts_the_stage2_comparators(self):
+        clean = {f"ATK2-{s}": _race_arm() for s in R.SEEDS2}
+        assert R.race_summary(clean, None)["pursuer_violation_steps"] == 0
+        rs = {
+            "D3": {
+                "HUG7": {"pursuer_violations": 2},
+                "GREEDY": {"pursuer_violations": 0},
+            }
+        }
+        r = R.race_summary(clean, rs)
+        assert r["pursuer_violation_steps"] == 2
+        assert r["offenders"] == ["race_start:D3/HUG7"]
+
+
+class TestGateHolder:
+    """A crash part-way through the gate must not lose what the gate already saw."""
+
+    def _fakes(self, monkeypatch, die_on):
+        import pe2.structured
+
+        calls = []
+
+        def fake_eval(model, cfg, factory, n, seed0, **kw):
+            calls.append(factory)
+            if len(calls) == die_on:
+                raise RuntimeError("gate died")
+            return [
+                {"outcome": "capture", "shield": {"deadlock": False}},
+                {"outcome": "timeout", "shield": {"deadlock": True}},
+            ]
+
+        monkeypatch.setattr(pe2.structured, "evaluate_structured", fake_eval)
+        monkeypatch.setattr(R, "win_count", lambda logs, role: (1, 2))
+        monkeypatch.setattr(
+            R,
+            "summarize_shield",
+            lambda logs: (
+                dict.fromkeys(
+                    (
+                        "deadlock_episode_rate",
+                        "stall_step_rate",
+                        "intervention_rate",
+                        "infeasibility_rate",
+                        "backup_rate",
+                        "min_clearance_floor",
+                    ),
+                    0.5,
+                )
+                | {"violation_steps": 3}
+            ),
+        )
+
+    def test_holder_keeps_the_opponents_finished_before_the_crash(self, monkeypatch):
+        self._fakes(monkeypatch, die_on=2)
+        holder: dict = {}
+        with pytest.raises(RuntimeError):
+            R.gate_pursuer(None, {"ATT25": object(), "ATT26": object()}, "cpu", holder)
+        assert list(holder["gate"]) == ["ATT25"]
+        # exactly the expression run_arm's crash record uses
+        assert sum(v["pursuer_violations"] for v in holder["gate"].values()) == 3
+
+    def test_holder_is_optional(self, monkeypatch):
+        self._fakes(monkeypatch, die_on=0)
+        out = R.gate_pursuer(None, {"ATT25": object()}, "cpu")
+        assert out["ATT25"]["pursuer_violations"] == 3
 
 
 class TestDirection:

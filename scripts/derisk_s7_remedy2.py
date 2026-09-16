@@ -267,8 +267,13 @@ def preflight(device: str) -> dict:
     return out
 
 
-def gate_pursuer(model, opponents: dict, device: str) -> dict:
-    """Shielded, shield_obs=True gate of a pursuer against each gate opponent on GATE_SEED0."""
+def gate_pursuer(
+    model, opponents: dict, device: str, holder: dict | None = None
+) -> dict:
+    """Shielded, shield_obs=True gate of a pursuer against each gate opponent on GATE_SEED0.
+
+    Each opponent's entry is stashed into `holder["gate"]` as soon as it completes, so a
+    crash part-way through the gate still hands `run_arm` the violations already observed."""
     from pe2.shield import CBFShield
     from pe2.structured import evaluate_structured
 
@@ -305,6 +310,8 @@ def gate_pursuer(model, opponents: dict, device: str) -> dict:
             },
             "pursuer_violations": int(sh["violation_steps"]),
         }
+        if holder is not None:
+            holder.setdefault("gate", {})[name] = out[name]
         print(
             f"    vs {name:7s}: capture {k / n:.3f}, deadlock eps {sh['deadlock_episode_rate']:.3f}, "
             f"stall {sh['stall_step_rate']:.3f}, violations {sh['violation_steps']}",
@@ -477,7 +484,7 @@ def run_train_arm(
         return result
     opps = {name: gate_opponent_factory(name, device) for name in GATE_OPPONENTS}
     print(f"[{arm}] gate:", flush=True)
-    g = gate_pursuer(PPO.load(ckpt, device=device), opps, device)
+    g = gate_pursuer(PPO.load(ckpt, device=device), opps, device, holder)
     result["final"] = {
         "ckpt": str(ckpt),
         "gate": g,
@@ -526,6 +533,12 @@ def run_arm(arm: str, device: str) -> dict:
                 "probe_violations": int(
                     sum(r.get("violations", 0) for r in holder.get("rows", []))
                 ),
+                "gate_violations": int(
+                    sum(
+                        v["pursuer_violations"] for v in holder.get("gate", {}).values()
+                    )
+                ),
+                "gate_partial": holder.get("gate", {}),
                 "provenance": provenance(),
             },
         )
@@ -608,6 +621,9 @@ def hsafe_verdict(
         v = (
             int(r.get("train_violations", 0))
             + int(r.get("probe_violations", 0))
+            # a crash record has no "final"; gate_violations is what the gate had
+            # already observed when the process died (absent on a complete record)
+            + int(r.get("gate_violations", 0))
             + int((r.get("final") or {}).get("pursuer_violations", 0))
         )
         if "probe_violations" not in r:
@@ -870,7 +886,7 @@ def race_arm(arm: str, device: str) -> dict:
     return S6.run_arm(arm, device)
 
 
-def race_summary(arms: dict) -> dict:
+def race_summary(arms: dict, race_start: dict | None = None) -> dict:
     inds = [
         arms[a]["final"]["deadlock_ind"] for a in sorted(arms) if "final" in arms[a]
     ]
@@ -904,6 +920,14 @@ def race_summary(arms: dict) -> dict:
         viol += v
         if v:
             offenders.append(a)
+    if race_start is not None:
+        # Spec section 1 puts the comparators inside H-SAFE too: race_start runs the
+        # frozen artefact, shielded, for GATE_N episodes against each of Hug7 and Greedy.
+        for name, e in sorted((race_start.get("D3") or {}).items()):
+            v = int((e or {}).get("pursuer_violations") or 0)
+            viol += v
+            if v:
+                offenders.append(f"race_start:D3/{name}")
     return {
         "per_arm": per,
         "pooled_rate": (k / n) if n else None,
@@ -955,7 +979,6 @@ def main() -> None:
         print(f"\n{summary['direction']}")
     if args.race_start:
         race_start(args.device)
-        return
     for arm in args.race_arms:
         race_arm(arm, args.device)
     if args.race_summarize:
@@ -963,7 +986,12 @@ def main() -> None:
             p_.stem.removeprefix("s7race_arm_"): json.loads(p_.read_text())
             for p_ in sorted(OUT.glob("s7race_arm_*.json"))
         }
-        r = race_summary(arms)
+        rs = (
+            json.loads(RACE_START_PATH.read_text())
+            if RACE_START_PATH.exists()
+            else None
+        )
+        r = race_summary(arms, rs)
         _write_json(OUT / "s7_race.json", r)
         print(json.dumps(r, indent=2, default=str))
         results, starts = load_results(), load_start()
