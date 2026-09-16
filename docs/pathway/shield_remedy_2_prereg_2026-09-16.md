@@ -91,3 +91,15 @@ The mixture, seeds 28–33, the streams, the tests and the ≥ 2/3 rules are fix
 `ckpts_RCM*/`, `s7_round.{json,png}`; stage 2: `s7race_arm_ATK2-{31,32,33}.json` (S6's artefact-prefix
 mechanism; **amendment S7-A1**, naming only, recorded before any stage-2 number exists), `ckpts_ATK2-*/`,
 `s7_race.json` (carries the stage-2 pursuer-violation census, which H-SAFE folds in). Signed in the worklog.
+
+## Amendment S7-A2 (2026-09-16 23:20, recorded before any arm number; the RC19 reference was mid-measurement)
+
+Whole-branch review point: the held-out gate attackers CTL-D225/226/227 were trained AGAINST RC19 (S6b, D2 =
+RC19-SHIELD). The stage-1 gate therefore pits RC19 against its own best responses and the S7 pursuer against
+attackers it has never seen. A stage-1 PASS reads as "resists attackers trained against the previous
+defender", which is the R3 property claimed, but it cannot separate the S7 pursuer's robustness from RC19's
+specialised weakness. **Nothing in §3–4 changes**; the interpretation is fixed here: **H-RACE (stage 2, fresh
+attackers trained against the S7 artefact) is the symmetric measure and carries the arms-race claim**; H3-2
+carries only the "resists the previous round's attackers" claim. Stage 2 will also report per-attacker Wilson
+CIs beside the pooled one (the pooled interval treats 3 × 500 shared-seed episodes as independent and is
+anti-conservative; the per-arm intervals are the honest ones).
