@@ -88,5 +88,6 @@ The mixture, seeds 28–33, the streams, the tests and the ≥ 2/3 rules are fix
 ## 7. Artefacts
 
 `results/derisk/s7_preflight.json`, `s7_start.json`, `s7_arm_RCM{28,29,30}.json`, `s7_probe_*`,
-`ckpts_RCM*/`, `s7_round.{json,png}`; stage 2: `s7_arm_ATK2-{31,32,33}.json`, `ckpts_ATK2-*/`,
-`s7_race.json`. Signed in the worklog.
+`ckpts_RCM*/`, `s7_round.{json,png}`; stage 2: `s7race_arm_ATK2-{31,32,33}.json` (S6's artefact-prefix
+mechanism; **amendment S7-A1**, naming only, recorded before any stage-2 number exists), `ckpts_ATK2-*/`,
+`s7_race.json` (carries the stage-2 pursuer-violation census, which H-SAFE folds in). Signed in the worklog.
