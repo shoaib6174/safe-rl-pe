@@ -336,3 +336,77 @@ class EvaderEvalProbe:
         self.rows = rows
         self.callback = _CB()
         self.evaluate_at = evaluate_at
+
+
+class StructuredEvaderPolicy:
+    """The structured evader as an OPPONENT object for
+    SingleAgentWrapper(role="pursuer") (S7, Step 10 iteration 2). The hug law
+    (full state) whenever the pursuer is within `d_pos`; else the model's
+    decision on the full-state observation held `hold` env steps, ending early
+    when the law applies again — exactly EvadeMDP's semantics, so a learned
+    attacker can be a training/gate opponent for a pursuer. The executed
+    command takes the same float32 Box round-trip the learner seat applies
+    (V1-E)."""
+
+    uses_truth = True
+
+    def __init__(self, model, cfg: EnvConfig, hold: int = 10, d_pos: float = D_POS):
+        self.model = model
+        self.cfg = cfg
+        self.hold = int(hold)
+        self.d_pos = float(d_pos)
+        self.law = ObstacleHuggingEvader()
+        self.decisions = 0
+        self._held = None
+        self._hold_left = 0
+        self.reset()
+
+    def reset(self) -> None:
+        self.law.reset()
+        self.decisions = 0
+        self._held = None
+        self._hold_left = 0
+
+    def act(self, obs: np.ndarray, env) -> tuple[float, float]:
+        cfg = self.cfg
+        d = float(
+            np.hypot(
+                env.pursuer_pose[0] - env.evader_pose[0],
+                env.pursuer_pose[1] - env.evader_pose[1],
+            )
+        )
+        if d <= self.d_pos:
+            self._hold_left = 0
+            v, w = self.law.act(None, env)
+            a = _normalize_evader(v, w, cfg)
+        else:
+            if self._hold_left <= 0:
+                lobs = full_state_observation(
+                    env.evader_pose, env.pursuer_pose, env.obstacles, cfg
+                )
+                self._held, _ = self.model.predict(lobs, deterministic=True)
+                self._hold_left = self.hold
+                self.decisions += 1
+            a = self._held
+            self._hold_left -= 1
+        a64 = np.clip(
+            np.asarray(np.asarray(a, dtype=np.float32), dtype=float), -1.0, 1.0
+        )
+        return (a64[0] + 1.0) / 2.0 * cfg.evader_v_max, a64[1] * cfg.omega_max
+
+
+class MixtureOpponentFactory:
+    """Per-episode opponent sampler for training (S7): each call draws one
+    member factory uniformly with a seeded RNG and returns a fresh opponent.
+    SingleAgentWrapper calls the factory at every reset, so the training
+    stream sees the whole family in a reproducible order."""
+
+    def __init__(self, members, seed: int):
+        self.members = list(members)
+        self.rng = np.random.default_rng(seed)
+        self.draws: list[int] = []
+
+    def __call__(self):
+        i = int(self.rng.integers(len(self.members)))
+        self.draws.append(i)
+        return self.members[i]()

@@ -205,3 +205,115 @@ class TestEvaluators:
         assert s["violation_steps"] == 0
         assert s["escape_rate"] == sum(lg["escaped"] for lg in logs) / 2
         assert s["timeout_rate"] == s["escape_rate"]  # outcome must reach the pooler
+
+
+class TestStructuredEvaderPolicy:
+    def test_v1e_reproduces_evademdp_against_a_frozen_defender(self):
+        from stable_baselines3 import PPO
+
+        from pe2.evade import EvadeMDP, StructuredEvaderPolicy
+        from pe2.exploitability import SingleAgentWrapper
+
+        d1 = _str14()
+        ev_model = PPO.load(
+            "results/derisk/ckpts_CTL-D125/CTL-D125_10000000.zip", device="cpu"
+        )
+        for i in range(20):
+            seed = 900_1400 + i
+            ref = EvadeMDP(CFG, _d1_factory(d1), hold=10).play_episode(
+                ev_model.predict, seed
+            )
+            w = SingleAgentWrapper(
+                CFG, "pursuer", lambda: StructuredEvaderPolicy(ev_model, CFG, hold=10)
+            )
+            w.reset(seed=seed)
+            pol = StructuredPursuerPolicy(d1, CFG, CBFShield(CFG), HOLD, False)
+            pol.reset()
+            while True:
+                v, om = pol.act(w._last_joint_obs["pursuer"], w.env)
+                _, _, term, trunc, info = w.step(
+                    np.array(
+                        [2 * v / CFG.v_max - 1, om / CFG.omega_max], dtype=np.float32
+                    )
+                )
+                pol.record(
+                    bool(
+                        info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"]
+                    )
+                )
+                if term or trunc:
+                    break
+            got = (
+                info["outcome"],
+                w.env.current_step,
+                pol.metrics.n_stalled,
+                pol.metrics.longest_stall_run,
+            )
+            exp = (
+                ref["outcome"],
+                ref["steps"],
+                ref["pursuer_shield"]["n_stalled"],
+                ref["pursuer_shield"]["longest_stall_run"],
+            )
+            assert got == exp, f"seed {seed}: {got} != {exp}"
+
+    def test_decisions_only_beyond_d_pos(self):
+        from stable_baselines3 import PPO
+
+        from pe2.evade import D_POS, StructuredEvaderPolicy
+        from pe2.exploitability import SingleAgentWrapper
+
+        ev_model = PPO.load(
+            "results/derisk/ckpts_CTL-D125/CTL-D125_10000000.zip", device="cpu"
+        )
+        w = SingleAgentWrapper(
+            CFG, "pursuer", lambda: StructuredEvaderPolicy(ev_model, CFG, hold=10)
+        )
+        w.reset(seed=900_1450)
+        pol = w._opponent
+        n_before = pol.decisions
+        # a stationary pursuer far away: the law never applies, decisions tick every `hold` steps
+        far = float(np.hypot(*(w.env.pursuer_pose[:2] - w.env.evader_pose[:2]))) > D_POS
+        for _ in range(30):
+            _, _, term, trunc, _ = w.step(np.array([-1.0, 0.0], dtype=np.float32))
+            if term or trunc:
+                break
+        if far:
+            assert pol.decisions - n_before >= 1
+
+
+class TestMixtureOpponentFactory:
+    def test_draws_are_seeded_and_uniform_ish(self):
+        from pe2.evade import MixtureOpponentFactory
+        from pe2.scripted import FovLimitedEvader, GreedyEvader, ObstacleHuggingEvader
+
+        members = [GreedyEvader, ObstacleHuggingEvader, FovLimitedEvader]
+        f1 = MixtureOpponentFactory(members, seed=5)
+        f2 = MixtureOpponentFactory(members, seed=5)
+        kinds1 = [type(f1()).__name__ for _ in range(300)]
+        kinds2 = [type(f2()).__name__ for _ in range(300)]
+        assert kinds1 == kinds2
+        counts = {k: kinds1.count(k) for k in set(kinds1)}
+        assert set(counts) == {
+            "GreedyEvader",
+            "ObstacleHuggingEvader",
+            "FovLimitedEvader",
+        }
+        assert all(60 <= c <= 140 for c in counts.values())
+        assert f1.draws[:3] == f2.draws[:3]
+
+    def test_works_as_a_training_opponent(self):
+        from pe2.evade import MixtureOpponentFactory
+        from pe2.scripted import GreedyEvader, ObstacleHuggingEvader
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(
+            CFG,
+            MixtureOpponentFactory([GreedyEvader, ObstacleHuggingEvader], seed=1),
+            hold=10,
+        )
+        m.reset()
+        for _ in range(3):
+            _obs, _, term, trunc, _ = m.step(np.array([1.0, 0.0], dtype=np.float32))
+            if term or trunc:
+                m.reset()
