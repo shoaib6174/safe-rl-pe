@@ -67,6 +67,7 @@ SEEDS2 = (31, 32, 33)
 PROBE2_SEED0 = 1_180_000
 GATE2_SEED0 = 1_190_000
 RACE_BAR = 0.58
+RACE_COMPARATORS = ("HUG7", "GREEDY")
 PREFLIGHT_N = 200
 
 _MODELS: dict = {}
@@ -668,6 +669,8 @@ def direction(h: dict) -> str:
             "H3-2 PASSES and H-RACE holds: training against the structured family closes most of the attacker's "
             "gain — the arms race converges toward the defender (R3's strongest form)."
         )
+    if h.get("H_RACE") == "INCOMPLETE":
+        return "H3-2 PASSES; stage 2 incomplete: all three ATK2 arms must run"
     if h.get("H_RACE") == "FAILS":
         return (
             "H3-2 PASSES but fresh attackers adapt (H-RACE fails): robust to unseen attackers of the old kind, "
@@ -806,7 +809,7 @@ def race_setup(S6, artefact_ckpt):
     S6.EVERY_LONG = EVERY_LONG
     S6.SEEDS = SEEDS2
     S6.DEFENDERS = race_config(artefact_ckpt)
-    S6.COMPARATORS = ("HUG7", "GREEDY")
+    S6.COMPARATORS = RACE_COMPARATORS
     S6.ARMS = {
         f"ATK2-{s}": {
             "family": "CTL",
@@ -823,7 +826,14 @@ def race_setup(S6, artefact_ckpt):
             raise SystemExit(
                 f"race comparators missing: {RACE_START_PATH}. Run --race-start FIRST."
             )
-        return json.loads(RACE_START_PATH.read_text())
+        s = json.loads(RACE_START_PATH.read_text())
+        for c in RACE_COMPARATORS:  # as S6's own load_start validates its comparators
+            e = (s.get("D3") or {}).get(c)
+            if not e or "pursuer_violations" not in e or "pursuer" not in e:
+                raise SystemExit(
+                    f"D3/{c} missing from {RACE_START_PATH}; re-run --race-start."
+                )
+        return s
 
     S6.load_start = load_race_start
 
@@ -843,6 +853,25 @@ def _artefact_ckpt() -> pathlib.Path:
     return pathlib.Path(
         json.loads((OUT / f"s7_arm_{art}.json").read_text())["final"]["ckpt"]
     )
+
+
+def stage1_before() -> dict | None:
+    """Spec section 5's "before" number: the S7 artefact's deadlock-episode rate against
+    the held-out attackers, taken from the stage-1 gate in `s7_round.json`."""
+    path = OUT / "s7_round.json"
+    if not path.exists():
+        return None
+    doc = json.loads(path.read_text())
+    art = ((doc.get("summary") or {}).get("hypotheses") or {}).get("artefact")
+    g = (((doc.get("arms") or {}).get(art) or {}).get("final") or {}).get("gate")
+    if not art or not g:
+        return None
+    return {
+        "artefact": art,
+        "heldout_deadlock": {
+            o: g[o]["pursuer"]["deadlock_episode_rate"] for o in HELD_OUT if o in g
+        },
+    }
 
 
 def race_start(device: str) -> dict:
@@ -886,22 +915,30 @@ def race_arm(arm: str, device: str) -> dict:
     return S6.run_arm(arm, device)
 
 
-def race_summary(arms: dict, race_start: dict | None = None) -> dict:
+def race_summary(
+    arms: dict, race_start: dict | None = None, before: dict | None = None
+) -> dict:
     inds = [
         arms[a]["final"]["deadlock_ind"] for a in sorted(arms) if "final" in arms[a]
     ]
     pooled = [x for ind in inds for x in ind]
     k, n = sum(map(bool, pooled)), len(pooled)
     lo, hi = wilson_ci(k, n) if n else (None, None)
-    per = {
-        a: {
+    # Spec section 5 asks for EACH attacker's rate with a Wilson CI; amendment A2 keeps
+    # H-RACE pooled and reports the per-arm intervals beside it.
+    per = {}
+    for a in sorted(arms):
+        if "final" not in arms[a]:
+            continue
+        ind = arms[a]["final"]["deadlock_ind"]
+        ka, na = sum(map(bool, ind)), len(ind)
+        alo, ahi = wilson_ci(ka, na) if na else (None, None)
+        per[a] = {
             "deadlock_rate": arms[a]["final"]["pursuer"]["deadlock_episode_rate"],
             "escape_rate": arms[a]["final"]["pursuer"]["escape_rate"],
             "pursuer_violations": arms[a]["final"]["pursuer_violations"],
+            "wilson": [alo, ahi],
         }
-        for a in sorted(arms)
-        if "final" in arms[a]
-    }
     complete = len(inds) == len(SEEDS2)
     # H-SAFE census over stage 2 (S6 record shape: train / probe / gate). Every
     # ATK2 record counts, including a crash record with no "final".
@@ -933,6 +970,12 @@ def race_summary(arms: dict, race_start: dict | None = None) -> dict:
         "pooled_rate": (k / n) if n else None,
         "pooled_wilson": [lo, hi],
         "race_bar": RACE_BAR,
+        "all_arms_below_bar": bool(per)
+        and all(
+            v["wilson"][1] is not None and v["wilson"][1] < RACE_BAR
+            for v in per.values()
+        ),
+        "before": before,
         "pursuer_violation_steps": viol,
         "offenders": offenders,
         "H_RACE": (
@@ -991,12 +1034,13 @@ def main() -> None:
             if RACE_START_PATH.exists()
             else None
         )
-        r = race_summary(arms, rs)
+        r = race_summary(arms, rs, stage1_before())
         _write_json(OUT / "s7_race.json", r)
         print(json.dumps(r, indent=2, default=str))
         results, starts = load_results(), load_start()
         summary = summarize(results, starts, r)
         _write_json(OUT / "s7_round.json", {"summary": summary, "arms": results})
+        write_figure(results, starts, summary, OUT / "s7_round.png")
         print(f"\n{summary['direction']}")
 
 

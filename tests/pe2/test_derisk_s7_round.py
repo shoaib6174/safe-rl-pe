@@ -1,7 +1,9 @@
 """scripts/derisk_s7_remedy2.py — the second remedy round's own decisions."""
 
 import importlib.util
+import json
 import pathlib
+import types
 
 import pytest
 
@@ -244,6 +246,30 @@ class TestRace:
         r = R.race_summary(dirty)
         assert r["pursuer_violation_steps"] == 3 and r["offenders"] == ["ATK2-32"]
 
+    def test_per_arm_wilson_and_all_arms_below_bar(self):
+        low = {
+            f"ATK2-{s}": _race_arm(rate=r)
+            for s, r in zip(R.SEEDS2, (0.45, 0.50, 0.48), strict=True)
+        }
+        r = R.race_summary(low)
+        assert all(len(v["wilson"]) == 2 for v in r["per_arm"].values())
+        lo, hi = r["per_arm"]["ATK2-31"]["wilson"]
+        assert lo < 0.45 < hi < R.RACE_BAR
+        assert r["all_arms_below_bar"] is True
+        # one arm's own upper bound crosses the bar even though the pool would not
+        mixed = dict(low, **{"ATK2-33": _race_arm(rate=0.56)})
+        assert R.race_summary(mixed)["all_arms_below_bar"] is False
+        assert R.race_summary({})["all_arms_below_bar"] is False
+
+    def test_before_block_is_passed_through(self):
+        clean = {f"ATK2-{s}": _race_arm() for s in R.SEEDS2}
+        assert R.race_summary(clean)["before"] is None
+        before = {
+            "artefact": "RCM29",
+            "heldout_deadlock": {"ATT25": 0.41, "ATT26": 0.43},
+        }
+        assert R.race_summary(clean, None, before)["before"] == before
+
     def test_race_summary_counts_the_stage2_comparators(self):
         clean = {f"ATK2-{s}": _race_arm() for s in R.SEEDS2}
         assert R.race_summary(clean, None)["pursuer_violation_steps"] == 0
@@ -311,6 +337,25 @@ class TestGateHolder:
         assert out["ATT25"]["pursuer_violations"] == 3
 
 
+class TestRaceStartValidation:
+    def test_comparators_must_be_complete(self, tmp_path, monkeypatch):
+        path = tmp_path / "s7_race_start.json"
+        monkeypatch.setattr(R, "RACE_START_PATH", path)
+        S6 = types.SimpleNamespace()
+        R.race_setup(S6, tmp_path / "ckpt.zip")
+        with pytest.raises(SystemExit, match="race comparators missing"):
+            S6.load_start()
+        entry = {"pursuer_violations": 0, "pursuer": {"deadlock_episode_rate": 0.5}}
+        path.write_text(json.dumps({"D3": {"HUG7": entry}}))
+        with pytest.raises(SystemExit, match="D3/GREEDY"):
+            S6.load_start()
+        path.write_text(json.dumps({"D3": {"HUG7": entry, "GREEDY": {"pursuer": {}}}}))
+        with pytest.raises(SystemExit, match="D3/GREEDY"):
+            S6.load_start()
+        path.write_text(json.dumps({"D3": {"HUG7": entry, "GREEDY": entry}}))
+        assert set(S6.load_start()["D3"]) == {"HUG7", "GREEDY"}
+
+
 class TestDirection:
     def test_rows(self):
         assert "converges" in R.direction(
@@ -325,4 +370,7 @@ class TestDirection:
         assert "Stop" in R.direction({"hsafe": "FAILS", "H32": "PASS", "H_RACE": None})
         assert "incomplete" in R.direction(
             {"hsafe": "INCOMPLETE", "H32": "INCOMPLETE", "H_RACE": None}
+        )
+        assert "stage 2 incomplete" in R.direction(
+            {"hsafe": "HOLDS", "H32": "PASS", "H_RACE": "INCOMPLETE"}
         )
