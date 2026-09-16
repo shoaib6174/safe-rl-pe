@@ -599,7 +599,9 @@ def h32_verdicts(results: dict, starts: dict) -> dict:
     return {"H32": h, "per_seed": per_seed, "artefact": artefact}
 
 
-def hsafe_verdict(results: dict, starts: dict | None = None) -> dict:
+def hsafe_verdict(
+    results: dict, starts: dict | None = None, race: dict | None = None
+) -> dict:
     steps, offenders = 0, []
     missing = [a for a in ARMS if a not in results or "final" not in results[a]]
     for a, r in results.items():
@@ -621,6 +623,12 @@ def hsafe_verdict(results: dict, starts: dict | None = None) -> dict:
             steps += v
             if v:
                 offenders.append(f"reference:RC19/{o}")
+    if race is not None:
+        # Stage 2 is inside H-SAFE (spec section 1: "everywhere ... stage 2").
+        # race_summary has already pooled each ATK2 arm's train + probe + gate
+        # pursuer contact steps; fold the census in rather than recount it.
+        steps += int(race.get("pursuer_violation_steps", 0))
+        offenders += [f"race:{a}" for a in race.get("offenders", [])]
     return {
         "verdict": "FAILS" if steps else ("INCOMPLETE" if missing else "HOLDS"),
         "pursuer_violation_steps": steps,
@@ -664,7 +672,7 @@ def load_results() -> dict:
 
 def summarize(results: dict, starts: dict, race: dict | None = None) -> dict:
     h = h32_verdicts(results, starts)
-    hs = hsafe_verdict(results, starts)
+    hs = hsafe_verdict(results, starts, race)
     table = {}
     for a, r in results.items():
         g = (r.get("final") or {}).get("gate") or {}
@@ -805,7 +813,12 @@ def race_setup(S6, artefact_ckpt):
 
 
 def _artefact_ckpt() -> pathlib.Path:
-    s = json.loads((OUT / "s7_round.json").read_text())["summary"]
+    round_path = OUT / "s7_round.json"
+    if not round_path.exists():
+        raise SystemExit(
+            "s7_round.json missing: run --summarize first (stage 2 needs the stage-1 artefact)"
+        )
+    s = json.loads(round_path.read_text())["summary"]
     art = s["hypotheses"]["artefact"]
     if not art:
         raise SystemExit(
@@ -874,11 +887,30 @@ def race_summary(arms: dict) -> dict:
         if "final" in arms[a]
     }
     complete = len(inds) == len(SEEDS2)
+    # H-SAFE census over stage 2 (S6 record shape: train / probe / gate). Every
+    # ATK2 record counts, including a crash record with no "final".
+    viol, offenders = 0, []
+    for a in sorted(arms):
+        r = arms[a]
+        v = (
+            int(r.get("train_pursuer_violations", 0))
+            + int(r.get("probe_pursuer_violations", 0))
+            + int((r.get("final") or {}).get("pursuer_violations", 0) or 0)
+        )
+        if "probe_pursuer_violations" not in r:
+            v += int(
+                sum(x.get("pursuer_violations", 0) for x in r.get("checkpoints", []))
+            )
+        viol += v
+        if v:
+            offenders.append(a)
     return {
         "per_arm": per,
         "pooled_rate": (k / n) if n else None,
         "pooled_wilson": [lo, hi],
         "race_bar": RACE_BAR,
+        "pursuer_violation_steps": viol,
+        "offenders": offenders,
         "H_RACE": (
             "INCOMPLETE" if not complete else ("HOLDS" if hi < RACE_BAR else "FAILS")
         ),

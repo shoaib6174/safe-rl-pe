@@ -133,6 +133,11 @@ class TestProtocol:
         with pytest.raises(SystemExit, match="stop rule"):
             R.require_arm_not_run("RCM28")
 
+    def test_stage2_requires_the_stage1_summary(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        with pytest.raises(SystemExit, match="run --summarize first"):
+            R._artefact_ckpt()
+
 
 class TestVerdicts:
     def test_h32_pass_two_of_three_seeds(self):
@@ -175,6 +180,26 @@ class TestSafety:
         del res["RCM30"]
         assert R.hsafe_verdict(res, _starts())["verdict"] == "INCOMPLETE"
 
+    def test_hsafe_folds_in_stage_2(self):
+        assert R.hsafe_verdict(_full(), _starts(), None)["verdict"] == "HOLDS"
+        race = {"pursuer_violation_steps": 1, "offenders": ["ATK2-31"]}
+        h = R.hsafe_verdict(_full(), _starts(), race)
+        assert h["verdict"] == "FAILS" and "race:ATK2-31" in h["offenders"]
+        clean = {"pursuer_violation_steps": 0, "offenders": []}
+        assert R.hsafe_verdict(_full(), _starts(), clean)["verdict"] == "HOLDS"
+
+
+def _race_arm(viol_train=0, viol_probe=0, viol_gate=0, rate=0.45):
+    return {
+        "train_pursuer_violations": viol_train,
+        "probe_pursuer_violations": viol_probe,
+        "final": {
+            "deadlock_ind": _ind(rate),
+            "pursuer": {"deadlock_episode_rate": rate, "escape_rate": 0.7},
+            "pursuer_violations": viol_gate,
+        },
+    }
+
 
 class TestRace:
     def test_race_summary(self):
@@ -204,6 +229,14 @@ class TestRace:
             for s in R.SEEDS2
         }
         assert R.race_summary(arms2)["H_RACE"] == "FAILS"
+
+    def test_race_summary_counts_stage2_violations(self):
+        clean = {f"ATK2-{s}": _race_arm() for s in R.SEEDS2}
+        r = R.race_summary(clean)
+        assert r["pursuer_violation_steps"] == 0 and r["offenders"] == []
+        dirty = dict(clean, **{"ATK2-32": _race_arm(viol_train=1, viol_gate=2)})
+        r = R.race_summary(dirty)
+        assert r["pursuer_violation_steps"] == 3 and r["offenders"] == ["ATK2-32"]
 
 
 class TestDirection:
