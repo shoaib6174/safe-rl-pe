@@ -7,7 +7,7 @@ below; the artefacts are in the repository (`docs/pathway/*_prereg_*.md`, `docs/
 
 1. **Pre-registration before any number.** Each round has a specification committed to git before any arm
    runs. It fixes the hypothesis, the arms, the seeds, the evaluation streams, the sample sizes, the statistical
-   tests, the pass thresholds and the interpretation of every outcome (a "what each result fixes" table). Fifteen
+   tests, the pass thresholds and the interpretation of every outcome (a "what each result fixes" table). Seventeen
    such specifications cover the rounds reported here.
 2. **Bars are measured, not inherited.** Reference policies are re-evaluated on the round's own fresh stream
    before any arm starts; an arm refuses to run without that file. Numbers are never carried across streams.
