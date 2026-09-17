@@ -81,3 +81,14 @@ keeps every policy's observation layout. Consequences, fixed now:
 - Obstacle draws come from the episode RNG after the poses as today, so for a given seed the poses are identical
   across n and the obstacle sets are nested by construction only when the generator is sequential (it is:
   `for _ in range(n)`), which the runner asserts on the first seed.
+
+## Amendment S9-A2 (2026-09-17, before any cell exists): test direction, and the n-sweep is not seed-paired
+
+- §3's `paired_indicator_test(bottom_ind, top_ind)` was written in the wrong argument order for the hypothesis it
+  states; the test IS "the top level deadlocks MORE than the bottom level" (`paired_indicator_test(top, bottom)`
+  in the library's convention, where the first argument is the one expected to be higher). The words rule.
+- A1 claimed the poses are identical across n for a seed; they are not — the env draws obstacles before the
+  poses, so the RNG stream shifts with n. The **δ and γ sweeps are seed-paired** (same n ⇒ same layouts and
+  poses) and keep the paired test. The **n sweep is unpaired**: its top-vs-bottom test is Wilson separation —
+  the top level's Wilson lower bound exceeds the bottom level's Wilson upper bound (95 %) — and its ρ is over
+  the per-level rates as before. No other rule changes.
