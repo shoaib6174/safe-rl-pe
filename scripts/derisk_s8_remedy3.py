@@ -33,9 +33,14 @@ from pe2.scripted import GreedyEvader, ObstacleHuggingEvader
 from pe2.structured import HOLD
 
 OUT = pathlib.Path("results/derisk")
-START_PATH = OUT / "s8_start.json"
-PREFLIGHT_PATH = OUT / "s8_preflight.json"
-RACE_START_PATH = OUT / "s8_race_start.json"
+# Artefact namespace. The S10 runner reuses this module's machinery with
+# ARTEFACT_PREFIX = "s10", so every artefact path the round writes or looks for
+# must come from the prefix: through the helpers below, or — for the three
+# constants S10 overrides directly — derived from it here at import.
+ARTEFACT_PREFIX = "s8"
+START_PATH = OUT / f"{ARTEFACT_PREFIX}_start.json"
+PREFLIGHT_PATH = OUT / f"{ARTEFACT_PREFIX}_preflight.json"
+RACE_START_PATH = OUT / f"{ARTEFACT_PREFIX}_race_start.json"
 
 # --- pre-registered (spec sections 2-5). Do not tune. ---
 SEEDS = (34, 35, 36)
@@ -70,6 +75,29 @@ RACE_BAR = 0.58
 # D116: the pooled deadlock rate fresh attackers reached against the S7 artefact.
 S7_RACE_RATE = 0.147
 REFERENCES = ("RC19", "RCM28")
+
+
+# ----------------------------------------------------------------------------
+# artefact paths (every one of them under ARTEFACT_PREFIX)
+# ----------------------------------------------------------------------------
+def _arm_file(arm: str) -> pathlib.Path:
+    return OUT / f"{ARTEFACT_PREFIX}_arm_{arm}.json"
+
+
+def _probe_file(arm: str) -> pathlib.Path:
+    return OUT / f"{ARTEFACT_PREFIX}_probe_{arm}.json"
+
+
+def _round_file(ext: str) -> pathlib.Path:
+    return OUT / f"{ARTEFACT_PREFIX}_round.{ext}"
+
+
+def _race_file() -> pathlib.Path:
+    return OUT / f"{ARTEFACT_PREFIX}_race.json"
+
+
+def _race_arm_glob() -> str:
+    return f"{ARTEFACT_PREFIX}race_arm_*.json"
 
 
 def _s7():
@@ -185,7 +213,7 @@ def require_preflight() -> None:
 def require_not_measured() -> None:
     if START_PATH.exists():
         raise SystemExit(f"{START_PATH} already exists (stop rule).")
-    if any(OUT.glob("s8_arm_*.json")) or any(
+    if any(OUT.glob(f"{ARTEFACT_PREFIX}_arm_*.json")) or any(
         (OUT / f"ckpts_{a}").exists() for a in ARMS
     ):
         raise SystemExit(
@@ -194,7 +222,7 @@ def require_not_measured() -> None:
 
 
 def require_arm_not_run(arm: str) -> None:
-    if (OUT / f"s8_arm_{arm}.json").exists() or (OUT / f"ckpts_{arm}").exists():
+    if _arm_file(arm).exists() or (OUT / f"ckpts_{arm}").exists():
         raise SystemExit(
             f"arm {arm} has already run; the stop rule forbids re-running it."
         )
@@ -463,7 +491,7 @@ def run_train_arm(
         eval_n=EVAL_N,
         seed0=PROBE_SEED0,
         ckpt_dir=d,
-        report_path=OUT / f"s8_probe_{arm}.json",
+        report_path=_probe_file(arm),
         label=arm,
     )
     trace: list = []
@@ -534,7 +562,7 @@ def run_arm(arm: str, device: str) -> dict:
         result = run_train_arm(arm, starts, device, holder)
     except BaseException as e:
         S7._write_json(
-            OUT / f"s8_arm_{arm}.json",
+            _arm_file(arm),
             {
                 "arm": arm,
                 **ARMS[arm],
@@ -558,7 +586,7 @@ def run_arm(arm: str, device: str) -> dict:
             },
         )
         raise
-    S7._write_json(OUT / f"s8_arm_{arm}.json", result)
+    S7._write_json(_arm_file(arm), result)
     print(f"[{arm}] {result['verdict']}: {result['reason']}", flush=True)
     return result
 
@@ -724,8 +752,8 @@ def direction(h: dict) -> str:
 
 def load_results() -> dict:
     return {
-        p.stem.removeprefix("s8_arm_"): json.loads(p.read_text())
-        for p in sorted(OUT.glob("s8_arm_*.json"))
+        p.stem.removeprefix(f"{ARTEFACT_PREFIX}_arm_"): json.loads(p.read_text())
+        for p in sorted(OUT.glob(f"{ARTEFACT_PREFIX}_arm_*.json"))
     }
 
 
@@ -827,7 +855,7 @@ def race_setup(S6, artefact_ckpt) -> None:
     S7.race_setup(S6, artefact_ckpt)
     S6.OUT = OUT
     S6.START_PATH = RACE_START_PATH
-    S6.ARTEFACT_PREFIX = "s8race"
+    S6.ARTEFACT_PREFIX = f"{ARTEFACT_PREFIX}race"
     S6.PROBE_SEED0 = PROBE2_SEED0
     S6.GATE_SEED0 = GATE2_SEED0
     S6.SEEDS = SEEDS2
@@ -862,25 +890,24 @@ def race_setup(S6, artefact_ckpt) -> None:
 
 
 def _artefact_ckpt() -> pathlib.Path:
-    round_path = OUT / "s8_round.json"
+    round_path = _round_file("json")
     if not round_path.exists():
         raise SystemExit(
-            "s8_round.json missing: run --summarize first (stage 2 needs the stage-1 artefact)"
+            f"{round_path.name} missing: run --summarize first "
+            "(stage 2 needs the stage-1 artefact)"
         )
     art = json.loads(round_path.read_text())["summary"]["hypotheses"]["artefact"]
     if not art:
         raise SystemExit(
             "no S8 artefact: H4 did not pass; stage 2 does not run (spec section 5)."
         )
-    return pathlib.Path(
-        json.loads((OUT / f"s8_arm_{art}.json").read_text())["final"]["ckpt"]
-    )
+    return pathlib.Path(json.loads(_arm_file(art).read_text())["final"]["ckpt"])
 
 
 def stage1_before() -> dict | None:
     """Spec section 5's "before" number: the S8 artefact's deadlock-episode rate
     against the held-out attackers, taken from the stage-1 gate."""
-    path = OUT / "s8_round.json"
+    path = _round_file("json")
     if not path.exists():
         return None
     doc = json.loads(path.read_text())
@@ -973,11 +1000,11 @@ def main() -> None:
     if args.summarize:
         results, starts = load_results(), load_start()
         race = None
-        if (OUT / "s8_race.json").exists():
-            race = json.loads((OUT / "s8_race.json").read_text())
+        if _race_file().exists():
+            race = json.loads(_race_file().read_text())
         summary = summarize(results, starts, race)
-        S7._write_json(OUT / "s8_round.json", {"summary": summary, "arms": results})
-        write_figure(results, starts, summary, OUT / "s8_round.png")
+        S7._write_json(_round_file("json"), {"summary": summary, "arms": results})
+        write_figure(results, starts, summary, _round_file("png"))
         print(
             json.dumps(
                 {k: summary[k] for k in ("hsafe", "hypotheses", "references", "arms")},
@@ -992,8 +1019,10 @@ def main() -> None:
         race_arm(arm, args.device)
     if args.race_summarize:
         arms = {
-            p_.stem.removeprefix("s8race_arm_"): json.loads(p_.read_text())
-            for p_ in sorted(OUT.glob("s8race_arm_*.json"))
+            p_.stem.removeprefix(f"{ARTEFACT_PREFIX}race_arm_"): json.loads(
+                p_.read_text()
+            )
+            for p_ in sorted(OUT.glob(_race_arm_glob()))
         }
         rs = (
             json.loads(RACE_START_PATH.read_text())
@@ -1001,12 +1030,12 @@ def main() -> None:
             else None
         )
         r = race_summary(arms, rs, stage1_before())
-        S7._write_json(OUT / "s8_race.json", r)
+        S7._write_json(_race_file(), r)
         print(json.dumps(r, indent=2, default=str))
         results, starts = load_results(), load_start()
         summary = summarize(results, starts, r)
-        S7._write_json(OUT / "s8_round.json", {"summary": summary, "arms": results})
-        write_figure(results, starts, summary, OUT / "s8_round.png")
+        S7._write_json(_round_file("json"), {"summary": summary, "arms": results})
+        write_figure(results, starts, summary, _round_file("png"))
         print(f"\n{summary['direction']}")
 
 

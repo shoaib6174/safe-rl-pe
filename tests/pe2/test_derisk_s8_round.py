@@ -465,3 +465,18 @@ class TestArtefactNamespace:
         (tmp_path / "s8_arm_FT-A1-34.json").write_text('{"arm": "FT-A1-34"}')
         (tmp_path / "s8race_arm_ATK3-37.json").write_text('{"arm": "ATK3-37"}')
         assert set(R.load_results()) == {"FT-A1-34"}
+
+    def test_the_prefix_parametrises_every_artefact_path(self, tmp_path, monkeypatch):
+        """S10 reuses this module's machinery with ARTEFACT_PREFIX = "s10", so
+        every artefact path must come from the prefix — and the default must
+        still be S8's own namespace."""
+        assert R.ARTEFACT_PREFIX == "s8"
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        monkeypatch.setattr(R, "ARTEFACT_PREFIX", "zz")
+        R.require_arm_not_run("FT-A1-34")  # nothing on disk yet
+        (tmp_path / "s8_arm_FT-A1-34.json").write_text('{"arm": "FT-A1-34"}')
+        R.require_arm_not_run("FT-A1-34")  # another round's namespace: not ours
+        (tmp_path / "zz_arm_FT-A1-34.json").write_text('{"arm": "FT-A1-34"}')
+        with pytest.raises(SystemExit, match="stop rule"):
+            R.require_arm_not_run("FT-A1-34")
+        assert set(R.load_results()) == {"FT-A1-34"}
