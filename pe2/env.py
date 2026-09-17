@@ -98,7 +98,10 @@ class PursuitEvasionEnv(gym.Env):
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
-        self.obstacles = self._generate_obstacles(self.cfg.n_obstacles)
+        n_physical = self.cfg.n_physical_obstacles
+        if n_physical is None:
+            n_physical = self.cfg.n_obstacles
+        self.obstacles = self._generate_obstacles(n_physical)
         self.pursuer_pose = self._sample_free_pose()
         while True:
             self.evader_pose = self._sample_free_pose()

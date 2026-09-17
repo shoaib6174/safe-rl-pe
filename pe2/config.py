@@ -41,6 +41,12 @@ class EnvConfig:
     - dt=0.05, v_max=1.0, omega_max=2.84: proven unicycle params
       (plan Step 1; root conf/ env yaml).
     - arena 10x10, 2 obstacles: D7 (4 too cluttered, 0 removes occlusion).
+    - n_physical_obstacles=None: the number of obstacles actually PLACED in
+      the arena; None means "same as n_obstacles" (the locked default, and
+      bit-identical to it). n_obstacles alone keeps owning the observation
+      layout (pe2/obs.py reserves 2 * n_obstacles slots), so setting this
+      field evaluates a frozen policy in a denser or emptier arena without
+      changing its input shape (S9 attack-surface sweep).
     - evader_speed_ratio=1.2: D5 (equal speed degenerate, 1.05 insufficient).
     - agent_radius=0.15, capture at d <= 2*agent_radius: per GI 2024
       reproduction (repro_gonultas_isler_2024/config.yaml).
@@ -57,6 +63,7 @@ class EnvConfig:
     omega_max: float = 2.84
     arena_size: float = 10.0
     n_obstacles: int = 2
+    n_physical_obstacles: int | None = None
     evader_speed_ratio: float = 1.2
     agent_radius: float = 0.15
     max_steps: int = 1200

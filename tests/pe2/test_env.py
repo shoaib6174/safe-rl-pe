@@ -13,6 +13,7 @@ import pytest
 
 from pe2.config import EnvConfig
 from pe2.env import OUTCOME_CAPTURE, OUTCOME_TIMEOUT, PursuitEvasionEnv, wrap_angle
+from pe2.obs import obs_dim
 from pe2.rng import derive_seed, make_rng
 
 
@@ -273,6 +274,64 @@ class TestEulerStepIdentity:
         pose = np.array([1.2345678901234567, -2.3456789012345678, 0.7])
         x, y, _ = euler_step(pose, 0.0, 0.0, 0.05)
         assert x == pose[0] and y == pose[1]
+
+
+class TestPhysicalObstacleCount:
+    """`n_physical_obstacles` decouples the arena's obstacle COUNT from the
+    observation layout (S9 attack-surface sweep): frozen policies trained
+    with `n_obstacles=2` must be evaluatable in 0--4-obstacle arenas without
+    their observation vector changing shape.
+    """
+
+    def test_default_is_bit_identical_to_the_explicit_value(self):
+        """Unset field == n_obstacles: same seed, same obstacles AND poses."""
+        a = PursuitEvasionEnv(EnvConfig())
+        b = PursuitEvasionEnv(EnvConfig(n_physical_obstacles=2))
+        a.reset(seed=7)
+        b.reset(seed=7)
+        assert a.obstacles == b.obstacles  # dict floats, compared bitwise
+        assert tuple(a.pursuer_pose) == tuple(b.pursuer_pose)
+        assert tuple(a.evader_pose) == tuple(b.evader_pose)
+
+    def test_four_physical_obstacles_keep_the_observation_layout(self):
+        cfg = EnvConfig(n_physical_obstacles=4)
+        env = PursuitEvasionEnv(cfg)
+        obs, _ = env.reset(seed=7)
+        assert len(env.obstacles) == 4
+        assert obs_dim(cfg) == obs_dim(EnvConfig())
+        assert obs["pursuer"].shape == (obs_dim(EnvConfig()),)
+        assert obs["evader"].shape == (obs_dim(EnvConfig()),)
+
+    def test_zero_physical_obstacles_runs_with_empty_obstacle_slots(self):
+        cfg = EnvConfig(n_physical_obstacles=0)
+        env = PursuitEvasionEnv(cfg)
+        obs, _ = env.reset(seed=7)
+        assert env.obstacles == []
+        assert obs["pursuer"].shape == (obs_dim(EnvConfig()),)
+        for _ in range(5):
+            obs, _, terminated, truncated, _ = env.step([0.5, 0.1, 0.5, -0.1])
+            if terminated or truncated:
+                break
+        # Slots 7..10 are the two obstacle (dx, dy) pairs of the LAYOUT.
+        np.testing.assert_array_equal(obs["pursuer"][7:11], np.zeros(4))
+        np.testing.assert_array_equal(obs["evader"][7:11], np.zeros(4))
+
+    def test_generator_is_sequential_so_counts_nest(self):
+        """First two obstacles of a 4-obstacle arena == the two of a
+        2-obstacle arena at the same seed (rejection sampling is sequential,
+        so a larger count only appends)."""
+        two = PursuitEvasionEnv(EnvConfig(n_physical_obstacles=2))
+        four = PursuitEvasionEnv(EnvConfig(n_physical_obstacles=4))
+        two.reset(seed=7)
+        four.reset(seed=7)
+        assert four.obstacles[:2] == two.obstacles
+
+    def test_counts_zero_through_four_all_reset(self):
+        for n in range(5):
+            env = PursuitEvasionEnv(EnvConfig(n_physical_obstacles=n))
+            for seed in range(20):
+                env.reset(seed=seed)
+                assert len(env.obstacles) == n
 
 
 if __name__ == "__main__":
