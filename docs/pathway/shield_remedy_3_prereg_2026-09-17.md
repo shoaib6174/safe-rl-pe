@@ -84,3 +84,12 @@ streams and rules are fixed here. Consumed streams before this round: ≤ 1 190 
 `results/derisk/s8_preflight.json` (V-A0), `s8_start.json`, `s8_arm_{FT-A1-34,…,SCR-W34}.json`, `s8_probe_*`,
 `ckpts_FT-*/`, `ckpts_SCR-W34/`, `s8_round.{json,png}`; stage 2 `s8race_arm_ATK3-{37,38,39}.json`,
 `ckpts_ATK3-*/`, `s8_race_start.json`, `s8_race.json`. Signed in the worklog.
+
+## Amendment S8-A1 (2026-09-17, recorded before any number of this round)
+
+Reading of §4's capture guard, fixed by the reviewer's request: the guard is `pe2.derisk.gate_pass(rc19, s8)`
+exactly as S7's label used it — McNemar p < 0.05 with b > c in RC19's favour AND RC19's Wilson lower bound above
+the S8 point estimate. It is therefore slightly more permissive than the bare McNemar clause (a 0.55 → 0.54 shift
+never fails it; a 0.55 → 0.45 shift does). Also fixed: the runner distinguishes `FAIL (capture lost)` (deadlock
+tests pass, guard fails), `FAIL (still pinned)` (guard ok, deadlock tests < 2/3) and `FAIL (both)`; the round's
+`fail_mode` (§6 row choice) is the majority per-arm failure flavour among the primary family, ties → "capture lost".
