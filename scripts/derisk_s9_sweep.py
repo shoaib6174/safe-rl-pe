@@ -242,6 +242,7 @@ def run_cell(name: str, device: str = "cpu") -> dict:
         "intervention_rate": sh["intervention_rate"],
         "violations": int(sh["violation_steps"]),
         "min_clearance_floor": sh["min_clearance_floor"],
+        "min_clearance_hard_floor": sh["min_clearance_hard_floor"],
         "wilson_deadlock": _ci(sum(deadlock_ind), n_ep),
         "provenance": provenance(),
     }
