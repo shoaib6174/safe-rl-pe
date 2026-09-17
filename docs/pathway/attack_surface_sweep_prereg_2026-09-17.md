@@ -65,3 +65,19 @@ is the only permitted addition (a fourth pursuer, same streams), by amendment.
 cells), `s9_round.{json,png}` (three panels: deadlock vs δ, vs n, vs γ; one line per pursuer × structured attacker,
 scripted baselines dashed). Runner `scripts/derisk_s9_sweep.py` (`--cells [names] | --summarize`); cells run in
 parallel worker processes (≤ 6, `OMP_NUM_THREADS=2`) alongside S8's arms.
+
+## Amendment S9-A1 (2026-09-17, before any cell exists): the obstacle-count sweep and the observation
+
+The observation vector reserves `cfg.n_obstacles` slots for the nearest obstacles (`pe2/obs.py::build_observation`),
+so the policies' input size is tied to the config's obstacle count and empty slots are zero-filled. The sweep
+therefore varies the number of obstacles PHYSICALLY generated (new config field `n_physical_obstacles`, default
+`None` = `n_obstacles`; only `PursuitEvasionEnv._generate_obstacles`'s count changes) while `n_obstacles = 2`
+keeps every policy's observation layout. Consequences, fixed now:
+- **Confirmatory n-levels: {2, 3, 4}** (always ≥ 2 obstacles present, so the two observed slots are in
+  distribution; the policies see the nearest two). H-GEO-n reads: the n = 2 cell has the lowest rate and ρ ≥ 0
+  over {2, 3, 4}, against both structured attackers, for ≥ 2 of 3 pursuers.
+- **Exploratory n-levels: {0, 1}** are run and reported with the caveat that unused slots are zero-filled (an
+  input the policies never saw); no verdict is derived from them.
+- Obstacle draws come from the episode RNG after the poses as today, so for a given seed the poses are identical
+  across n and the obstacle sets are nested by construction only when the generator is sequential (it is:
+  `for _ in range(n)`), which the runner asserts on the first seed.
