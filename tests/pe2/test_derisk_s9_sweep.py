@@ -1,6 +1,6 @@
 """scripts/derisk_s9_sweep.py — the S9 attack-surface sweep's own decisions.
 
-Spec: docs/pathway/attack_surface_sweep_prereg_2026-09-17.md (+ amendment A1).
+Spec: docs/pathway/attack_surface_sweep_prereg_2026-09-17.md (+ amendments A1, A2).
 Nothing here touches a checkpoint: every test drives the enumeration, the
 verdict rules and the cell bookkeeping on fabricated records.
 """
@@ -84,8 +84,9 @@ def _records(rate_fn, violations_fn=None):
 
 def _monotone(spec):
     """Deadlock grows with delta, grows with n, shrinks with gamma: every
-    hypothesis of the round CONFIRMED."""
-    return 0.10 + 2.0 * spec["delta"] + 0.02 * spec["n"] + (0.2 - spec["gamma"]) / 2.0
+    hypothesis of the round CONFIRMED. The n slope is large enough that the
+    n = 4 and n = 2 Wilson intervals separate (A2's unpaired test)."""
+    return 0.10 + 2.0 * spec["delta"] + 0.12 * spec["n"] + (0.2 - spec["gamma"]) / 2.0
 
 
 def _flat(spec):
@@ -202,8 +203,16 @@ class TestVerdicts:
         t = v["sweeps"]["delta"]["pursuers"]["RC19"]["opponents"]["ATT25"][
             "top_vs_bottom"
         ]
+        assert t["test"] == "paired_indicator"  # A2: delta stays seed-paired
         assert t["pass"] is True
         assert t["rate_a"] > t["rate_b"]  # a = top level, b = bottom level
+
+    def test_gamma_keeps_the_paired_test(self):
+        v = R.verdicts(_records(_monotone))
+        t = v["sweeps"]["gamma"]["pursuers"]["RC19"]["opponents"]["ATT25"][
+            "top_vs_bottom"
+        ]
+        assert t["test"] == "paired_indicator"
 
     def test_delta_fails_when_only_the_monotone_half_holds(self):
         # rho > 0 but the top vs bottom difference is a single episode: the
@@ -240,6 +249,36 @@ class TestVerdicts:
         assert ex["levels"] == list(R.NS_EXPLORATORY)
         assert ex["rates"]["RC19"]["ATT25"] == [0.9, 0.8]
         assert "verdict" not in ex
+
+    def test_n_uses_wilson_separation_not_a_paired_test(self):
+        # A2: the n levels are different games (obstacles are drawn before the
+        # poses), so the top-vs-bottom test is 95 % Wilson separation.
+        def rate(spec):
+            return {0: 0.9, 1: 0.9, 2: 0.10, 3: 0.20, 4: 0.30}[spec["n"]]
+
+        cell = R.verdicts(_records(rate))["sweeps"]["n"]["pursuers"]["RC19"][
+            "opponents"
+        ]["ATT25"]
+        assert cell["top_vs_bottom"]["test"] == "wilson_separation"
+        assert (
+            cell["top_vs_bottom"]["wilson_a"][0] > cell["top_vs_bottom"]["wilson_b"][1]
+        )
+        assert cell["top_vs_bottom"]["pass"] is True
+        assert cell["verdict"] == "CONFIRMED"
+
+    def test_n_not_confirmed_when_the_intervals_overlap(self):
+        # rates rise and n = 2 is strictly lowest, but n = 4 and n = 2 overlap at
+        # 95 %: the A2 test vetoes what rho alone would confirm.
+        def rate(spec):
+            return {0: 0.9, 1: 0.9, 2: 0.30, 3: 0.33, 4: 0.36}[spec["n"]]
+
+        cell = R.verdicts(_records(rate))["sweeps"]["n"]["pursuers"]["RC19"][
+            "opponents"
+        ]["ATT25"]
+        assert cell["rho"] > 0
+        assert cell["rates"][0] < min(cell["rates"][1:])
+        assert cell["top_vs_bottom"]["pass"] is False
+        assert cell["verdict"] == "NOT CONFIRMED"
 
     def test_n_verdict_needs_the_lowest_rate_at_n_two(self):
         def rate(spec):

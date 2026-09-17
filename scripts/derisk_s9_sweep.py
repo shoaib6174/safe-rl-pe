@@ -1,5 +1,5 @@
 """S9 — is the stall attack a property of the shield? Evaluation-only sweeps
-(spec: docs/pathway/attack_surface_sweep_prereg_2026-09-17.md + amendment A1).
+(spec: docs/pathway/attack_surface_sweep_prereg_2026-09-17.md + amendments A1, A2).
 
 No training. Three frozen shielded pursuers are re-evaluated against two frozen
 structured attackers and two scripted baselines while ONE shield or geometry
@@ -382,36 +382,61 @@ def spearman(y: list[float]) -> float:
     return 0.0 if den == 0 else num / den
 
 
-def _top_vs_bottom(top: dict, bottom: dict) -> dict:
-    """`paired_indicator_test` PASSes when its FIRST argument produces the event
-    more often on the same episodes (pe2/derisk.py: b = a-only must exceed
-    c = b-only). The spec's clause is "the top level deadlocks MORE", so the top
-    level is argument a — the spec text's `(bottom_ind, top_ind)` ordering would
-    test the opposite direction and is read here as a transcription slip in the
-    notation, not as a different hypothesis."""
-    return paired_indicator_test(top["deadlock_ind"], bottom["deadlock_ind"], P_GATE)
+def _paired_top_vs_bottom(top: dict, bottom: dict) -> dict:
+    """A2: the test IS "the top level deadlocks MORE than the bottom level",
+    which in `pe2/derisk.py`'s convention is `paired_indicator_test(top, bottom)`
+    — its FIRST argument is the side expected to be higher (PASS needs
+    b = a-only > c = b-only). Used by the delta and gamma sweeps, which hold n at
+    2 and are therefore seed-paired episode for episode."""
+    return {
+        "test": "paired_indicator",
+        **paired_indicator_test(top["deadlock_ind"], bottom["deadlock_ind"], P_GATE),
+    }
+
+
+def _wilson_top_vs_bottom(top: dict, bottom: dict) -> dict:
+    """A2: the n sweep is NOT seed-paired — the env draws the obstacles before
+    the poses (`pe2/env.py` reset), so the RNG stream shifts with n and the
+    episodes of two n-levels are different games. Its top-vs-bottom test is
+    therefore Wilson separation at 95 %: the top level's lower bound above the
+    bottom level's upper bound. Both intervals come from `pe2.eval.wilson_ci`
+    (via `_ci`, stored in the record as `wilson_deadlock`)."""
+    t, b = top["wilson_deadlock"], bottom["wilson_deadlock"]
+    return {
+        "test": "wilson_separation",
+        "pass": bool(t["wilson"][0] > b["wilson"][1]),
+        "rate_a": t["rate"],
+        "rate_b": b["rate"],
+        "wilson_a": t["wilson"],
+        "wilson_b": b["wilson"],
+        "n": t["n"],
+    }
 
 
 SWEEPS = {
     # levels: what the verdict reads; top/bottom: indices into `levels` for the
-    # paired test (gamma runs conservative -> loose, so its "top" is gamma = 0.1)
+    # top-vs-bottom test (gamma runs conservative -> loose, so its "top" is
+    # gamma = 0.1); test: paired where the levels share a seed stream (A2).
     "delta": {
         "levels": list(DELTAS),
         "settings": [(d, BASE_N, BASE_GAMMA) for d in DELTAS],
         "top": -1,
         "bottom": 0,
+        "test": _paired_top_vs_bottom,
     },
     "n": {
         "levels": list(NS_CONFIRM),
         "settings": [(BASE_DELTA, n, BASE_GAMMA) for n in NS_CONFIRM],
         "top": -1,
         "bottom": 0,
+        "test": _wilson_top_vs_bottom,
     },
     "gamma": {
         "levels": [0.4, 0.2, 0.1],
         "settings": [(BASE_DELTA, BASE_N, g) for g in (0.4, 0.2, 0.1)],
         "top": -1,
         "bottom": 0,
+        "test": _paired_top_vs_bottom,
     },
 }
 
@@ -423,7 +448,9 @@ def _cell_verdict(sweep: str, rates: list[float], rho: float, tvb: dict) -> str:
     elif sweep == "n":
         # A1: lowest at n = 2 and non-decreasing over {2, 3, 4}. "Lowest" is read
         # strictly, so an all-equal (e.g. all-zero) sweep cannot confirm by tie.
-        ok = rates[0] < min(rates[1:]) and rho >= 0
+        # A2: plus the unpaired top-vs-bottom test, Wilson separation of n = 4
+        # from n = 2.
+        ok = rates[0] < min(rates[1:]) and rho >= 0 and tvb["pass"]
     else:
         # gamma: the conservative end (0.1) must not deadlock LESS than the
         # loose end (0.4). Non-strict, exactly as the spec states it.
@@ -443,7 +470,7 @@ def _opponent_block(sweep: str, records: dict, pursuer: str, opponent: str) -> d
     cells = [records[n] for n in names]
     rates = [c["deadlock_rate"] for c in cells]
     rho = spearman(rates)
-    tvb = _top_vs_bottom(cells[cfgs["top"]], cells[cfgs["bottom"]])
+    tvb = cfgs["test"](cells[cfgs["top"]], cells[cfgs["bottom"]])
     block = {
         "levels": cfgs["levels"],
         "cells": names,
@@ -514,9 +541,9 @@ def _sweep_block(sweep: str, records: dict) -> dict:
     if sweep == "n":
         block["exploratory"] = _exploratory_n(records)
         block["note"] = (
-            "levels differ in obstacle count, so episodes are NOT pose-paired "
+            "A2: levels differ in obstacle count, so episodes are NOT pose-paired "
             "across n (obstacles are drawn before the poses); top_vs_bottom is "
-            "reported, and the verdict rests on the lowest-at-n=2 and rho rules"
+            "Wilson separation of n = 4 from n = 2 at 95 %, not a paired test"
         )
     return block
 
