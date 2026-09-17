@@ -317,3 +317,58 @@ class TestMixtureOpponentFactory:
             _obs, _, term, trunc, _ = m.step(np.array([1.0, 0.0], dtype=np.float32))
             if term or trunc:
                 m.reset()
+
+
+class TestMixtureWeights:
+    def test_uniform_draws_unchanged_when_weights_none(self):
+        from pe2.evade import MixtureOpponentFactory
+        from pe2.scripted import GreedyEvader, ObstacleHuggingEvader
+
+        f = MixtureOpponentFactory([GreedyEvader, ObstacleHuggingEvader], seed=5)
+        draws = [type(f()).__name__ for _ in range(50)]
+        g = MixtureOpponentFactory(
+            [GreedyEvader, ObstacleHuggingEvader], seed=5, weights=None
+        )
+        assert [type(g()).__name__ for _ in range(50)] == draws
+        rng = np.random.default_rng(5)
+        assert f.draws == [int(rng.integers(2)) for _ in range(50)]
+
+    def test_weighted_draws(self):
+        from pe2.evade import MixtureOpponentFactory
+        from pe2.scripted import FovLimitedEvader, GreedyEvader, ObstacleHuggingEvader
+
+        f = MixtureOpponentFactory(
+            [GreedyEvader, ObstacleHuggingEvader, FovLimitedEvader],
+            seed=1,
+            weights=(5, 4, 1),
+        )
+        kinds = [type(f()).__name__ for _ in range(1000)]
+        c = {
+            k: kinds.count(k)
+            for k in ("GreedyEvader", "ObstacleHuggingEvader", "FovLimitedEvader")
+        }
+        assert (
+            440 <= c["GreedyEvader"] <= 560
+            and 340 <= c["ObstacleHuggingEvader"] <= 460
+            and 60 <= c["FovLimitedEvader"] <= 140
+        )
+        assert f.weights == pytest.approx((0.5, 0.4, 0.1))
+        g = MixtureOpponentFactory(
+            [GreedyEvader, ObstacleHuggingEvader, FovLimitedEvader],
+            seed=1,
+            weights=(5, 4, 1),
+        )
+        assert [type(g()).__name__ for _ in range(1000)] == kinds
+
+    def test_bad_weights(self):
+        from pe2.evade import MixtureOpponentFactory
+        from pe2.scripted import GreedyEvader, ObstacleHuggingEvader
+
+        with pytest.raises(ValueError):
+            MixtureOpponentFactory(
+                [GreedyEvader, ObstacleHuggingEvader], seed=1, weights=(1,)
+            )
+        with pytest.raises(ValueError):
+            MixtureOpponentFactory(
+                [GreedyEvader, ObstacleHuggingEvader], seed=1, weights=(1, 0)
+            )

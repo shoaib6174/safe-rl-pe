@@ -396,17 +396,32 @@ class StructuredEvaderPolicy:
 
 
 class MixtureOpponentFactory:
-    """Per-episode opponent sampler for training (S7): each call draws one
-    member factory uniformly with a seeded RNG and returns a fresh opponent.
+    """Per-episode opponent sampler for training (S7/S8): each call draws one
+    member factory — uniformly (`weights=None`, S7) or with the given sampling
+    weights (S8) — with a seeded RNG and returns a fresh opponent.
     SingleAgentWrapper calls the factory at every reset, so the training
     stream sees the whole family in a reproducible order."""
 
-    def __init__(self, members, seed: int):
+    def __init__(self, members, seed: int, weights=None):
         self.members = list(members)
         self.rng = np.random.default_rng(seed)
         self.draws: list[int] = []
+        if weights is None:
+            self.weights = None
+        else:
+            w = np.asarray(weights, dtype=float)
+            if w.shape != (len(self.members),):
+                raise ValueError(
+                    f"weights has shape {w.shape}, expected ({len(self.members)},)"
+                )
+            if np.any(w <= 0):
+                raise ValueError("every weight must be positive")
+            self.weights = tuple(float(x) for x in w / w.sum())
 
     def __call__(self):
-        i = int(self.rng.integers(len(self.members)))
+        if self.weights is None:
+            i = int(self.rng.integers(len(self.members)))
+        else:
+            i = int(self.rng.choice(len(self.members), p=self.weights))
         self.draws.append(i)
         return self.members[i]()
