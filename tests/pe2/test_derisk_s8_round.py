@@ -130,6 +130,8 @@ class TestProtocol:
             R.S7_RACE_RATE,
         ) == ((37, 38, 39), 1_220_000, 1_230_000, 0.58, 0.147)
         assert (R.GATE_N, R.EVAL_N, R.PASS_MIN, R.P_GATE) == (500, 200, 2, 0.05)
+        assert R.REFERENCES == ("RC19", "RCM28")
+        assert R.REFERENCE_CKPT == {"RC19": R.RC19_CKPT, "RCM28": R.RCM28_CKPT}
         assert R.HELD_OUT == ("ATT25", "ATT26", "ATT27")
         assert R.GATE_OPPONENTS == ("ATT25", "ATT26", "ATT27", "GREEDY", "HUG7")
         assert R.WEIGHTS[0] + R.WEIGHTS[1] + R.WEIGHTS[2] == pytest.approx(0.8)

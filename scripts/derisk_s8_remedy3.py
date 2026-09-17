@@ -114,6 +114,11 @@ HELD_OUT = S7.HELD_OUT
 GATE_OPPONENTS = S7.GATE_OPPONENTS
 RC19_CKPT = S7.RC19_CKPT
 RCM28_CKPT = OUT / "ckpts_RCM28" / f"RCM28_{S7.TOTAL_LONG}.zip"
+# The checkpoint `measure_start` gates for each name in REFERENCES. S10 reuses
+# this module with a third reference, so the map — not the loop — is what the
+# round names. Every reference is gated shielded with shield_obs (S7's
+# `gate_pursuer` fixes both), which each of these checkpoints was trained with.
+REFERENCE_CKPT = {"RC19": RC19_CKPT, "RCM28": RCM28_CKPT}
 
 if len(WEIGHTS) != len(MIXTURE):
     raise AssertionError(f"{len(WEIGHTS)} weights for {len(MIXTURE)} mixture members")
@@ -353,9 +358,9 @@ def measure_start(device: str) -> dict:
         "gate_n": GATE_N,
         "provenance": S7.provenance(),
     }
-    for ref, ckpt in (("RC19", RC19_CKPT), ("RCM28", RCM28_CKPT)):
+    for ref in REFERENCES:
         print(f"{ref} reference on the gate stream:", flush=True)
-        out[ref] = S7.gate_pursuer(S7._model(ckpt, device), opps, device)
+        out[ref] = S7.gate_pursuer(S7._model(REFERENCE_CKPT[ref], device), opps, device)
     S7._write_json(START_PATH, out)
     return out
 
