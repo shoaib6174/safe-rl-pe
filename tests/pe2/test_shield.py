@@ -1810,3 +1810,292 @@ class TestZeroContactGuarantee:
             for s in range(900000, 900010)
         )
         assert hits >= 8
+
+
+# ---------------------------------------------------------------------------
+# S11 (docs/pathway/second_filter_prereg_2026-09-18.md): PredictiveShield --
+# the second hard filter. Its acceptance test is an exact lookahead through
+# the env's own `pursuer_step`, so these tests check the IMPLEMENTATION, not a
+# modelling assumption (spec section 1).
+# ---------------------------------------------------------------------------
+
+P_LIM = CFG.arena_size / 2.0 - CFG.agent_radius  # the env's inset bound, 4.85
+
+
+def _bf_clearance(pose, obstacles):
+    """Body-to-surface distance, re-derived through a DIFFERENT code path:
+    the base class's own hard rows at margin 0. Independent of
+    `PredictiveShield._body_clearance`, which the filter uses."""
+    cons = CBFShield(CFG, margin=0.0).constraints(np.asarray(pose), obstacles)
+    return min(c.clearance for c in cons if c.hard)
+
+
+def _bf_accept(u, state, obstacles, horizon, margin=0.0):
+    """Brute-force re-simulation of the acceptance test, written independently
+    of the class: hold u for `horizon` steps, then one full-stop step; reject
+    on any contact flag or any body clearance below `margin`."""
+    from pe2.env import pursuer_step
+
+    pose = np.asarray(state, dtype=float)
+    lim = (-P_LIM, P_LIM)
+    for k in range(horizon + 1):
+        v, w = (float(u[0]), float(u[1])) if k < horizon else (0.0, 0.0)
+        pose, wall, hit = pursuer_step(pose, v, w, CFG, obstacles, lim, lim)
+        if wall or hit:
+            return False
+        if _bf_clearance(pose, obstacles) < margin:
+            return False
+    return True
+
+
+def _random_obstacles(rng, n=2):
+    return [
+        {
+            "x": float(rng.uniform(-3.5, 3.5)),
+            "y": float(rng.uniform(-3.5, 3.5)),
+            "radius": float(rng.uniform(0.3, 1.0)),
+        }
+        for _ in range(n)
+    ]
+
+
+def _random_free_state(rng, obstacles):
+    """A contact-free pose (clearance >= 0), uniformly rejection-sampled."""
+    while True:
+        s = np.array(
+            [
+                rng.uniform(-P_LIM, P_LIM),
+                rng.uniform(-P_LIM, P_LIM),
+                rng.uniform(-np.pi, np.pi),
+            ]
+        )
+        if _bf_clearance(s, obstacles) >= 0.0:
+            return s
+
+
+class TestPredictiveShieldDegenerate:
+    """V-P (i): at H = 0 the filter is a clip and nothing else."""
+
+    def test_horizon_zero_returns_the_clipped_nominal(self):
+        from pe2.shield import PredictiveShield
+
+        rng = np.random.default_rng(11000)
+        shield = PredictiveShield(CFG, horizon=0)
+        for _ in range(500):
+            obstacles = _random_obstacles(rng)
+            state = _random_free_state(rng, obstacles)
+            nom = (rng.uniform(-0.5, 1.5), rng.uniform(-4.0, 4.0))
+            u, info = shield.filter(nom, state, obstacles)
+            assert u[0] == pytest.approx(np.clip(nom[0], 0.0, CFG.v_max))
+            assert u[1] == pytest.approx(np.clip(nom[1], -CFG.omega_max, CFG.omega_max))
+            assert info["intervention"] is False
+
+
+class TestPredictiveShieldExactness:
+    """V-P (iii): the filter's accept decision IS the env's own rollout."""
+
+    def test_accept_equals_brute_force_resimulation(self):
+        from pe2.shield import PredictiveShield
+
+        rng = np.random.default_rng(11001)
+        shield = PredictiveShield(CFG, horizon=4)
+        n_true = n_false = 0
+        for _ in range(1000):
+            obstacles = _random_obstacles(rng)
+            # Uniform over the WHOLE arena, so overlapping/out-of-bounds
+            # starts exercise the contact branches of pursuer_step too.
+            state = np.array(
+                [
+                    rng.uniform(-P_LIM - 0.1, P_LIM + 0.1),
+                    rng.uniform(-P_LIM - 0.1, P_LIM + 0.1),
+                    rng.uniform(-np.pi, np.pi),
+                ]
+            )
+            u = np.array(
+                [
+                    rng.uniform(0.0, CFG.v_max),
+                    rng.uniform(-CFG.omega_max, CFG.omega_max),
+                ]
+            )
+            got = shield._accept(u, state, obstacles)
+            assert got == _bf_accept(u, state, obstacles, 4)
+            n_true += int(got)
+            n_false += int(not got)
+        assert n_true > 50 and n_false > 50  # both branches really exercised
+
+    def test_body_clearance_equals_the_base_class_hard_rows(self):
+        from pe2.shield import PredictiveShield
+
+        rng = np.random.default_rng(11002)
+        shield = PredictiveShield(CFG, horizon=4)
+        for _ in range(200):
+            obstacles = _random_obstacles(rng)
+            state = _random_free_state(rng, obstacles)
+            assert shield._body_clearance(state, obstacles) == pytest.approx(
+                _bf_clearance(state, obstacles)
+            )
+
+    def test_margin_is_the_clearance_threshold_not_a_second_inset(self):
+        from pe2.shield import PredictiveShield
+
+        obstacles = []
+        # Facing the +x wall from 0.10 m away: at delta = 0 a full stop is
+        # accepted (clearance 0.10 >= 0); at delta = 0.2 it is not.
+        state = np.array([P_LIM - 0.10, 0.0, 0.0])
+        assert PredictiveShield(CFG, horizon=4, margin=0.0)._accept(
+            (0.0, 0.0), state, obstacles
+        )
+        assert not PredictiveShield(CFG, horizon=4, margin=0.2)._accept(
+            (0.0, 0.0), state, obstacles
+        )
+        # ... and delta = 0.05 accepts, which a second inset (2 * delta) would
+        # not: the body clearance is 0.10, so only a single application passes.
+        assert PredictiveShield(CFG, horizon=4, margin=0.05)._accept(
+            (0.0, 0.0), state, obstacles
+        )
+
+
+class TestPredictiveShieldTiers:
+    def test_zero_action_is_always_a_candidate(self):
+        from pe2.shield import PredictiveShield, _qp_candidates
+
+        shield = PredictiveShield(CFG, horizon=4)
+        obstacles = [{"x": 1.0, "y": 0.2, "radius": 0.5}]
+        state = np.array([0.0, 0.0, 0.0])
+        cons = shield.constraints(state, obstacles)
+        U = _qp_candidates(
+            0.7, 0.3, shield._dcbf_rows(cons), CFG.v_max, CFG.omega_max, 150.0, 1.0
+        )
+        assert any(np.array_equal(u, [0.0, 0.0]) for u in U)
+        assert any(np.allclose(u, [0.7, 0.3]) for u in U)
+
+    def test_no_intervention_in_open_space(self):
+        from pe2.shield import PredictiveShield
+
+        shield = PredictiveShield(CFG, horizon=4)
+        u, info = shield.filter((0.5, 0.5), np.array([0.0, 0.0, 0.0]), [])
+        assert np.allclose(u, [0.5, 0.5])
+        assert info["method"] == "exact"
+        assert info["feasible"] is True
+        assert info["intervention"] is False
+
+    def test_delta_zero_never_needs_the_backup_tier(self):
+        """u = 0 holds the pose, so from a contact-free start it is always
+        accepted at delta = 0 -- backup is unreachable and can therefore never
+        execute into contact."""
+        from pe2.shield import PredictiveShield
+
+        rng = np.random.default_rng(11003)
+        shield = PredictiveShield(CFG, horizon=4)
+        for _ in range(300):
+            obstacles = _random_obstacles(rng)
+            state = _random_free_state(rng, obstacles)
+            nom = (rng.uniform(0.0, CFG.v_max), rng.uniform(-3.0, 3.0))
+            _u, info = shield.filter(nom, state, obstacles)
+            assert info["method"] == "exact"
+
+    def test_wedged_state_falls_back_to_a_full_stop(self):
+        """Pressed against the +x wall inside a delta = 0.2 keep-out and
+        heading into it: every candidate with v > 0 loses clearance on its
+        first step (the Euler step translates along the CURRENT heading), so
+        nothing is acceptable and the backup tier must hold the pose."""
+        from pe2.shield import PredictiveShield
+
+        shield = PredictiveShield(CFG, horizon=4, margin=0.2)
+        state = np.array([P_LIM - 0.10, 0.0, 0.0])
+        u, info = shield.filter((CFG.v_max, 0.0), state, [])
+        assert info["method"] == "backup"
+        assert info["feasible"] is False
+        assert u[0] == 0.0
+        assert info["v_exec"] == 0.0
+        assert info["intervention"] is True
+
+    def test_backup_never_executes_into_contact(self):
+        """The executed action of the backup tier, applied by the env itself,
+        never fires a contact flag from a contact-free start."""
+        from pe2.env import pursuer_step
+        from pe2.shield import PredictiveShield
+
+        rng = np.random.default_rng(11004)
+        shield = PredictiveShield(CFG, horizon=4, margin=0.3)
+        seen_backup = 0
+        for _ in range(200):
+            obstacles = _random_obstacles(rng)
+            state = _random_free_state(rng, obstacles)
+            u, info = shield.filter(
+                (rng.uniform(0.0, CFG.v_max), rng.uniform(-3.0, 3.0)), state, obstacles
+            )
+            seen_backup += int(info["method"] == "backup")
+            _p, wall, hit = pursuer_step(
+                state, u[0], u[1], CFG, obstacles, (-P_LIM, P_LIM), (-P_LIM, P_LIM)
+            )
+            assert not (wall or hit)
+        assert seen_backup > 0  # the tier really was exercised
+
+
+class TestPredictiveShieldInterface:
+    def test_info_keys_match_the_cbf_shield(self):
+        from pe2.shield import PredictiveShield
+
+        rng = np.random.default_rng(11005)
+        for _ in range(20):
+            obstacles = _random_obstacles(rng)
+            state = _random_free_state(rng, obstacles)
+            nom = (rng.uniform(0.0, CFG.v_max), rng.uniform(-3.0, 3.0))
+            _u, pinfo = PredictiveShield(CFG, horizon=4).filter(nom, state, obstacles)
+            _v, cinfo = CBFShield(CFG).filter(nom, state, obstacles)
+            assert pinfo.keys() == cinfo.keys()
+            assert {k: type(v) for k, v in pinfo.items()} == {
+                k: type(v) for k, v in cinfo.items()
+            }
+
+    def test_deterministic(self):
+        from pe2.shield import PredictiveShield
+
+        obstacles = [{"x": 1.0, "y": 0.3, "radius": 0.6}]
+        state = np.array([0.0, 0.1, 0.2])
+        a = PredictiveShield(CFG, horizon=4).filter((1.0, 0.5), state, obstacles)
+        b = PredictiveShield(CFG, horizon=4).filter((1.0, 0.5), state, obstacles)
+        assert np.array_equal(a[0], b[0]) and a[1] == b[1]
+
+
+class TestPredictiveShieldGuarantee:
+    """V-P (ii): the env's own contact flag never fires under the filter."""
+
+    def test_random_pursuer_in_search_mdp_never_contacts(self):
+        from pe2.scripted import GreedyEvader
+        from pe2.shield import PredictiveShield
+        from pe2.structured import SearchMDP
+
+        cfg = EnvConfig(max_steps=200)
+        mdp = SearchMDP(
+            cfg, GreedyEvader, seed0=0, shield=PredictiveShield(cfg, horizon=4)
+        )
+        rng = np.random.default_rng(11006)
+        steps = 0
+        for seed in range(1_200_000, 1_200_050):
+            mdp.reset(seed=seed)
+            done = False
+            while not done:
+                _o, _r, term, trunc, _i = mdp.step(rng.uniform(-1.0, 1.0, size=2))
+                done = term or trunc
+            steps = mdp.env_steps
+        assert steps > 2000  # the episodes really ran
+        assert mdp.violations_total == 0
+
+    def test_the_same_random_pursuer_does_contact_without_the_filter(self):
+        """Negative control for the guarantee: on exactly the same 50 seeds and
+        the same action stream, the unfiltered pursuer contacts constantly."""
+        from pe2.scripted import GreedyEvader
+        from pe2.structured import SearchMDP
+
+        cfg = EnvConfig(max_steps=200)
+        mdp = SearchMDP(cfg, GreedyEvader, seed0=0, shield=None)
+        rng = np.random.default_rng(11006)
+        for seed in range(1_200_000, 1_200_050):
+            mdp.reset(seed=seed)
+            done = False
+            while not done:
+                _o, _r, term, trunc, _i = mdp.step(rng.uniform(-1.0, 1.0, size=2))
+                done = term or trunc
+        assert mdp.violations_total > 500

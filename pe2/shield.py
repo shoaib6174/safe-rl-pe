@@ -60,7 +60,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from pe2.config import EnvConfig
-from pe2.env import wrap_angle
+from pe2.env import pursuer_step, wrap_angle
 
 INTERVENTION_ATOL = 1e-4  # |Δu| above this counts as an intervention (root convention)
 STALL_V_FRAC = 0.05  # executed speed <= this fraction of v_max counts as stopped
@@ -549,3 +549,177 @@ class NoOpShield(CBFShield):
         u = np.array([v_nom, w_nom], dtype=np.float64)
         cons = self.constraints(state, obstacles)
         return u, self._info("none", True, u, v_nom, w_nom, cons, v_max)
+
+
+class PredictiveShield(CBFShield):
+    """S11's SECOND hard filter: sampling lookahead through the env's own step.
+
+    Same interface, same info keys and the same guarantee as `CBFShield`, built
+    a different way — the pre-registered test of whether the stall surface is a
+    property of hard shields in general or of the CBF-QP construction
+    (`docs/pathway/second_filter_prereg_2026-09-18.md` §1).
+
+    Where `CBFShield` accepts a candidate by a LINEARISED barrier condition,
+    this one accepts it by SIMULATION: hold the candidate for `horizon` steps,
+    then one full-stop step, and accept iff no simulated step raised a contact
+    flag and every simulated body clearance stayed at or above `margin` (δ).
+    Among the accepted candidates it executes the one nearest the nominal in
+    the same weighted metric `_qp_candidates` uses, `w_v (Δv)² + w_ω (Δω)²`
+    (`method = "exact"`). If none is accepted it executes the candidate whose
+    WORST simulated clearance is largest (`method = "backup"`), ties toward the
+    nominal. `feasible` is True on the exact tier only. There is no `relaxed`
+    tier: the acceptance test is a single predicate, not a row set.
+
+    **Why the guarantee is exact here, not a model assumption.** The rollout
+    calls `pe2.env.pursuer_step`, which is literally the function
+    `PursuitEvasionEnv.step` applies to each agent — not a transcription of it
+    (contrast `CBFShield.successor_barriers`, which must transcribe
+    `euler_step` to vectorise, and is bound to it by a bitwise test). The
+    environment is deterministic and the pursuer's successor depends on nothing
+    but its own pose and command, so the first simulated step IS the step the
+    env will take. A candidate is therefore executed only when the env's own
+    contact flags are known to be False for it. H-SAFE tests this
+    implementation, nothing else.
+
+    **`u = 0` is always a candidate** (`_qp_candidates` puts it in the set
+    unconditionally) and from a contact-free pose it is always accepted at
+    δ = 0: a zero command leaves the pose bit-identical (`euler_step` adds
+    `0 * cos(θ) * dt`), so neither the wall clip nor the obstacle projection
+    fires and the clearance is unchanged. Hence at δ = 0 the backup tier is
+    unreachable from a contact-free state, and even when it is reached (δ > 0,
+    or a state already in contact) it can never execute INTO contact while a
+    contact-free candidate exists, because `u = 0` is one. Asserted by
+    `TestPredictiveShieldTiers` in `tests/pe2/test_shield.py`.
+
+    **δ (`margin`) is the clearance threshold, applied once.** The rollout runs
+    on the ENV's bounds and the ENV's contact radii, so the simulated poses are
+    the env's poses for any δ; δ enters only as the acceptance threshold on the
+    body clearance (`_body_clearance`, an exact distance identical to the
+    base class's hard-row clearance at margin 0). Feeding the rollout the
+    base class's already-inset `self._x_lim` instead would apply δ twice.
+    `self.margin` is still passed to `CBFShield.__init__`, so the reported
+    barrier rows (and therefore `min_clearance`, which `shield_obs` reads)
+    keep exactly the meaning they have under the CBF shield.
+
+    **Horizon.** `horizon = 0` degenerates to a clip (V-P (i)): the only
+    simulated step is the full stop, which every candidate survives from a
+    contact-free pose, so the nominal — distance 0 in the metric — is returned
+    unchanged. Cost is one `pursuer_step` chain per candidate TESTED, and
+    candidates are tested in increasing distance from the nominal and the first
+    acceptable one is returned, so an uncontested step costs `horizon + 1`
+    steps in total, not `horizon + 1` per candidate.
+
+    **Prep phase.** `PursuitEvasionEnv.step` forces `v_p = 0` while
+    `current_step < cfg.prep_steps`, i.e. the env may execute a slower command
+    than the one accepted here. The filter ignores that rule; it is sound
+    because zero speed is never less safe than the accepted command (the
+    accepted rollout's first step is contact-free and so is a full stop), and
+    it is moot in practice — `cfg.prep_steps` is 0 in every config this project
+    runs, as it is in `EnvConfig`'s locked default.
+    """
+
+    def __init__(
+        self,
+        cfg: EnvConfig,
+        horizon: int = 4,
+        margin: float = 0.0,
+        **cbf_kwargs,
+    ):
+        super().__init__(cfg, margin=margin, **cbf_kwargs)
+        if horizon < 0:
+            raise ValueError(f"horizon must be >= 0, got {horizon}")
+        self.horizon = int(horizon)
+        # The env's OWN inset bounds (`PursuitEvasionEnv._x_min/_x_max`), which
+        # carry no δ — see the δ note in the class docstring. Identical to
+        # (−self._x_lim, self._x_lim) at the default margin = 0.
+        lim = cfg.arena_size / 2.0 - cfg.agent_radius
+        self._sim_x_lim = (-lim, lim)
+        self._sim_y_lim = (-lim, lim)
+
+    def _body_clearance(self, pose, obstacles: list[dict]) -> float:
+        """Signed body-to-surface distance in metres, min over walls and
+        obstacles. Exact: the same quantity as `min(c.clearance for c in
+        CBFShield(cfg, margin=0).constraints(pose, obstacles) if c.hard)`, and
+        zero exactly where the env's contact predicates change sign."""
+        x, y = float(pose[0]), float(pose[1])
+        clearance = min(
+            self._sim_x_lim[1] - x,
+            x - self._sim_x_lim[0],
+            self._sim_y_lim[1] - y,
+            y - self._sim_y_lim[0],
+        )
+        for obs in obstacles:
+            dist = float(np.hypot(x - obs["x"], y - obs["y"]))
+            clearance = min(clearance, dist - (obs["radius"] + self.cfg.agent_radius))
+        return float(clearance)
+
+    def _rollout(
+        self, u, state: np.ndarray, obstacles: list[dict]
+    ) -> tuple[bool, float]:
+        """Simulate `u` held for `horizon` steps then one full stop.
+
+        Returns (accepted, worst body clearance over the simulated poses).
+        `u` must already lie in the action box (`_qp_candidates` clips every
+        candidate); the env would clip it, the rollout does not.
+        """
+        pose = np.asarray(state, dtype=float)
+        v, omega = float(u[0]), float(u[1])
+        accepted = True
+        worst = np.inf
+        for k in range(self.horizon + 1):
+            v_k, w_k = (v, omega) if k < self.horizon else (0.0, 0.0)
+            pose, wall_contact, obstacle_contact = pursuer_step(
+                pose, v_k, w_k, self.cfg, obstacles, self._sim_x_lim, self._sim_y_lim
+            )
+            clearance = self._body_clearance(pose, obstacles)
+            worst = min(worst, clearance)
+            if wall_contact or obstacle_contact or clearance < self.margin:
+                accepted = False
+        return accepted, float(worst)
+
+    def _accept(self, u, state: np.ndarray, obstacles: list[dict]) -> bool:
+        """True iff the rollout of `u` is contact-free with clearance ≥ δ."""
+        return self._rollout(u, state, obstacles)[0]
+
+    def filter(
+        self,
+        action: tuple[float, float] | np.ndarray,
+        state: np.ndarray,
+        obstacles: list[dict],
+        v_max: float | None = None,
+    ) -> tuple[np.ndarray, dict]:
+        """Execute the accepted candidate nearest the nominal; see the class
+        docstring for the guarantee. Returns (safe_action, info) with exactly
+        `CBFShield.filter`'s info keys, `method` ∈ {"exact", "backup"}."""
+        v_max = self.cfg.v_max if v_max is None else v_max
+        v_nom, w_nom = self._clip_nominal(action, v_max)
+        cons = self.constraints(state, obstacles)
+        # The barrier rows LOCATE the candidates (same set as CBFShield, so the
+        # two filters are compared on the same action grid); the rollout, not
+        # the rows, decides which are admissible.
+        U = _qp_candidates(
+            v_nom,
+            w_nom,
+            self._dcbf_rows(cons),
+            v_max,
+            self.cfg.omega_max,
+            self.w_v,
+            self.w_omega,
+        )
+        obj = self.w_v * (U[:, 0] - v_nom) ** 2 + self.w_omega * (U[:, 1] - w_nom) ** 2
+        # Test candidates nearest-first and stop at the first acceptable one:
+        # identical to testing all and taking the argmin over the accepted set,
+        # but the common case (the nominal is safe) costs one rollout. A stable
+        # sort keeps `_qp_candidates`' order among equal-distance candidates,
+        # so the choice is deterministic.
+        worst = np.empty(len(U))
+        for i in np.argsort(obj, kind="stable"):
+            accepted, worst[i] = self._rollout(U[i], state, obstacles)
+            if accepted:
+                u = U[i].copy()
+                return u, self._info("exact", True, u, v_nom, w_nom, cons, v_max)
+        # Nothing acceptable: every candidate has been simulated, so `worst` is
+        # complete. Maximise the worst clearance, ties toward the nominal.
+        idx = int(np.lexsort((obj, -worst))[0])
+        u = U[idx].copy()
+        return u, self._info("backup", False, u, v_nom, w_nom, cons, v_max)
