@@ -317,12 +317,18 @@ def confirm_start(device: str) -> dict:
 
 def confirm(device: str) -> dict:
     """Gate each selected policy on the confirmation stream. Each record has the
-    same shape as an arm's `final`, so `S8._arm_verdict` reads it unchanged."""
+    same shape as an arm's `final`, so `S8._arm_verdict` reads it unchanged.
+
+    A policy that already has a confirmation record is SKIPPED, not refused: the
+    stop rule forbids re-gating a confirmed policy, not finishing the round. So a
+    process that dies after the first batch's record is written can be re-run to
+    gate the second, which is the only permitted way out of `INCOMPLETE`. Only
+    when every selected policy is already confirmed does this refuse."""
     selection = load_selection()
     load_confirm_start()  # both references must already exist on this stream
     from stable_baselines3 import PPO
 
-    out: dict = {}
+    selected = {}
     for b in BATCHES:
         arm = (selection.get(b) or {}).get("selected")
         if not arm:
@@ -330,18 +336,57 @@ def confirm(device: str) -> dict:
                 f"batch {b} selected nothing ({(selection.get(b) or {}).get('rule')}); "
                 "the confirmation cannot run."
             )
+        selected[b] = arm
+    if all(_confirm_file(a).exists() for a in selected.values()):
+        raise SystemExit(
+            "every selected policy has already been confirmed; the stop rule forbids "
+            "re-running them."
+        )
+    out: dict = {}
+    for b, arm in selected.items():
         if _confirm_file(arm).exists():
-            raise SystemExit(
-                f"{arm} has already been confirmed; the stop rule forbids re-running it."
+            print(
+                f"[{arm}] already confirmed; keeping the existing record.", flush=True
             )
+            out[arm] = json.loads(_confirm_file(arm).read_text())
+            continue
         ckpt = pathlib.Path(json.loads(S8._arm_file(arm).read_text())["final"]["ckpt"])
         opps = {
             name: S8.S7.gate_opponent_factory(name, device)
             for name in S8.GATE_OPPONENTS
         }
         print(f"[{arm}] confirmation gate on {CONFIRM_SEED0}+:", flush=True)
-        with _confirmation_stream():
-            g = S8.S7.gate_pursuer(PPO.load(ckpt, device=device), opps, device)
+        holder: dict = {}
+        try:
+            with _confirmation_stream():
+                g = S8.S7.gate_pursuer(
+                    PPO.load(ckpt, device=device), opps, device, holder
+                )
+        except BaseException as e:
+            # S8's `run_arm` guard, for the confirmation gate: a crash part-way
+            # through the opponents must not lose the pursuer contact steps the
+            # gate had already observed (H-SAFE fails => stop).
+            S8.S7._write_json(
+                _confirm_file(arm),
+                {
+                    "arm": arm,
+                    "batch": b,
+                    "ckpt": str(ckpt),
+                    "verdict": "UNDETERMINED",
+                    "reason": f"crashed: {type(e).__name__}: {e}",
+                    "gate_violations": int(
+                        sum(
+                            v["pursuer_violations"]
+                            for v in holder.get("gate", {}).values()
+                        )
+                    ),
+                    "gate_partial": holder.get("gate", {}),
+                    "gate_seed0": CONFIRM_SEED0,
+                    "gate_n": GATE_N,
+                    "provenance": S8.S7.provenance(),
+                },
+            )
+            raise
         rec = {
             "arm": arm,
             "batch": b,
@@ -399,16 +444,18 @@ def h6_verdicts(
     """H6 (spec section 3): both selected policies pass S8's unchanged two-sided
     per-arm test on the CONFIRMATION stream, against RC19 as measured there.
 
-    INCOMPLETE if any of the twelve arms lacks a selection gate or either
-    confirmation gate is missing."""
+    INCOMPLETE if any of the twelve arms lacks a selection gate, either
+    confirmation gate is missing or crashed, or the confirmation references
+    themselves are absent — there is nothing to judge a confirmation against."""
     selection, confirms = selection or {}, confirms or {}
+    refs_ok = "RC19" in (confirm_starts or {})
     per_selected: dict = {}
     incomplete = False
     for b in BATCHES:
         bt = selection.get(b) or {}
         arm = bt.get("selected")
         rec = confirms.get(arm) if arm else None
-        if not bt.get("complete") or rec is None or "gate" not in rec:
+        if not refs_ok or not bt.get("complete") or rec is None or "gate" not in rec:
             per_selected[b] = {"selected": arm, "verdict": "INCOMPLETE"}
             incomplete = True
             continue
@@ -451,17 +498,29 @@ def _paper_artefact(
 ) -> dict | None:
     """Spec section 3: the paper's artefact is the better of {this round's
     artefact, FT-B-41} on the confirmation stream — reported, not re-selected."""
-    if ft_b41 is None:
-        return None
+    mine = (
+        next(v for v in per_selected.values() if v.get("selected") == artefact)
+        if artefact
+        else None
+    )
     note = "better of the S12 artefact and FT-B-41 on the confirmation stream; reported, not re-selected"
-    if artefact is None:
+    if ft_b41 is None:
+        # No comparison row for FT-B-41; a genuine S12 artefact is still reported.
+        if mine is None:
+            return None
+        return {
+            "policy": artefact,
+            "mean_deadlock_heldout": mine["mean_deadlock_heldout"],
+            "note": "FT-B-41 has no confirmation-stream row; the S12 artefact is "
+            "reported alone, not re-selected",
+        }
+    if mine is None:
         return {
             "policy": FT_B41,
             "mean_deadlock_heldout": ft_b41["mean_deadlock_heldout"],
             "note": "no S12 artefact (H6 did not deliver one); D120's artefact stands, "
             "reported, not re-selected",
         }
-    mine = next(v for v in per_selected.values() if v.get("selected") == artefact)
     if mine["mean_deadlock_heldout"] <= ft_b41["mean_deadlock_heldout"]:
         return {
             "policy": artefact,
@@ -522,15 +581,34 @@ def hsafe(
 
     S8's census covers every arm's training, probes and selection gate plus the
     selection-stream reference; this adds the two confirmation gates and both
-    confirmation references."""
+    confirmation references.
+
+    A crashed confirmation record has no `pursuer_violations` — it carries
+    `gate_violations`, the contact steps its gate had already observed — so both
+    are counted, and the crashed policy is listed under `missing` so the verdict
+    cannot read HOLDS over a census that stopped early. Once any confirmation
+    record exists, a selected policy that still has none is missing too; before
+    the stage starts (no records at all) the verdict stays S8's, as S10's did
+    between its stages."""
     h = S8.hsafe_verdict(results, starts)
     steps = int(h["pursuer_violation_steps"])
     offenders = list(h["offenders"])
-    for arm in sorted(confirms or {}):
-        v = int((confirms[arm] or {}).get("pursuer_violations") or 0)
+    recs = confirms or {}
+    missing = list(h["missing"])
+    for arm in sorted(recs):
+        rec = recs[arm] or {}
+        v = int(rec.get("pursuer_violations") or 0) + int(
+            rec.get("gate_violations") or 0
+        )
         steps += v
         if v:
             offenders.append(f"confirm:{arm}")
+        if "gate" not in rec:
+            missing.append(f"confirm:{arm}")
+    if recs and len(recs) < len(BATCHES):
+        missing.append(
+            f"confirm:{len(recs)}/{len(BATCHES)} selected policies have a record"
+        )
     for ref in CONFIRM_REFERENCES:
         for o in S8.GATE_OPPONENTS:
             v = int(
@@ -543,10 +621,10 @@ def hsafe(
             if v:
                 offenders.append(f"confirm-reference:{ref}/{o}")
     return {
-        "verdict": "FAILS" if steps else ("INCOMPLETE" if h["missing"] else "HOLDS"),
+        "verdict": "FAILS" if steps else ("INCOMPLETE" if missing else "HOLDS"),
         "pursuer_violation_steps": steps,
         "offenders": offenders,
-        "missing": h["missing"],
+        "missing": missing,
     }
 
 

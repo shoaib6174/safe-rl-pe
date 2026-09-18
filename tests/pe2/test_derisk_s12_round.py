@@ -124,6 +124,20 @@ def _confirm(arm, att, greedy_capture=_KEEPS_CAPTURE):
     }
 
 
+def _gate_ok(holder=None):
+    """What the stubbed `gate_pursuer` returns: a clean five-opponent gate."""
+    g = {
+        "ATT25": _gate(0.30, 0.1),
+        "ATT26": _gate(0.32, 0.1),
+        "ATT27": _gate(0.31, 0.1),
+        "GREEDY": _gate(0.2, _KEEPS_CAPTURE),
+        "HUG7": _gate(0.2, 0.35),
+    }
+    if holder is not None:
+        holder["gate"] = g
+    return g
+
+
 def _confirms(a_att=_WIN, b_att=_WIN, a_cap=_KEEPS_CAPTURE, b_cap=_KEEPS_CAPTURE):
     sel = R.select(_round(), _starts())
     return {
@@ -612,3 +626,142 @@ class TestSummary:
         p = tmp_path / "s12_round_partial.png"
         R.write_figure(_round(), _starts(), s, p)
         assert p.exists() and p.stat().st_size > 0
+
+
+# ----------------------------------------------------------------------------
+class TestConfirmStage:
+    """The confirmation stage's control flow: it must be resumable, and a gate
+    that dies must leave its contact-step census on disk."""
+
+    def _wire(self, tmp_path, monkeypatch, gate=None):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        monkeypatch.setattr(R.S8, "OUT", tmp_path)
+        monkeypatch.setattr(R, "SELECTION_PATH", tmp_path / "s12_selection.json")
+        monkeypatch.setattr(
+            R, "CONFIRM_START_PATH", tmp_path / "s12_confirm_start.json"
+        )
+        res = _round()
+        sel = R.select(res, _starts())
+        R.SELECTION_PATH.write_text(json.dumps(sel))
+        R.CONFIRM_START_PATH.write_text(json.dumps(_confirm_starts()))
+        for a, r in res.items():
+            (tmp_path / f"s12_arm_{a}.json").write_text(json.dumps(r))
+        streams = []
+
+        def fake_gate(model, opps, device, holder=None):
+            streams.append(R.S8.S7.GATE_SEED0)
+            return (gate or _gate_ok)(holder)
+
+        monkeypatch.setattr(R.S8.S7, "gate_pursuer", fake_gate)
+        monkeypatch.setattr(R.S8.S7, "gate_opponent_factory", lambda n, d: n)
+        monkeypatch.setattr("stable_baselines3.PPO.load", lambda *a, **k: object())
+        return sel, streams
+
+    def test_an_already_confirmed_policy_is_skipped_not_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """A process that dies between the two batches must be re-runnable: the
+        stop rule forbids re-gating a confirmed policy, not finishing the round."""
+        sel, streams = self._wire(tmp_path, monkeypatch)
+        a, b = sel["A"]["selected"], sel["B"]["selected"]
+        done = _confirm(a, _WIN) | {"note": "from the first process"}
+        R._confirm_file(a).write_text(json.dumps(done))
+        out = R.confirm("cpu")
+        assert streams == [R.CONFIRM_SEED0]  # exactly one gate ran, on 1 300 000+
+        assert set(out) == {a, b}
+        assert out[a]["note"] == "from the first process"  # A untouched
+        assert R._confirm_file(b).exists()
+        assert json.loads(R._confirm_file(a).read_text())["note"] == (
+            "from the first process"
+        )
+        assert R.S8.S7.GATE_SEED0 == R.SEL_SEED0  # stream given back
+
+    def test_refuses_only_when_every_selected_policy_is_confirmed(
+        self, tmp_path, monkeypatch
+    ):
+        sel, _ = self._wire(tmp_path, monkeypatch)
+        for bt in sel.values():
+            R._confirm_file(bt["selected"]).write_text(
+                json.dumps(_confirm(bt["selected"], _WIN))
+            )
+        with pytest.raises(SystemExit, match="every selected policy"):
+            R.confirm("cpu")
+
+    def test_a_crashed_gate_writes_its_census_and_re_raises(
+        self, tmp_path, monkeypatch
+    ):
+        def dying(holder):
+            if holder is not None:  # two opponents done before the crash
+                holder["gate"] = {
+                    "ATT25": _gate(0.3, 0.1) | {"pursuer_violations": 2},
+                    "ATT26": _gate(0.3, 0.1) | {"pursuer_violations": 1},
+                }
+            raise RuntimeError("gate died")
+
+        sel, _ = self._wire(tmp_path, monkeypatch, gate=dying)
+        a = sel["A"]["selected"]
+        with pytest.raises(RuntimeError, match="gate died"):
+            R.confirm("cpu")
+        rec = json.loads(R._confirm_file(a).read_text())
+        assert rec["verdict"] == "UNDETERMINED" and "RuntimeError" in rec["reason"]
+        assert rec["gate_violations"] == 3
+        assert set(rec["gate_partial"]) == {"ATT25", "ATT26"}
+        assert "gate" not in rec and rec["gate_seed0"] == R.CONFIRM_SEED0
+        assert not R._confirm_file(sel["B"]["selected"]).exists()
+        assert R.S8.S7.GATE_SEED0 == R.SEL_SEED0  # stream given back on the way out
+
+    def test_hsafe_counts_a_crashed_confirmation(self):
+        sel = R.select(_round(), _starts())
+        a, b = sel["A"]["selected"], sel["B"]["selected"]
+        crashed = {
+            "arm": a,
+            "verdict": "UNDETERMINED",
+            "gate_violations": 3,
+            "gate_partial": {},
+        }
+        h = R.hsafe(_round(), _starts(), {a: crashed}, _confirm_starts())
+        assert h["verdict"] == "FAILS" and h["pursuer_violation_steps"] == 3
+        assert h["offenders"] == [f"confirm:{a}"]
+        assert f"confirm:{a}" in h["missing"]
+        # a clean crash record (0 steps) is still INCOMPLETE, never HOLDS
+        clean = dict(crashed, gate_violations=0)
+        h2 = R.hsafe(_round(), _starts(), {a: clean}, _confirm_starts())
+        assert h2["verdict"] == "INCOMPLETE"
+        assert h2["missing"] == [
+            f"confirm:{a}",
+            "confirm:1/2 selected policies have a record",
+        ]
+        # one batch gated cleanly, the other not started
+        h3 = R.hsafe(_round(), _starts(), {a: _confirm(a, _WIN)}, _confirm_starts())
+        assert h3["verdict"] == "INCOMPLETE"
+        assert h3["missing"] == ["confirm:1/2 selected policies have a record"]
+        # both gated: nothing missing
+        h4 = R.hsafe(
+            _round(),
+            _starts(),
+            {a: _confirm(a, _WIN), b: _confirm(b, _WIN)},
+            _confirm_starts(),
+        )
+        assert h4["verdict"] == "HOLDS" and h4["missing"] == []
+
+    def test_hsafe_before_the_stage_starts_is_unchanged(self):
+        """No confirmation record at all is stage 1, not a missing confirmation."""
+        assert R.hsafe(_round(), _starts())["missing"] == []
+        assert R.hsafe(_round(), _starts(), {}, None)["verdict"] == "HOLDS"
+
+    def test_h6_is_incomplete_without_the_confirmation_references(self):
+        """`s12_confirm_start.json` gone after a gate ran: degrade, never crash."""
+        sel = R.select(_round(), _starts())
+        for cs in (None, {}, {"FT-B-41": _ref(_WIN, 0.6)}):
+            h = R.h6_verdicts(sel, _confirms(), cs)
+            assert h["H6"] == "INCOMPLETE" and h["artefact"] is None
+            assert h["per_selected"]["A"]["verdict"] == "INCOMPLETE"
+
+    def test_the_paper_artefact_survives_a_missing_ft_b_41_row(self):
+        sel = R.select(_round(), _starts())
+        cs = _confirm_starts()
+        del cs["FT-B-41"]
+        h = R.h6_verdicts(sel, _confirms(), cs)
+        assert h["H6"] == "PASS" and h["ft_b41"] is None
+        assert h["paper_artefact"]["policy"] == h["artefact"]
+        assert "reported alone" in h["paper_artefact"]["note"]
