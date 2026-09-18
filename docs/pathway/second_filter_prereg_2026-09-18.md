@@ -73,3 +73,12 @@ shield (RCM28 < FT-B-41 < RC19 ≈ STR14) is preserved under the predictive filt
 
 `pe2/shield.py::PredictiveShield`, `results/derisk/s11_preflight.json`, `s11_cells/*.json`, `s11_round.{json,png}`;
 runner `scripts/derisk_s11_filter.py` (`--preflight | --cells | --summarize`, ≤ 6 workers).
+
+## Amendment S11-A1 (2026-09-18, before any cell exists): horizon levels, and the backup tier at δ = 0
+
+- The implementer's timing note (Task 2 report) shows one env step moves ≤ 0.05 m, so `H ∈ {1, 2, 4, 8}` spans
+  only 0.05–0.4 m of lookahead and may not separate. **Levels are changed to `H ∈ {1, 4, 16, 32}`** (0.05–1.6 s,
+  up to 1.6 m of lookahead), keeping four levels and all rules (`H = 32` vs `H = 1` for the top-vs-bottom test;
+  `H = 4` stays the level for H-FILT-3, unchanged). 64 predictive cells remain.
+- At δ = 0 the `backup` tier of the predictive filter is unreachable from a contact-free state (u = 0 is always
+  accepted), so its backup rate is identically 0 by construction; it is reported as such, not as a finding.
