@@ -1873,6 +1873,17 @@ def _random_free_state(rng, obstacles):
             return s
 
 
+def _search_mdp_roundtrip(v, w, v_max=None):
+    """The float32 action round-trip a command really makes on its way to the
+    env: `SearchMDP._step_inner` normalises it into a float32 Box action and
+    `SingleAgentWrapper._scale_action` clips and de-normalises it again.
+    Written out here from those two functions, independent of `_snap`."""
+    v_max = CFG.v_max if v_max is None else v_max
+    a = np.array([2.0 * v / v_max - 1.0, w / CFG.omega_max], dtype=np.float32)
+    a = np.clip(np.asarray(a, dtype=float), -1.0, 1.0)
+    return (a[0] + 1.0) / 2.0 * v_max, a[1] * CFG.omega_max
+
+
 class TestPredictiveShieldDegenerate:
     """V-P (i): at H = 0 the filter is a clip and nothing else."""
 
@@ -1886,9 +1897,34 @@ class TestPredictiveShieldDegenerate:
             state = _random_free_state(rng, obstacles)
             nom = (rng.uniform(-0.5, 1.5), rng.uniform(-4.0, 4.0))
             u, info = shield.filter(nom, state, obstacles)
-            assert u[0] == pytest.approx(np.clip(nom[0], 0.0, CFG.v_max))
-            assert u[1] == pytest.approx(np.clip(nom[1], -CFG.omega_max, CFG.omega_max))
+            clipped = (
+                float(np.clip(nom[0], 0.0, CFG.v_max)),
+                float(np.clip(nom[1], -CFG.omega_max, CFG.omega_max)),
+            )
+            # Exactly the clipped nominal snapped to the float32 action grid
+            # (the grid the env is driven on -- see `_snap`); off the raw
+            # float64 nominal by at most one grid step, 1.5e-8.
+            assert tuple(u) == shield._snap(*clipped, CFG.v_max)
+            assert u[0] == pytest.approx(clipped[0], abs=2e-8)
+            assert u[1] == pytest.approx(clipped[1], abs=1e-7)
             assert info["intervention"] is False
+
+    def test_horizon_zero_is_bit_exact_on_an_already_snapped_nominal(self):
+        """V-P (i) verbatim on the path the sweep uses: a nominal that came
+        through the float32 action grid (every nominal `SearchMDP` hands the
+        filter) is returned bit for bit, because `_snap` is idempotent."""
+        from pe2.shield import PredictiveShield
+
+        rng = np.random.default_rng(11007)
+        shield = PredictiveShield(CFG, horizon=0)
+        obstacles = [{"x": 1.0, "y": 0.5, "radius": 0.6}]
+        for _ in range(500):
+            state = _random_free_state(rng, obstacles)
+            nom = _search_mdp_roundtrip(
+                rng.uniform(0.0, CFG.v_max), rng.uniform(-CFG.omega_max, CFG.omega_max)
+            )
+            u, _info = shield.filter(nom, state, obstacles)
+            assert (u[0], u[1]) == nom
 
 
 class TestPredictiveShieldExactness:
@@ -1955,6 +1991,129 @@ class TestPredictiveShieldExactness:
         )
 
 
+class TestPredictiveShieldExecutesWhatItSimulates:
+    """FINDING 1: the returned command must survive the float32 action grid
+    the env is driven on, or the executed step is not the simulated one."""
+
+    def test_returned_action_is_a_fixed_point_of_the_env_action_roundtrip(self):
+        from pe2.shield import PredictiveShield
+
+        rng = np.random.default_rng(11008)
+        shield = PredictiveShield(CFG, horizon=4)
+        for _ in range(1000):
+            obstacles = _random_obstacles(rng)
+            state = _random_free_state(rng, obstacles)
+            nom = (rng.uniform(0.0, CFG.v_max), rng.uniform(-3.0, 3.0))
+            u, _info = shield.filter(nom, state, obstacles)
+            back = _search_mdp_roundtrip(u[0], u[1])
+            assert u[0] == back[0]  # bitwise, both components
+            assert u[1] == back[1]
+
+    def test_the_roundtrip_is_not_free_without_the_snap(self):
+        """Negative control: the same round-trip really does move an
+        unsnapped command (otherwise the test above is vacuous)."""
+        rng = np.random.default_rng(11009)
+        moved = 0
+        for _ in range(1000):
+            v, w = rng.uniform(0.0, CFG.v_max), rng.uniform(-3.0, 3.0)
+            back = _search_mdp_roundtrip(v, w)
+            moved += int(back[0] != v or back[1] != w)
+        assert moved > 990
+
+    def test_snap_is_idempotent_and_keeps_the_box(self):
+        from pe2.shield import PredictiveShield
+
+        shield = PredictiveShield(CFG, horizon=4)
+        rng = np.random.default_rng(11010)
+        for v_max in (CFG.v_max, CFG.v_max * CFG.evader_speed_ratio):
+            for v, w in [
+                (0.0, 0.0),
+                (v_max, CFG.omega_max),
+                (v_max, -CFG.omega_max),
+                *zip(
+                    rng.uniform(0.0, v_max, 200),
+                    rng.uniform(-CFG.omega_max, CFG.omega_max, 200),
+                ),
+            ]:
+                q = shield._snap(v, w, v_max)
+                assert shield._snap(*q, v_max) == q
+                assert 0.0 <= q[0] <= v_max and abs(q[1]) <= CFG.omega_max
+        # The box endpoints are exact fixed points, so no speed cap is lost.
+        assert shield._snap(CFG.v_max, 0.0, CFG.v_max)[0] == CFG.v_max
+        assert shield._snap(0.0, 0.0, CFG.v_max)[0] == 0.0
+
+    def test_snap_uses_the_callers_speed_cap_not_the_pursuers(self):
+        """A shielded evader (run_shielded_duel, cap evader_v_max) must not be
+        snapped onto the pursuer's grid -- that would cap it at v_max."""
+        from pe2.shield import PredictiveShield
+
+        shield = PredictiveShield(CFG, horizon=4)
+        cap = CFG.v_max * CFG.evader_speed_ratio
+        u, _info = shield.filter((cap, 0.0), np.array([0.0, 0.0, 0.0]), [], v_max=cap)
+        assert u[0] == cap
+
+
+class TestPredictiveShieldBounds:
+    def test_sim_bounds_are_the_envs_bounds(self):
+        """FINDING 3: the rollout must clip where the env clips, bitwise."""
+        from pe2.shield import PredictiveShield
+
+        for cfg in (CFG, EnvConfig(arena_size=7.3, agent_radius=0.22)):
+            env = PursuitEvasionEnv(cfg)
+            shield = PredictiveShield(cfg, horizon=4)
+            assert shield._sim_x_lim == (env._x_min, env._x_max)
+            assert shield._sim_y_lim == (env._y_min, env._y_max)
+
+    def test_horizon_must_be_a_non_negative_int(self):
+        from pe2.shield import PredictiveShield
+
+        for bad in (-1, 0.2, 4.0, "4", None, True):
+            with pytest.raises(ValueError, match="horizon"):
+                PredictiveShield(CFG, bad)
+        for good in (0, 4, np.int64(8)):
+            assert PredictiveShield(CFG, good).horizon == int(good)
+
+
+class TestPredictiveShieldBackupOrdering:
+    """FINDING 5: a candidate whose rollout contacted must never be preferred
+    over a contact-free one at equal worst clearance (both read 0, because the
+    env projects a contacting body back onto the surface)."""
+
+    def test_contact_free_beats_contacting_at_equal_clearance(self):
+        from pe2.shield import _backup_choice
+
+        contact_free = np.array([False, True])
+        worst = np.array([0.0, 0.0])
+        obj = np.array([0.0, 99.0])  # the contacting one is nearer the nominal
+        assert _backup_choice(contact_free, worst, obj) == 1
+
+    def test_clearance_outranks_the_nominal_and_the_nominal_breaks_ties(self):
+        from pe2.shield import _backup_choice
+
+        cf = np.array([True, True, True])
+        assert (
+            _backup_choice(cf, np.array([0.1, 0.3, 0.2]), np.array([0.0, 9.0, 1.0]))
+            == 1
+        )
+        assert (
+            _backup_choice(cf, np.array([0.3, 0.3, 0.3]), np.array([5.0, 9.0, 1.0]))
+            == 2
+        )
+
+    def test_a_contacting_candidate_wins_only_on_clearance(self):
+        from pe2.shield import _backup_choice
+
+        # Contact-free is primary even when the contacting rollout kept more
+        # clearance on average -- it is the MINIMUM that ranks, and a contact
+        # pins that to 0 or below.
+        assert (
+            _backup_choice(
+                np.array([False, True]), np.array([0.5, 0.4]), np.array([0.0, 0.0])
+            )
+            == 1
+        )
+
+
 class TestPredictiveShieldTiers:
     def test_zero_action_is_always_a_candidate(self):
         from pe2.shield import PredictiveShield, _qp_candidates
@@ -1968,6 +2127,13 @@ class TestPredictiveShieldTiers:
         )
         assert any(np.array_equal(u, [0.0, 0.0]) for u in U)
         assert any(np.allclose(u, [0.7, 0.3]) for u in U)
+        # ... and they survive the snap and the dedup, which is the set the
+        # rollout actually searches.
+        v_nom, w_nom = shield._snap(0.7, 0.3, CFG.v_max)
+        C = shield._candidates(v_nom, w_nom, cons, CFG.v_max)
+        assert any(np.array_equal(u, [0.0, 0.0]) for u in C)
+        assert any(np.array_equal(u, [v_nom, w_nom]) for u in C)
+        assert len(C) == len(np.unique(C, axis=0)) < len(U)
 
     def test_no_intervention_in_open_space(self):
         from pe2.shield import PredictiveShield
@@ -2072,15 +2238,13 @@ class TestPredictiveShieldGuarantee:
             cfg, GreedyEvader, seed0=0, shield=PredictiveShield(cfg, horizon=4)
         )
         rng = np.random.default_rng(11006)
-        steps = 0
         for seed in range(1_200_000, 1_200_050):
             mdp.reset(seed=seed)
             done = False
             while not done:
                 _o, _r, term, trunc, _i = mdp.step(rng.uniform(-1.0, 1.0, size=2))
                 done = term or trunc
-            steps = mdp.env_steps
-        assert steps > 2000  # the episodes really ran
+        assert mdp.env_steps > 2000  # the episodes really ran
         assert mdp.violations_total == 0
 
     def test_the_same_random_pursuer_does_contact_without_the_filter(self):
@@ -2099,3 +2263,119 @@ class TestPredictiveShieldGuarantee:
                 _o, _r, term, trunc, _i = mdp.step(rng.uniform(-1.0, 1.0, size=2))
                 done = term or trunc
         assert mdp.violations_total > 500
+
+
+class _ReferencePredictiveShield:
+    """The unoptimised selection, written out separately: the FULL snapped
+    candidate grid with its duplicates, every candidate rolled out to the end
+    with no early exit, argmin over the accepted set. `filter` must return the
+    same command as this for every state -- dedup and early exit are allowed to
+    change only the work done."""
+
+    def __init__(self, cfg, horizon, margin=0.0):
+        from pe2.shield import PredictiveShield
+
+        self.s = PredictiveShield(cfg, horizon=horizon, margin=margin)
+
+    def filter(self, action, state, obstacles, v_max=None):
+        from pe2.shield import _backup_choice, _qp_candidates
+
+        s = self.s
+        v_max = s.cfg.v_max if v_max is None else v_max
+        v_nom, w_nom = s._snap(*s._clip_nominal(action, v_max), v_max)
+        cons = s.constraints(state, obstacles)
+        U = _qp_candidates(
+            v_nom,
+            w_nom,
+            s._dcbf_rows(cons),
+            v_max,
+            s.cfg.omega_max,
+            s.w_v,
+            s.w_omega,
+        )
+        for i in range(len(U)):
+            U[i] = s._snap(U[i, 0], U[i, 1], v_max)
+        obj = s.w_v * (U[:, 0] - v_nom) ** 2 + s.w_omega * (U[:, 1] - w_nom) ** 2
+        rolled = [s._rollout(u, state, obstacles) for u in U]
+        ok = np.array([cf and worst >= s.margin for cf, worst in rolled])
+        if ok.any():
+            pool = np.flatnonzero(ok)
+            return U[int(pool[np.argmin(obj[pool])])].copy(), "exact"
+        idx = _backup_choice(
+            np.array([r[0] for r in rolled]), np.array([r[1] for r in rolled]), obj
+        )
+        return U[idx].copy(), "backup"
+
+
+class TestPredictiveShieldOptimisationsArePureSpeedups:
+    """FINDING 6: dedup + two-phase rollout must not move a single command."""
+
+    def test_returned_action_matches_the_unoptimised_reference_at_h16(self):
+        from pe2.shield import PredictiveShield
+
+        rng = np.random.default_rng(11011)
+        fast = PredictiveShield(CFG, horizon=16)
+        ref = _ReferencePredictiveShield(CFG, horizon=16)
+        n_intervened = 0
+        for i in range(500):
+            obstacles = _random_obstacles(rng)
+            if i % 2:
+                state = _random_free_state(rng, obstacles)  # nominal usually safe
+            else:
+                # Pressed against the +x wall heading into it: the nominal is
+                # rejected and the search really walks the candidate grid.
+                state = np.array(
+                    [P_LIM - rng.uniform(0.0, 0.4), rng.uniform(-3.0, 3.0), 0.0]
+                )
+                obstacles = []
+            nom = (rng.uniform(0.0, CFG.v_max), rng.uniform(-3.0, 3.0))
+            u, info = fast.filter(nom, state, obstacles)
+            u_ref, method_ref = ref.filter(nom, state, obstacles)
+            assert np.array_equal(u, u_ref)
+            assert info["method"] == method_ref
+            n_intervened += int(info["intervention"])
+        assert n_intervened > 100  # the braking regime was really exercised
+
+    def test_returned_action_matches_the_reference_on_the_backup_tier(self):
+        from pe2.shield import PredictiveShield
+
+        rng = np.random.default_rng(11012)
+        fast = PredictiveShield(CFG, horizon=4, margin=0.3)
+        ref = _ReferencePredictiveShield(CFG, horizon=4, margin=0.3)
+        n_backup = 0
+        for _ in range(200):
+            obstacles = _random_obstacles(rng)
+            state = _random_free_state(rng, obstacles)
+            nom = (rng.uniform(0.0, CFG.v_max), rng.uniform(-3.0, 3.0))
+            u, info = fast.filter(nom, state, obstacles)
+            u_ref, method_ref = ref.filter(nom, state, obstacles)
+            assert np.array_equal(u, u_ref)
+            assert info["method"] == method_ref
+            n_backup += int(info["method"] == "backup")
+        assert n_backup > 0
+
+    def test_accept_agrees_with_the_full_rollout(self):
+        """The early-exiting predicate and the full ranking rollout are two
+        loops over the same steps; bind them so they cannot drift."""
+        from pe2.shield import PredictiveShield
+
+        rng = np.random.default_rng(11013)
+        for margin in (0.0, 0.25):
+            shield = PredictiveShield(CFG, horizon=4, margin=margin)
+            for _ in range(300):
+                obstacles = _random_obstacles(rng)
+                state = np.array(
+                    [
+                        rng.uniform(-P_LIM - 0.1, P_LIM + 0.1),
+                        rng.uniform(-P_LIM - 0.1, P_LIM + 0.1),
+                        rng.uniform(-np.pi, np.pi),
+                    ]
+                )
+                u = (
+                    rng.uniform(0.0, CFG.v_max),
+                    rng.uniform(-CFG.omega_max, CFG.omega_max),
+                )
+                contact_free, worst = shield._rollout(u, state, obstacles)
+                assert shield._accept(u, state, obstacles) == (
+                    contact_free and worst >= margin
+                )
