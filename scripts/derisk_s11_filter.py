@@ -76,7 +76,7 @@ ARTEFACT_PREFIX = "s11"
 # --- pre-registered (spec sections 2-3, amendment A1). Do not tune. ---
 SEED0 = 1_330_000
 N_EPISODES = 300
-PREFLIGHT_SEED0 = 1_329_000  # below the cell stream: V-P never shares an episode
+PREFLIGHT_SEED0 = 1_329_000  # below the cell stream: V-P plays no cell episode (its (i) reset seeds overlap the stream numerically but nothing is read out)
 P_GATE = S9.P_GATE  # 0.05
 MAX_WORKERS = 6
 OMP_THREADS = S9.OMP_THREADS  # "2"

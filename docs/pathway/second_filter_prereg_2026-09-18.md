@@ -82,3 +82,15 @@ runner `scripts/derisk_s11_filter.py` (`--preflight | --cells | --summarize`, â‰
   `H = 4` stays the level for H-FILT-3, unchanged). 64 predictive cells remain.
 - At Î´ = 0 the `backup` tier of the predictive filter is unreachable from a contact-free state (u = 0 is always
   accepted), so its backup rate is identically 0 by construction; it is reported as such, not as a finding.
+
+## Amendment S11-A2 (2026-09-18, before `--preflight`): V-P readings
+
+- V-P (i) compares the `H = 0` output with the clipped nominal taken through the same float32 action-grid
+  round-trip the evaluation path applies (the filter snaps every candidate to that grid so that the executed
+  command is bit-identical to the simulated one); the runner transcribes the round-trip independently of the
+  filter's own helper, and additionally bounds the deviation from the raw float64 clip by 1e-6.
+- V-P (iii) draws half of its 1 000 (state, candidate) pairs aimed at an obstacle so that both accept and reject
+  decisions are exercised (uniform draws are ~98 % accepts).
+- V-P (i)'s reset seeds overlap the cell stream numerically; no episode is played and nothing is read out, so
+  the cell stream is untouched. FT-B-41's four CBF base cells run on S11's stream and are therefore NOT paired
+  with S9's base row; they are reported, never paired-tested against it.
