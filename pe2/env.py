@@ -55,6 +55,73 @@ def euler_step(pose, v: float, omega: float, dt: float) -> tuple[float, float, f
     return x, y, theta
 
 
+def pursuer_step(
+    pose,
+    v: float,
+    omega: float,
+    cfg: EnvConfig,
+    obstacles: list[dict],
+    x_lim: tuple[float, float],
+    y_lim: tuple[float, float],
+) -> tuple[np.ndarray, bool, bool]:
+    """One full agent step: Euler unicycle, wall clip, obstacle projection.
+
+    Pure -- no env instance, no mutation of `pose`. This is THE one-step
+    dynamics of this environment: `PursuitEvasionEnv.step` advances both
+    agents with it (the arithmetic is role-agnostic), and a lookahead safety
+    filter can simulate a candidate command by calling it, so the filter's
+    prediction is the env's successor bit for bit instead of a second
+    transcription that can drift (contrast `euler_step`, which `pe2.shield`
+    must transcribe for vectorisation).
+
+    `x_lim` / `y_lim` are the arena bounds already inset by `agent_radius`
+    (the env's `_x_min/_x_max`, `_y_min/_y_max`). Returns the new pose and
+    the two contact flags (wall, obstacle). Heading is never modified by a
+    contact. Keep the operation order exactly as written.
+    """
+    x_min, x_max = x_lim
+    y_min, y_max = y_lim
+    new_pose = np.array(pose, dtype=float)
+
+    x, y, theta = euler_step(new_pose, v, omega, cfg.dt)
+    wall_contact = False
+    if x < x_min:
+        x, wall_contact = x_min, True
+    elif x > x_max:
+        x, wall_contact = x_max, True
+    if y < y_min:
+        y, wall_contact = y_min, True
+    elif y > y_max:
+        y, wall_contact = y_max, True
+    new_pose[:] = (x, y, theta)
+
+    # Push radially out of any overlapped obstacle; iterate to handle chain
+    # reactions (proven pattern, max 3 passes).
+    obstacle_contact = False
+    for _ in range(3):
+        resolved_any = False
+        for obs in obstacles:
+            dx = new_pose[0] - obs["x"]
+            dy = new_pose[1] - obs["y"]
+            dist = np.hypot(dx, dy)
+            min_dist = obs["radius"] + cfg.agent_radius
+            if dist < min_dist:
+                obstacle_contact = resolved_any = True
+                if dist < 1e-10:
+                    # Degenerate: exactly at obstacle center — push along heading
+                    nx, ny = np.cos(new_pose[2]), np.sin(new_pose[2])
+                else:
+                    nx, ny = dx / dist, dy / dist
+                new_pose[0] = obs["x"] + nx * min_dist
+                new_pose[1] = obs["y"] + ny * min_dist
+        if not resolved_any:
+            break
+    # Projection may push through a wall — re-clip (walls win).
+    new_pose[0] = float(np.clip(new_pose[0], x_min, x_max))
+    new_pose[1] = float(np.clip(new_pose[1], y_min, y_max))
+    return new_pose, wall_contact, obstacle_contact
+
+
 class PursuitEvasionEnv(gym.Env):
     """1v1 pursuit-evasion with unicycle dynamics in a bounded arena."""
 
@@ -123,10 +190,17 @@ class PursuitEvasionEnv(gym.Env):
         if self.current_step < c.prep_steps:
             v_p = 0.0
 
-        p_wall = self._advance_agent("pursuer", v_p, w_p)
-        e_wall = self._advance_agent("evader", v_e, w_e)
-        p_obs = self._project_out_of_obstacles("pursuer")
-        e_obs = self._project_out_of_obstacles("evader")
+        x_lim = (self._x_min, self._x_max)
+        y_lim = (self._y_min, self._y_max)
+        p_pose, p_wall, p_obs = pursuer_step(
+            self.pursuer_pose, v_p, w_p, c, self.obstacles, x_lim, y_lim
+        )
+        e_pose, e_wall, e_obs = pursuer_step(
+            self.evader_pose, v_e, w_e, c, self.obstacles, x_lim, y_lim
+        )
+        # Write in place: callers may hold a reference to the pose arrays.
+        self.pursuer_pose[:] = p_pose
+        self.evader_pose[:] = e_pose
 
         self.current_step += 1
 
@@ -151,62 +225,6 @@ class PursuitEvasionEnv(gym.Env):
             evader_obstacle_contact=e_obs,
         )
         return self._get_obs(), rewards, terminated, truncated, info
-
-    # ------------------------------------------------------------- dynamics
-
-    def _advance_agent(self, role: str, v: float, omega: float) -> bool:
-        """Euler-integrate unicycle one step; clip position to arena walls.
-
-        Returns True on wall contact. Heading is never modified by contacts.
-        """
-        c = self.cfg
-        pose = self.pursuer_pose if role == "pursuer" else self.evader_pose
-        x, y, theta = euler_step(pose, v, omega, c.dt)
-
-        wall_contact = False
-        if x < self._x_min:
-            x, wall_contact = self._x_min, True
-        elif x > self._x_max:
-            x, wall_contact = self._x_max, True
-        if y < self._y_min:
-            y, wall_contact = self._y_min, True
-        elif y > self._y_max:
-            y, wall_contact = self._y_max, True
-
-        pose[:] = (x, y, theta)
-        return wall_contact
-
-    def _project_out_of_obstacles(self, role: str) -> bool:
-        """Push the agent radially out of any obstacle it overlaps.
-
-        Iterates to handle chain reactions (proven pattern, max 3 passes).
-        Heading is never modified. Returns True if any projection occurred.
-        """
-        c = self.cfg
-        pose = self.pursuer_pose if role == "pursuer" else self.evader_pose
-        collided = False
-        for _ in range(3):
-            resolved_any = False
-            for obs in self.obstacles:
-                dx = pose[0] - obs["x"]
-                dy = pose[1] - obs["y"]
-                dist = np.hypot(dx, dy)
-                min_dist = obs["radius"] + c.agent_radius
-                if dist < min_dist:
-                    collided = resolved_any = True
-                    if dist < 1e-10:
-                        # Degenerate: exactly at obstacle center — push along heading
-                        nx, ny = np.cos(pose[2]), np.sin(pose[2])
-                    else:
-                        nx, ny = dx / dist, dy / dist
-                    pose[0] = obs["x"] + nx * min_dist
-                    pose[1] = obs["y"] + ny * min_dist
-            if not resolved_any:
-                break
-        # Projection may push through a wall — re-clip (walls win).
-        pose[0] = float(np.clip(pose[0], self._x_min, self._x_max))
-        pose[1] = float(np.clip(pose[1], self._y_min, self._y_max))
-        return collided
 
     # ---------------------------------------------------------------- reset
 
