@@ -518,6 +518,30 @@ class TestPreflight:
         # the only change H = 0 may make is the float32 action-grid snap
         assert out["max_deviation_from_clip"] <= R.IDENTITY_TOL
 
+    def test_the_identity_reference_is_the_shields_own_snap(self):
+        """V-P (i)'s reference is transcribed in the runner from the env-side
+        functions, NOT read from `PredictiveShield._snap`, so the check cannot
+        pass by agreeing with itself. This pins the two together: they must be
+        bit-identical, and if the filter's snap convention ever changes, this
+        fires here rather than silently failing the round's preflight."""
+        import numpy as np
+
+        from pe2.config import EnvConfig
+        from pe2.shield import PredictiveShield
+
+        cfg = EnvConfig()
+        shield = PredictiveShield(cfg, horizon=0, margin=0.0)
+        rng = np.random.default_rng(11)
+        for _ in range(2000):
+            action = (
+                float(rng.uniform(-0.5, cfg.v_max + 0.5)),
+                float(rng.uniform(-cfg.omega_max - 1.0, cfg.omega_max + 1.0)),
+            )
+            clipped = shield._clip_nominal(action, cfg.v_max)
+            assert R._executed_nominal(action, cfg, cfg.v_max) == shield._snap(
+                *clipped, cfg.v_max
+            )
+
     def test_brute_force_accept_decisions_agree(self):
         out = R.preflight_bruteforce(n_pairs=40)
         assert out["pass"] is True
