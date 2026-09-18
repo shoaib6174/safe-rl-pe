@@ -68,3 +68,9 @@ before this round: ≤ 1 289 999.
 `results/derisk/s12_start.json` (RC19 on the selection stream), `s12_arm_SEL-{A,B}-*.json`, `s12_probe_*`,
 `ckpts_SEL-*/`, `s12_selection.json`, `s12_confirm_start.json` (RC19, FT-B-41 on the confirmation stream),
 `s12_confirm_SEL-*.json`, `s12_round.{json,png}`. Signed in the worklog.
+
+## Amendment S12-A1 (2026-09-18, before any number): the degenerate batch
+
+If NO arm of a batch keeps its capture (every capture guard fails on the selection stream), the batch selects the
+arm with the lowest mean held-out deadlock among all six and tags the selection `fallback (no capture guard
+holds)`; its confirmation runs and is expected to fail. This keeps the round `COMPLETE` rather than stranding it.
