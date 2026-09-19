@@ -46,13 +46,22 @@ this module and get the module-level default.
 
 from __future__ import annotations
 
+import os
+
+OMP_THREADS = "2"  # spec section 6
+# Set BEFORE numpy / torch are imported: those read OMP_NUM_THREADS when they
+# build their thread pools, so S9:687 and S11:1040 — which set it inside
+# `main()`, after the module-scope imports — are a no-op in the PARENT process
+# (they do reach the spawn children, which inherit os.environ and then re-import
+# and set it again themselves). Here it binds in both.
+os.environ.setdefault("OMP_NUM_THREADS", OMP_THREADS)
+
 import argparse
 import dataclasses
 import importlib.util
 import json
 import math
 import multiprocessing
-import os
 import pathlib
 from collections import Counter
 
@@ -87,7 +96,7 @@ P_GATE = S9.P_GATE  # 0.05
 EQ_MARGIN = 0.10  # H-SPD-2's equivalence margin on the paired difference
 Z95 = 1.96  # the 95 % Wald multiplier (no scipy)
 MAX_WORKERS = 6
-OMP_THREADS = S9.OMP_THREADS  # "2"
+assert OMP_THREADS == S9.OMP_THREADS, "S13 and S9 must run at the same OMP setting"
 RATIOS = (0.8, 1.0, 1.2, 1.4)  # 0.8 = the pursuer is 25 % faster
 SPD2_RATIOS = (0.8, 1.2)  # the pair H-SPD-2 reads (1.2 = the training ratio)
 CONFIRM_MIN = 3  # a verdict needs >= 3 of the 4 pursuers
@@ -96,6 +105,20 @@ N_OBSTACLES = 2
 GAMMA = 0.2
 SPD3_OPPONENT = "GREEDY"  # H-SPD-3 reads capture against GreedyEvader
 SATURATION = 0.95  # capture above this at 0.8 makes that column a ceiling
+
+# --- amendment S13-A1, fixed before any cell existed. ---
+UNDERPOWERED = "UNDETERMINED (underpowered)"
+UNPAIRED = "INVALID (unpaired)"
+# A1.1: the Wald half-width grows with the discordant count, and at the
+# pre-registered n it exceeds the margin once
+#     sqrt(b + c) * Z95 / n > EQ_MARGIN   <=>   b + c > (EQ_MARGIN * n / Z95)^2
+# (worst case b = c, where the (b - c)^2/n term vanishes) = 234.277 at
+# EQ_MARGIN 0.10, n 300, Z95 1.96 — so the integer rule is `b + c > 234`. Such a
+# pair is reported UNDETERMINED (underpowered), never NOT CONFIRMED: at 78 % of
+# episodes discordant the two ratios' outcomes are anti-correlated, which is a
+# finding about the pair, not evidence against equivalence. Tied to the
+# pre-registered N_EPISODES: it is the power of THAT test, not of the cell's.
+MAX_DISCORDANT = int((EQ_MARGIN * N_EPISODES / Z95) ** 2)  # 234
 
 PURSUERS = {
     **S9.PURSUERS,  # RC19, RCM28, STR14 — same checkpoints, same shield_obs
@@ -308,10 +331,16 @@ def run_cells(
         raise SystemExit(f"unknown cell(s): {unknown}")
     paired = check_ratio_pairing()
     if not paired["pass"]:
-        raise SystemExit(
-            f"the ratios are NOT seed-paired at seed {SEED0}: {paired}. "
-            "H-SPD-2 is a paired test across ratio 0.8 and ratio 1.2; the round "
-            "may not proceed."
+        # A1.2: a failed gate invalidates H-SPD-2 alone. H-SPD-1, H-SPD-3 and
+        # H-SAFE are all WITHIN a ratio and unaffected, so the cells still run
+        # and the round still reports them; `spd2_verdicts` returns UNPAIRED at
+        # every level and `s13_round.json` carries this block as the reason.
+        print(
+            f"WARNING: the ratios are NOT seed-paired at seed {SEED0} "
+            f"({paired['identical_layouts']}). The cells run — every within-ratio "
+            "readout is unaffected — but H-SPD-2 is a paired test ACROSS ratio "
+            f"0.8 and ratio 1.2 and will be reported {UNPAIRED!r} (A1.2).",
+            flush=True,
         )
     cells_dir().mkdir(parents=True, exist_ok=True)
     todo = [n for n in wanted if not (cells_dir() / f"{n}.json").exists()]
@@ -334,14 +363,25 @@ def run_cells(
 # ----------------------------------------------------------------------------
 # tests (spec section 4)
 # ----------------------------------------------------------------------------
-def _overall(per_pursuer: dict) -> tuple[str, int]:
+def _overall(per_pursuer: dict) -> tuple[str, int, int]:
     """The shared rule: INCOMPLETE if any pursuer is, else CONFIRMED iff at
-    least CONFIRM_MIN of the 4 confirm."""
+    least CONFIRM_MIN of the 4 confirm. Only CONFIRMED pursuers count toward
+    CONFIRM_MIN.
+
+    A1.1 adds the third outcome, for H-SPD-2 only (H-SPD-1 never produces it):
+    an UNDETERMINED pursuer neither confirms nor refutes, so a round that would
+    reach CONFIRM_MIN if its undetermined pursuers had been decidable is itself
+    UNDETERMINED, not NOT CONFIRMED — the same reason A1.1 relabels the pair."""
     scored = [per_pursuer[p]["verdict"] for p in SCORING]
     n_conf = sum(v == "CONFIRMED" for v in scored)
+    n_undet = sum(v == UNDERPOWERED for v in scored)
     if "INCOMPLETE" in scored:
-        return "INCOMPLETE", n_conf
-    return ("CONFIRMED" if n_conf >= CONFIRM_MIN else "NOT CONFIRMED"), n_conf
+        return "INCOMPLETE", n_conf, n_undet
+    if n_conf >= CONFIRM_MIN:
+        return "CONFIRMED", n_conf, n_undet
+    if n_conf + n_undet >= CONFIRM_MIN:
+        return UNDERPOWERED, n_conf, n_undet
+    return "NOT CONFIRMED", n_conf, n_undet
 
 
 def _spd1_ratio(records: dict, pursuer: str, ratio: float) -> dict:
@@ -396,7 +436,7 @@ def spd1_verdicts(records: dict) -> dict:
         else:
             verdict = "NOT CONFIRMED"
         per_pursuer[p] = {"verdict": verdict, "ratios": ratios}
-    overall, n_conf = _overall(per_pursuer)
+    overall, n_conf, _ = _overall(per_pursuer)
     # Per-ratio tallies, so `direction` can tell "fails at 1.2" (a harness
     # failure: 1.2 is the training ratio and reproduces S9/S10/S11) from
     # "fails at 0.8 only" (a scope statement) without recomputing anything.
@@ -470,39 +510,103 @@ def _spd2_attacker(records: dict, pursuer: str, attacker: str) -> dict:
     out = wald_equivalence(
         records[lo]["deadlock_ind"], records[hi]["deadlock_ind"], EQ_MARGIN
     )
+    discordant = out["b"] + out["c"]
+    # A1.1's two labels for a pair that does not confirm. `separated` is the
+    # thing the relabel must not hide: an interval lying ENTIRELY outside the
+    # margin is a genuinely different pair (e.g. b = 250, c = 0 -> d = 0.83), not
+    # a noisy one, even though its discordance is above the threshold.
+    separated = abs(out["d"]) - out["half_width"] > EQ_MARGIN
+    if out["pass"]:
+        verdict = "CONFIRMED"
+    elif discordant > MAX_DISCORDANT:
+        verdict = UNDERPOWERED
+    else:
+        verdict = "NOT CONFIRMED"
     return {
-        "verdict": "CONFIRMED" if out["pass"] else "NOT CONFIRMED",
+        "verdict": verdict,
         "cells": [lo, hi],
         "ratios": list(SPD2_RATIOS),
+        "discordant": discordant,
+        "max_discordant": MAX_DISCORDANT,
+        "separated": bool(separated),
         **out,
     }
 
 
-def spd2_verdicts(records: dict) -> dict:
+def _spd2_unpaired(pairing: dict) -> dict:
+    """A1.2: the gate failed, so the across-ratio paired test is NOT computed
+    and every level reports INVALID (unpaired). The gate's own result travels
+    with the verdict so the artefact says why."""
+    per_pursuer = {
+        p: {
+            "verdict": UNPAIRED,
+            "attackers": {
+                a: {
+                    "verdict": UNPAIRED,
+                    "cells": [cell_name(p, a, r) for r in SPD2_RATIOS],
+                }
+                for a in STRUCTURED
+            },
+        }
+        for p in PURSUERS
+    }
+    return {
+        "hypothesis": "H-SPD-2",
+        "ratios": list(SPD2_RATIOS),
+        "margin": EQ_MARGIN,
+        "verdict": UNPAIRED,
+        "n_confirmed": 0,
+        "n_undetermined": 0,
+        "scoring": list(SCORING),
+        "pursuers": per_pursuer,
+        "ratio_pairing": pairing,
+        "note": (
+            "the ratios are not seed-paired, so episode i at 0.8 and episode i "
+            "at 1.2 are different games and no paired difference exists to test "
+            "(amendment A1.2); H-SPD-1, H-SPD-3 and H-SAFE are within-ratio and "
+            "unaffected"
+        ),
+    }
+
+
+def spd2_verdicts(records: dict, pairing: dict | None = None) -> dict:
     """H-SPD-2 (no speed dependence): for each pursuer and each structured
     attacker, the paired difference in deadlock rate between ratio 0.8 and ratio
-    1.2 is within +/- 0.10. A pursuer confirms iff both attackers do; the round
-    iff >= 3 of the 4 pursuers confirm."""
+    1.2 is within +/- 0.10.
+
+    A pursuer confirms iff both attackers do. A1.1: a pair whose discordance
+    exceeds MAX_DISCORDANT is UNDETERMINED (underpowered) rather than NOT
+    CONFIRMED, and neither confirms nor refutes — so a pursuer is NOT CONFIRMED
+    if any pair is, UNDETERMINED if any pair is and none is NOT CONFIRMED, and
+    CONFIRMED only if both pairs are. The round confirms iff >= 3 of the 4
+    pursuers CONFIRM (undetermined pursuers never count toward that)."""
+    if pairing is not None and not pairing["pass"]:
+        return _spd2_unpaired(pairing)
     per_pursuer = {}
     for p in PURSUERS:
         attackers = {a: _spd2_attacker(records, p, a) for a in STRUCTURED}
         vs = [b["verdict"] for b in attackers.values()]
         if "INCOMPLETE" in vs:
             verdict = "INCOMPLETE"
-        elif all(v == "CONFIRMED" for v in vs):
-            verdict = "CONFIRMED"
-        else:
+        elif "NOT CONFIRMED" in vs:
             verdict = "NOT CONFIRMED"
+        elif UNDERPOWERED in vs:
+            verdict = UNDERPOWERED
+        else:
+            verdict = "CONFIRMED"
         per_pursuer[p] = {"verdict": verdict, "attackers": attackers}
-    overall, n_conf = _overall(per_pursuer)
+    overall, n_conf, n_undet = _overall(per_pursuer)
     return {
         "hypothesis": "H-SPD-2",
         "ratios": list(SPD2_RATIOS),
         "margin": EQ_MARGIN,
+        "max_discordant": MAX_DISCORDANT,
         "verdict": overall,
         "n_confirmed": n_conf,
+        "n_undetermined": n_undet,
         "scoring": list(SCORING),
         "pursuers": per_pursuer,
+        "ratio_pairing": pairing,
     }
 
 
@@ -562,11 +666,15 @@ def spd3_report(records: dict) -> dict:
     }
 
 
-def verdicts(records: dict) -> dict:
+def verdicts(records: dict, pairing: dict | None = None) -> dict:
+    """Every hypothesis. `pairing` is A1.2's validity gate — it defaults to
+    running the (millisecond) check, so a caller cannot forget it; pass one in
+    to drive the INVALID (unpaired) path."""
     missing = [n for n in CELLS if n not in records]
+    pairing = check_ratio_pairing() if pairing is None else pairing
     return {
         "spd1": spd1_verdicts(records),
-        "spd2": spd2_verdicts(records),
+        "spd2": spd2_verdicts(records, pairing),
         "spd3": spd3_report(records),
         "hsafe": hsafe(records),
         "complete": not missing,
@@ -616,6 +724,27 @@ def direction(v: dict) -> str:
             "reading (D118/D121) is strengthened."
         )
     if spd1["verdict"] == "CONFIRMED":
+        if spd2["verdict"] == UNPAIRED:
+            return (
+                f"H-SPD-1 CONFIRMED, H-SPD-2 {UNPAIRED}: the ratio-pairing gate "
+                "failed, so the across-ratio paired test was never computed "
+                "(A1.2). Report H-SPD-1, H-SPD-3 and H-SAFE — all within-ratio "
+                "and unaffected — and diagnose the environment before any "
+                "speed-dependence claim is made either way."
+            )
+        if spd2["verdict"] == UNDERPOWERED:
+            return (
+                f"H-SPD-1 CONFIRMED, H-SPD-2 {UNDERPOWERED} "
+                f"({spd2['n_confirmed']} confirmed, {spd2['n_undetermined']} "
+                f"undetermined of {len(SCORING)} pursuers): the attack survives "
+                "at every ratio, and the 0.8-vs-1.2 pairs that do not confirm "
+                f"disagree on more than {MAX_DISCORDANT} of {N_EPISODES} episodes, "
+                "where this equivalence test cannot resolve +/- "
+                f"{EQ_MARGIN:.2f} (A1.1). That is NOT evidence of a speed "
+                "dependence: report the discordance, the two rates and the "
+                "`separated` flag, and treat the anti-correlation between the "
+                "ratios as the finding."
+            )
         return (
             "H-SPD-1 CONFIRMED, H-SPD-2 NOT CONFIRMED "
             f"({spd2['n_confirmed']}/{len(SCORING)} pursuers): the attack survives "
@@ -798,10 +927,14 @@ def write_figure(records: dict, path: pathlib.Path) -> None:
 
 def summarize() -> dict:
     records = load_records()
-    v = verdicts(records)
+    # A1.2: the gate's full result is recorded in the round artefact (S9 does
+    # the same with `obstacles_nested`), and drives H-SPD-2's validity.
+    pairing = check_ratio_pairing()
+    v = verdicts(records, pairing)
     blob = {
         "verdicts": v,
         "direction": direction(v),
+        "ratio_pairing": pairing,
         "cells": {
             n: {
                 k: val
@@ -823,7 +956,6 @@ def main() -> None:
     p.add_argument("--device", default="cpu")
     p.add_argument("--workers", type=int, default=MAX_WORKERS)
     args = p.parse_args()
-    os.environ.setdefault("OMP_NUM_THREADS", OMP_THREADS)  # spec section 6
     OUT.mkdir(parents=True, exist_ok=True)
     if args.cells is not None:
         run_cells(args.cells or None, args.device, args.workers)
@@ -833,7 +965,11 @@ def main() -> None:
         print(
             json.dumps(
                 {
-                    h: {"verdict": v[h]["verdict"], "n_confirmed": v[h]["n_confirmed"]}
+                    h: {
+                        k: val
+                        for k, val in v[h].items()
+                        if k in ("verdict", "n_confirmed", "n_undetermined")
+                    }
                     for h in ("spd1", "spd2")
                 },
                 indent=2,
@@ -851,6 +987,7 @@ def main() -> None:
                 indent=2,
             )
         )
+        print(f"ratio pairing: {'PASS' if blob['ratio_pairing']['pass'] else 'FAIL'}")
         print(f"\n{blob['direction']}")
         print(
             f"\ncells {v['n_records']}/{v['n_cells']}"

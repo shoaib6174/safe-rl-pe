@@ -116,6 +116,19 @@ def _all_confirm(spec):
     return base + _ORDER[spec["pursuer"]]
 
 
+# A1.2's validity gate, in both states, as `check_ratio_pairing` returns it.
+_PAIRED_GATE = {
+    "pass": True,
+    "ratios": list(R.RATIOS),
+    "identical_layouts": {R._rkey(r): True for r in R.RATIOS},
+}
+_UNPAIRED_GATE = {
+    "pass": False,
+    "ratios": list(R.RATIOS),
+    "identical_layouts": {R._rkey(r): r == 0.8 for r in R.RATIOS},
+}
+
+
 # ---------------------------------------------------------------- enumeration
 class TestCells:
     def test_four_pursuers_four_opponents_four_ratios_is_sixty_four_cells(self):
@@ -488,6 +501,144 @@ class TestSpd2:
         assert s["verdict"] == "INCOMPLETE"
 
 
+# ------------------------------------------------- H-SPD-2, amendment A1.1
+class TestSpd2Underpowered:
+    def test_the_threshold_is_derived_from_the_pre_registered_constants(self):
+        # (EQ_MARGIN * N / Z95)^2 = (0.10 * 300 / 1.96)^2 = 234.277 -> 234
+        assert R.MAX_DISCORDANT == 234
+        assert R.MAX_DISCORDANT == int((R.EQ_MARGIN * R.N_EPISODES / R.Z95) ** 2)
+        assert R.UNDERPOWERED == "UNDETERMINED (underpowered)"
+
+    def test_discordance_above_the_threshold_is_undetermined_not_refuted(self):
+        # b = 118, c = 117, n = 300: d = 0.00333,
+        # hw = 1.96 * sqrt(235 - 1/300) / 300 = 0.10015 -> hi = 0.1035 > 0.10
+        recs = _underpower_spd2(_records(_all_confirm), ("RC19",))
+        block = R.spd2_verdicts(recs)["pursuers"]["RC19"]["attackers"]["ATT25"]
+        assert block["discordant"] == 235
+        assert block["max_discordant"] == 234
+        assert block["pass"] is False
+        assert block["d"] == pytest.approx(1 / 300)
+        assert block["half_width"] == pytest.approx(
+            1.96 * math.sqrt(235 - 1 / 300) / 300
+        )
+        assert block["verdict"] == R.UNDERPOWERED
+        assert block["separated"] is False
+
+    def test_exactly_the_threshold_is_not_relabelled(self):
+        # b = 234, c = 0, n = 300: discordance is exactly MAX_DISCORDANT, so the
+        # rule (`> 234`) does not fire and the pair is plainly NOT CONFIRMED.
+        recs = _records(_all_confirm)
+        _set_pair(recs, "RC19", "ATT25", *_paired_ind(234, 0, 300))
+        block = R.spd2_verdicts(recs)["pursuers"]["RC19"]["attackers"]["ATT25"]
+        assert block["discordant"] == 234
+        assert block["verdict"] == "NOT CONFIRMED"
+        assert block["separated"] is True
+
+    def test_a_separated_pair_above_the_threshold_is_flagged(self):
+        # b = 250, c = 0: discordance 250 > 234 so A1.1 relabels it, but the
+        # interval lies entirely outside the margin -- a genuinely different
+        # pair, not a noisy one. `separated` is what tells the two apart.
+        recs = _records(_all_confirm)
+        _set_pair(recs, "RC19", "ATT25", *_paired_ind(250, 0, 300))
+        block = R.spd2_verdicts(recs)["pursuers"]["RC19"]["attackers"]["ATT25"]
+        assert block["verdict"] == R.UNDERPOWERED
+        assert block["d"] == pytest.approx(250 / 300)
+        assert block["separated"] is True
+        assert abs(block["d"]) - block["half_width"] > R.EQ_MARGIN
+
+    def test_a_confirmed_pair_is_never_relabelled(self):
+        s = R.spd2_verdicts(_records(_all_confirm))
+        block = s["pursuers"]["RC19"]["attackers"]["ATT25"]
+        assert block["verdict"] == "CONFIRMED"
+        assert block["discordant"] == 0
+        assert block["separated"] is False
+
+    def test_one_undetermined_pair_makes_the_pursuer_undetermined(self):
+        recs = _underpower_spd2(_records(_all_confirm), ("RC19",))
+        s = R.spd2_verdicts(recs)
+        assert s["pursuers"]["RC19"]["attackers"]["ATK4-45"]["verdict"] == "CONFIRMED"
+        assert s["pursuers"]["RC19"]["verdict"] == R.UNDERPOWERED
+
+    def test_a_refuted_pair_beats_an_undetermined_one(self):
+        recs = _underpower_spd2(_records(_all_confirm), ("RC19",), "ATK4-45")
+        _spoil_spd2(recs, ("RC19",))  # ATT25 genuinely refutes
+        s = R.spd2_verdicts(recs)
+        assert s["pursuers"]["RC19"]["attackers"]["ATT25"]["verdict"] == "NOT CONFIRMED"
+        assert (
+            s["pursuers"]["RC19"]["attackers"]["ATK4-45"]["verdict"] == R.UNDERPOWERED
+        )
+        assert s["pursuers"]["RC19"]["verdict"] == "NOT CONFIRMED"
+
+    def test_an_undetermined_pursuer_does_not_count_toward_confirm_min(self):
+        recs = _underpower_spd2(_records(_all_confirm), ("RC19", "STR14"))
+        s = R.spd2_verdicts(recs)
+        assert s["n_confirmed"] == 2
+        assert s["n_undetermined"] == 2
+        # 2 confirmed is short of 3, but the round is not refuted either
+        assert s["verdict"] == R.UNDERPOWERED
+
+    def test_the_round_is_refuted_when_confirmed_plus_undetermined_falls_short(self):
+        recs = _underpower_spd2(_records(_all_confirm), ("RC19",))
+        _spoil_spd2(recs, ("RCM28", "STR14", "FT-B-41"))
+        s = R.spd2_verdicts(recs)
+        assert s["n_confirmed"] == 0
+        assert s["n_undetermined"] == 1
+        assert s["verdict"] == "NOT CONFIRMED"
+
+    def test_h_spd_1_never_produces_the_underpowered_label(self):
+        recs = _underpower_spd2(_records(_all_confirm), tuple(R.PURSUERS))
+        s = R.spd1_verdicts(recs)
+        assert s["verdict"] == "CONFIRMED"
+        assert "n_undetermined" not in s
+
+
+# ------------------------------------------------- H-SPD-2, amendment A1.2
+class TestSpd2Unpaired:
+    def test_a_failed_gate_reports_invalid_at_every_level(self):
+        s = R.spd2_verdicts(_records(_all_confirm), _UNPAIRED_GATE)
+        assert R.UNPAIRED == "INVALID (unpaired)"
+        assert s["verdict"] == R.UNPAIRED
+        assert s["n_confirmed"] == 0
+        assert s["n_undetermined"] == 0
+        for p in R.PURSUERS:
+            assert s["pursuers"][p]["verdict"] == R.UNPAIRED
+            for a in R.STRUCTURED:
+                block = s["pursuers"][p]["attackers"][a]
+                assert block["verdict"] == R.UNPAIRED
+                # the test is NOT computed: no interval is invented
+                assert "d" not in block and "half_width" not in block
+                assert block["cells"] == [R.cell_name(p, a, r) for r in R.SPD2_RATIOS]
+
+    def test_the_gate_result_travels_with_the_verdict(self):
+        s = R.spd2_verdicts(_records(_all_confirm), _UNPAIRED_GATE)
+        assert s["ratio_pairing"] == _UNPAIRED_GATE
+        assert "not seed-paired" in s["note"]
+
+    def test_a_passing_gate_computes_the_test_normally(self):
+        s = R.spd2_verdicts(_records(_all_confirm), _PAIRED_GATE)
+        assert s["verdict"] == "CONFIRMED"
+        assert s["ratio_pairing"] == _PAIRED_GATE
+
+    def test_only_h_spd_2_is_invalidated(self):
+        v = R.verdicts(_records(_all_confirm), _UNPAIRED_GATE)
+        assert v["spd2"]["verdict"] == R.UNPAIRED
+        assert v["spd1"]["verdict"] == "CONFIRMED"  # within-ratio, unaffected
+        assert v["hsafe"]["verdict"] == "HOLDS"
+        assert v["spd3"]["saturated"] is False
+
+    def test_verdicts_runs_the_real_gate_by_default_and_it_passes(self):
+        # the gate travels inside the hypothesis whose validity it decides;
+        # `summarize` additionally surfaces it at the top of s13_round.json
+        v = R.verdicts(_records(_all_confirm))
+        assert v["spd2"]["ratio_pairing"]["pass"] is True
+        assert v["spd2"]["verdict"] == "CONFIRMED"
+
+    def test_the_real_gate_compares_every_ratio_against_the_reference(self):
+        check = R.check_ratio_pairing()
+        assert set(check["identical_layouts"]) == {R._rkey(r) for r in R.RATIOS}
+        assert all(check["identical_layouts"].values())
+
+
 # -------------------------------------------------------------------- H-SPD-3
 class TestSpd3:
     def test_capture_against_greedy_is_reported_with_no_verdict(self):
@@ -574,12 +725,22 @@ class TestHSafe:
 
 # ------------------------------------------------------------------ direction
 def _spoil_spd2(recs, pursuers):
-    """Widen the 0.8-vs-1.2 interval past the margin while leaving H-SPD-1
-    intact: b = c = 140 of 300 gives d = 0 and hw = 1.96 * sqrt(280) / 300 =
-    0.109, and both cells still deadlock far above the scripted probes. The
-    length stays 300 so every other paired test in the round remains valid."""
+    """A genuine H-SPD-2 refutation that leaves H-SPD-1 intact: the 0.8 cell
+    deadlocks 200/300 and the 1.2 cell 140/300 on a NESTED indicator, so
+    b = 60, c = 0, d = 0.200 and hw = 0.045 — the interval sits entirely above
+    +0.10. Discordance is 60, well under MAX_DISCORDANT, so A1.1 does NOT
+    relabel it, and both cells stay far above the scripted probes."""
     for p in pursuers:
-        _set_pair(recs, p, "ATT25", *_paired_ind(140, 140, 300))
+        _set_pair(recs, p, "ATT25", _ind(200 / 300, 300), _ind(140 / 300, 300))
+    return recs
+
+
+def _underpower_spd2(recs, pursuers, attacker="ATT25"):
+    """b = 118, c = 117 of 300: discordance 235 > MAX_DISCORDANT, d = 0.003 and
+    hw = 0.1002, so the interval overshoots the margin on noise alone — A1.1's
+    UNDETERMINED (underpowered) case. Both cells still beat the probes."""
+    for p in pursuers:
+        _set_pair(recs, p, attacker, *_paired_ind(118, 117, 300))
     return recs
 
 
@@ -597,6 +758,24 @@ class TestDirection:
         d = R.direction(v)
         assert "report the curve" in d.lower()
         assert "independent of speed" in d
+
+    def test_spd2_undetermined_is_not_reported_as_a_speed_dependence(self):
+        recs = _underpower_spd2(_records(_all_confirm), tuple(R.PURSUERS))
+        v = R.verdicts(recs)
+        assert v["spd1"]["verdict"] == "CONFIRMED"
+        assert v["spd2"]["verdict"] == R.UNDERPOWERED
+        d = R.direction(v)
+        assert R.UNDERPOWERED in d
+        assert "NOT evidence of a speed dependence" in d
+        assert "separated" in d
+        assert "not confirmed" not in d.lower()
+
+    def test_spd2_invalid_reports_the_within_ratio_hypotheses_only(self):
+        v = R.verdicts(_records(_all_confirm), _UNPAIRED_GATE)
+        d = R.direction(v)
+        assert R.UNPAIRED in d
+        assert "within-ratio" in d
+        assert "diagnose the environment" in d
 
     def test_failing_at_zero_point_eight_only_narrows_the_scope(self):
         def rate(spec):
@@ -678,16 +857,25 @@ class TestRunCells:
         with pytest.raises(SystemExit):
             R.run_cells(["NOPE"], workers=1)
 
-    def test_cells_refuse_to_run_when_the_ratios_are_not_seed_paired(
-        self, tmp_path, monkeypatch
+    def test_a_failed_pairing_gate_warns_but_still_runs_the_cells(
+        self, tmp_path, monkeypatch, capsys
     ):
+        """A1.2: the gate invalidates H-SPD-2 alone. H-SPD-1, H-SPD-3 and
+        H-SAFE are within-ratio, so the cells still run and still report."""
         monkeypatch.setattr(R, "OUT", tmp_path)
-        monkeypatch.setattr(
-            R, "check_ratio_pairing", lambda: {"pass": False, "ratios": list(R.RATIOS)}
-        )
-        monkeypatch.setattr(R, "run_cell", lambda name, device="cpu": None)
-        with pytest.raises(SystemExit, match="paired"):
-            R.run_cells(None, workers=1)
+        monkeypatch.setattr(R, "check_ratio_pairing", lambda: _UNPAIRED_GATE)
+        called = []
+
+        def stub(name, device="cpu"):
+            called.append(name)
+            return _record(name)
+
+        monkeypatch.setattr(R, "run_cell", stub)
+        todo = R.run_cells([R.cell_name("RC19", "ATT25", 0.8)], workers=1)
+        assert todo == called == [R.cell_name("RC19", "ATT25", 0.8)]
+        out = capsys.readouterr().out
+        assert "WARNING" in out and "NOT seed-paired" in out
+        assert R.UNPAIRED in out
 
     def test_records_are_written_atomically(self, tmp_path, monkeypatch):
         monkeypatch.setattr(R, "OUT", tmp_path)
@@ -719,6 +907,13 @@ class TestSummarize:
         assert blob["verdicts"]["hsafe"]["verdict"] == "HOLDS"
         assert blob["verdicts"]["complete"] is True
         assert summary["direction"] == R.direction(summary["verdicts"])
+        # A1.2: the gate's full result is in the round artefact
+        assert blob["ratio_pairing"]["pass"] is True
+        assert set(blob["ratio_pairing"]["identical_layouts"]) == {
+            R._rkey(r) for r in R.RATIOS
+        }
+        assert blob["verdicts"]["spd2"]["ratio_pairing"]["pass"] is True
+        assert blob["verdicts"]["spd2"]["max_discordant"] == R.MAX_DISCORDANT
         assert len(blob["cells"]) == 64
         first = next(iter(blob["cells"].values()))
         assert "deadlock_ind" not in first and "capture_ind" not in first
