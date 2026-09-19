@@ -4,6 +4,11 @@
 
 ## 1. The candidate thesis
 
+> *(sharpened by D126)* **Minimal-intervention safety filters generate states that can only be escaped by a
+> multi-step manoeuvre — rotate, then move — which the filter's own objective never proposes (the nearest
+> admissible action to a blocked forward command is a stop) and which a memoryless policy cannot execute
+> (once stopped, its observation is frozen). The original wording follows.*
+>
 > A safety filter can put a memoryless learner into an **absorbing observation loop**. The filter blocks the
 > commanded action, the agent stops, its observation stops changing, and a deterministic policy re-emits the
 > same blocked action indefinitely. The safety guarantee holds throughout, no violation is ever recorded, and
@@ -28,6 +33,13 @@ injection attack on reciprocal collision avoidance, not a learning pathology.
 - D112/D124 capture numbers become the *cost* of the loop, once recomputed with recovery.
 
 ## 2. Phase 0 — validity checks that can kill this (≈ 3 days, mostly evaluation)
+
+> **V1 and V2 are DONE (D126, 2026-09-19). V1 PASSED — an exact QP behaves identically to our candidate
+> enumeration (0/150 forward motion either way), so the loop is not our discretisation. V2 refined the
+> thesis: translation is genuinely inadmissible at a stalled state (0/150) but rotation is admissible in
+> 150/150, so escape requires a ROTATE-THEN-MOVE manoeuvre that a minimal-intervention objective never
+> proposes and a memoryless policy cannot execute. The thesis in §1 should be read in that sharper form.
+> Only V3 remains.**
 
 Run these BEFORE writing a line. Each is pre-registered separately.
 
