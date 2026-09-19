@@ -114,3 +114,20 @@ it was trained against is the argmax of its row AND is significantly above the r
 **3. The two `≤` relations are descriptive.** `RC19 ≤ STR14 ≤ TEACHER` are reported, never tested, and
 H-MAT-2's verdict rests solely on the three `<` relations. Stated so that no reader takes the `≤`s as
 tested claims.
+
+## Amendment S14-A2 (2026-09-19, before any cell exists): correcting my own miscount in A1.3
+
+A1.3 said H-MAT-2's verdict "rests solely on the three `<` relations". **That was an arithmetic error on my
+part**, caught in review before any cell ran. The chain `RCM28 < FT-B-41 ≈ SEL-A-50 < RC19 ≤ STR14 ≤ TEACHER`
+contains two literal `<` symbols, and the substantive claim spans the `≈` pair, so the correct set is the
+**four** pairwise comparisons:
+
+1. `RCM28 < FT-B-41`
+2. `RCM28 < SEL-A-50`
+3. `FT-B-41 < RC19`
+4. `SEL-A-50 < RC19`
+
+Each is judged by A1.1's conjunction (worst cases ordered AND the paired test on the column attaining the
+larger worst case). **H-MAT-2 is CONFIRMED iff all four hold.** `FT-B-41 ≈ SEL-A-50`, `RC19 ≤ STR14` and
+`STR14 ≤ TEACHER` remain descriptive, are never tested, and no pass/fail is stored for them; their untested
+status must be visible in the printed summary, not only in the JSON.
