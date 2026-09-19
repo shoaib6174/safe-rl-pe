@@ -43,3 +43,16 @@ below; the artefacts are in the repository (`docs/pathway/*_prereg_*.md`, `docs/
 
 About one round-trip of writing per round (specification, review, amendment log) and a strict no-retune rule
 that left β = 0.01's one-in-three success rate as a measured fact rather than a tuned-away one.
+
+## Limitation, added 2026-09-19 (D125)
+
+This protocol did not catch its own biggest error. Fifteen pre-registered specifications, negative controls,
+seed-paired gates, stop rules and adversarial reviews all passed while the programme measured an artefact: a
+memoryless policy frozen in an absorbing observation loop, unable to escape an immobility the filter would have
+released the moment it asked to turn the other way. Every statistical safeguard here operates on numbers that
+were already the wrong numbers. The error was found by a person watching the rendered behaviour and saying the
+pursuer looks stuck, which took one viewing. The lesson is not that pre-registration failed but that it is
+orthogonal to construct validity: it disciplines inference from a measurement, and says nothing about whether
+the measurement means what you think. A behavioural inspection gate — watch the policy act, on unselected
+seeds, before building interpretation on its summary statistics — belongs in the protocol alongside the
+statistical ones.
