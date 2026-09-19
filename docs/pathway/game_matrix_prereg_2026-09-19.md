@@ -95,3 +95,22 @@ seen. Consumed streams before this round: ≤ 1 360 299, plus the 1 400 000+ vis
 
 `results/derisk/s14_cells/*.json`, `s14_round.{json,png}`, `s14_gifs/*.gif`; runner
 `scripts/derisk_s14_matrix.py` (`--cells | --summarize | --gifs`, ≤ 6 workers), run from a frozen worktree.
+
+## Amendment S14-A1 (2026-09-19, before any cell exists): three readings the implementer asked for
+
+**1. H-MAT-2's `<` requires the worst cases themselves to be ordered.** §3 said each `<` is "tested paired
+against the attacker that attains the larger side's maximum". That column test can pass while the two
+defenders' worst cases are inverted, because a defender's worst case may be attained in a different column. The
+hypothesis is titled "the defender ordering, ON WORST CASE", so the stronger reading is the intended one:
+**`A < B` holds iff (i) `w(A) < w(B)` as point estimates AND (ii) the paired test on the column attaining
+`w(B)` shows B's deadlock rate significantly above A's.** Both conditions, or the relation fails.
+
+**2. H-MAT-1 gets three outcomes, and a tie is not a pass.** An attacker is **`SPECIALISED`** iff the defender
+it was trained against is the argmax of its row AND is significantly above the runner-up by the paired test;
+**`AMBIGUOUS`** iff it is the argmax but not significantly above the runner-up (this includes an exact tie);
+**`GENERAL`** iff some other defender is strictly higher. H-MAT-1 is CONFIRMED iff ≥ 3 of 4 attackers are
+`SPECIALISED`; `AMBIGUOUS` neither confirms nor refutes and is reported with its p-value.
+
+**3. The two `≤` relations are descriptive.** `RC19 ≤ STR14 ≤ TEACHER` are reported, never tested, and
+H-MAT-2's verdict rests solely on the three `<` relations. Stated so that no reader takes the `≤`s as
+tested claims.
