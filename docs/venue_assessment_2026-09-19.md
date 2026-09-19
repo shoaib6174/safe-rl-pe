@@ -1,3 +1,13 @@
+> # SUBMISSION WITHDRAWN — SUPERSEDED BY D125 (2026-09-19)
+>
+> The AAMAS 2027 submission planned here is withdrawn: the central claim it would have made is not supported
+> (D125). The factual content below — deadlines, tracks, what still needs verifying — stays accurate and will
+> be useful if a multiagent venue is targeted again. The fit assessment assumes the shielded-games thesis and
+> does not apply to the rebuilt absorbing-loop thesis; see `docs/rebuild_plan_2026-09-19.md` §6 for the
+> current venue thinking (IROS 2027 or RA-L).
+
+---
+
 # Venue assessment — AAMAS 2027 (2026-09-19)
 
 Supersedes the ICRA-2027 planning docs, which belong to the dropped Paper 1 (D117).

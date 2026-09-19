@@ -1,3 +1,18 @@
+> # PARTLY SUPERSEDED BY D125 (2026-09-19)
+>
+> The **searches and the papers found remain valid and reusable**, and two of the clean negatives are now more
+> important than when they were recorded: Q3 found no work measuring a filter's task cost under adversarial
+> pressure, and Q4 found none on shield-aware remedies or transfer across filter families.
+>
+> **The Related-work positioning paragraph is obsolete.** It argues our delta for a claim — an embodied
+> adversary manufacturing filter deadlock — that D125 shows was an artefact of a missing escape behaviour.
+> The rebuilt thesis (a safety filter creating an absorbing *observation* loop for a memoryless learner) needs
+> its own novelty check; the Q3/Q4 negatives cover part of it, the learning-pathology literature does not
+> appear here at all and must be searched (absorbing states, frozen observations, credit assignment under
+> action masking, deadlock in shielded RL).
+
+---
+
 # Literature check: adversarially induced safety-filter deadlock
 
 **Date:** 2026-09-19

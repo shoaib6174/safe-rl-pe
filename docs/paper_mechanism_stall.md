@@ -1,3 +1,23 @@
+> # SUPERSEDED BY D125 (2026-09-19) — THE CENTRAL ARGUMENT OF THIS NOTE IS WRONG
+>
+> This note argues the stall is a geometric pocket in which the filter's admissible set collapses. It is not.
+> At a real stalled state one turn direction is blocked and **the opposite turn is returned by the filter
+> untouched, with no intervention**; the policy asks for the blocked direction for 1085 consecutive steps
+> (command σ = 0.002) because its observation is frozen and nothing in it says which way is free. A 20-step
+> rotation recovery drops the immobile-step rate from 0.392 to 0.024 with zero violations and equal or better
+> capture. See D125.
+>
+> **§1 of this note contains its own refutation and I did not notice**: it states that in a pocket the
+> admissible set leaves "only commands with `v ≈ 0`: the pursuer may turn in place but not move", and then
+> calls that a stall without ever asking whether turning in place would let it escape. It would.
+>
+> **What remains usable.** The three-knob table in §2 is valid *data* — the measured frequencies do scale with
+> the filter's margin, with a more permissive gain, and with obstacle count. What changes is the
+> interpretation: those knobs govern how often the policy is put into a position it cannot reason its way out
+> of, not how often the geometry genuinely traps it. §3 and §4's readings rest on the refuted claim.
+
+---
+
 # Why a hard shield creates a stall attack surface — mechanism note (draft, 2026-09-17)
 
 Priority 4 of the paper plan (D117). Evidence: D112 (S4), D115 (S6b), D116 (S7), D118 (S9), D119 (S8).
