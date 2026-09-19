@@ -19,6 +19,7 @@ The two things this round could silently get wrong, and the tests that pin them:
 import importlib.util
 import json
 import pathlib
+from typing import ClassVar
 
 import pytest
 
@@ -1162,3 +1163,163 @@ class TestPrintedSummary:
         assert '"attaining_both"' in out
         assert '"free_lunch": true' in out
         assert "JOINTLY attain both" in out
+
+
+# ---------------------------------------------------------------- the GIF pass
+class _SpyRecorder:
+    """Stands in for `CellRecorder` so the GIF pass can be driven without an
+    environment: it records the seed `play_episode` was given and hands back one
+    tiny frame, so the real `save_gif` still writes a real file."""
+
+    made: ClassVar[list] = []
+
+    def __init__(self, cfg, opponent_factory, *, label, every=4, **kw):
+        import numpy as np
+
+        self.cfg = cfg
+        self.opponent_factory = opponent_factory
+        self.label = label
+        self.every = every
+        self.kw = kw
+        self.seed = None
+        self.frames = [np.zeros((4, 4, 3), dtype=np.uint8)]
+        _SpyRecorder.made.append(self)
+
+    def play_episode(self, predict, seed):
+        self.seed = seed
+        return {"outcome": "timeout", "steps": 1200}
+
+    def finish(self, outcome, step):
+        self.finished = (outcome, step)
+
+
+class _DummyModel:
+    """What `_model` hands back when no checkpoint may be loaded."""
+
+    def predict(self, obs, deterministic=True):
+        raise AssertionError("the spy recorder never predicts")
+
+
+@pytest.fixture
+def gif_world(tmp_path, monkeypatch):
+    """`OUT` in a temp dir with a full 42-record round on disk, no checkpoint
+    loaded and no environment stepped."""
+    monkeypatch.setattr(R, "OUT", tmp_path)
+    monkeypatch.setattr(R, "_model", lambda ckpt, device: _DummyModel())
+    monkeypatch.setattr(R, "CellRecorder", _SpyRecorder)
+    _SpyRecorder.made = []
+    R.cells_dir().mkdir(parents=True)
+    for rec in _records(_all_confirm).values():
+        R.write_cell(rec)
+    return tmp_path
+
+
+class TestGifs:
+    def test_one_gif_per_cell_at_the_pre_registered_path(self, gif_world):
+        R.write_gifs()
+        assert R.gifs_dir() == gif_world / "s14_gifs"
+        for name in R.CELLS:
+            assert (gif_world / "s14_gifs" / f"{name}.gif").exists()
+        assert len(list((gif_world / "s14_gifs").glob("*.gif"))) == len(R.CELLS)
+
+    def test_the_file_name_is_defender_double_underscore_attacker(self, gif_world):
+        R.write_gifs(["RC19__HUG7"])
+        assert R.gif_path("RC19__HUG7") == gif_world / "s14_gifs" / "RC19__HUG7.gif"
+        assert (gif_world / "s14_gifs" / "RC19__HUG7.gif").exists()
+
+    def test_every_cell_is_rendered_on_seed0_exactly(self, gif_world):
+        """Spec section 4: the first seed of the stream for every cell, with no
+        selection — so all 42 share one arena and one set of initial poses."""
+        R.write_gifs()
+        seeds = {r.seed for r in _SpyRecorder.made}
+        assert seeds == {R.SEED0}
+        assert len(_SpyRecorder.made) == len(R.CELLS)
+
+    def test_the_title_carries_the_cells_measured_deadlock_and_capture_rates(
+        self, gif_world
+    ):
+        name = "RC19__CTL-D225"
+        rec = json.loads((R.cells_dir() / f"{name}.json").read_text())
+        R.write_gifs([name])
+        title = _SpyRecorder.made[0].label
+        assert f"{rec['deadlock_rate']:.3f}" in title
+        assert f"{rec['capture_rate']:.3f}" in title
+        assert "deadlock" in title and "capture" in title
+        assert "RC19" in title and "CTL-D225" in title
+
+    def test_the_title_carries_no_verdict(self, gif_world):
+        """Spec section 4: 'Visuals carry no verdict.'"""
+        R.write_gifs()
+        for r in _SpyRecorder.made:
+            for word in ("CONFIRM", "H-MAT", "H-SAFE", "PASS", "FAIL"):
+                assert word not in r.label.upper()
+
+    def test_a_transfer_only_row_is_labelled_in_its_title(self, gif_world):
+        R.write_gifs(["TEACHER__HUG7", "RC19__HUG7"])
+        by_cell = {r.label.split()[0]: r.label for r in _SpyRecorder.made}
+        assert "transfer-only" in by_cell["TEACHER"]
+        assert "transfer-only" not in by_cell["RC19"]
+
+    def test_a_missing_cell_record_stops_the_pass(self, gif_world):
+        """A caption must never be fabricated."""
+        (R.cells_dir() / "RC19__HUG7.json").unlink()
+        with pytest.raises(SystemExit) as e:
+            R.write_gifs()
+        assert "RC19__HUG7" in str(e.value)
+        assert _SpyRecorder.made == []
+        assert not R.gifs_dir().exists() or list(R.gifs_dir().glob("*.gif")) == []
+
+    def test_an_existing_gif_is_skipped(self, gif_world):
+        name = "RC19__HUG7"
+        R.gifs_dir().mkdir(parents=True)
+        R.gif_path(name).write_bytes(b"already here")
+        R.write_gifs([name])
+        assert R.gif_path(name).read_bytes() == b"already here"
+        assert _SpyRecorder.made == []
+
+    def test_an_unknown_cell_is_refused(self, gif_world):
+        with pytest.raises(SystemExit):
+            R.write_gifs(["NOPE__GREEDY"])
+
+    def test_the_pass_writes_nothing_but_gifs(self, gif_world):
+        """Visuals carry no verdict: no round artefact, no cell record touched."""
+        before = {
+            p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in R.cells_dir().glob("*.json")
+        }
+        R.write_gifs()
+        after = {
+            p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in R.cells_dir().glob("*.json")
+        }
+        assert after == before
+        assert not (gif_world / "s14_round.json").exists()
+        assert not (gif_world / "s14_round.png").exists()
+
+    def test_the_recorder_gets_the_cells_own_hold_shield_obs_and_attacker(
+        self, gif_world
+    ):
+        """The GIF must be the episode the numbers came from, so the recorder is
+        configured exactly as `run_cell` configures the evaluation."""
+        from pe2.evade import StructuredEvaderPolicy
+        from pe2.scripted import ObstacleHuggingEvader
+
+        R.write_gifs(["TEACHER__HUG7", "RC19__CTL-D225"])
+        teacher, rc19 = _SpyRecorder.made
+        assert teacher.kw["hold"] == 1
+        assert teacher.kw["shield_obs"] is False
+        assert isinstance(teacher.opponent_factory(), ObstacleHuggingEvader)
+        assert rc19.kw["hold"] == R.DEFENDERS["RC19"]["hold"]
+        assert rc19.kw["shield_obs"] is True
+        assert isinstance(rc19.opponent_factory(), StructuredEvaderPolicy)
+        shield = rc19.kw["shield"]
+        assert (shield.gamma, shield.margin) == (R.GAMMA, R.DELTA)
+        assert rc19.cfg.n_physical_obstacles == R.N_OBSTACLES
+
+    def test_the_cli_flag_renders_without_summarizing(self, gif_world, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv", ["derisk_s14_matrix.py", "--gifs", "RC19__HUG7"]
+        )
+        R.main()
+        assert R.gif_path("RC19__HUG7").exists()
+        assert not (gif_world / "s14_round.json").exists()

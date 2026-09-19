@@ -39,6 +39,7 @@ Usage:
   ./venv/bin/python scripts/derisk_s14_matrix.py --cells            (all missing)
   ./venv/bin/python scripts/derisk_s14_matrix.py --cells TEACHER__HUG7
   ./venv/bin/python scripts/derisk_s14_matrix.py --summarize
+  ./venv/bin/python scripts/derisk_s14_matrix.py --gifs
 
 Stop rule (spec section 5): a cell that already has a record is NEVER re-run;
 no defender, attacker or metric is added or removed after any number is seen.
@@ -74,7 +75,7 @@ from pe2.evade import D_POS
 from pe2.eval import win_count
 from pe2.metrics import summarize_shield
 from pe2.scripted import GreedyEvader, ObstacleHuggingEvader
-from pe2.structured import HOLD
+from pe2.structured import HOLD, SearchMDP
 
 
 def _s9():
@@ -1079,10 +1080,185 @@ def summarize() -> dict:
     return blob
 
 
+# ----------------------------------------------------------------------------
+# visuals (spec section 4)
+# ----------------------------------------------------------------------------
+class CellRecorder(SearchMDP):
+    """`SearchMDP` that keeps every `every`-th env step as an RGB frame.
+
+    It is a SearchMDP and not an `EvadeMDP` recorder for ONE reason: `run_cell`
+    measures every cell inside `SearchMDP` — the defender is a `predict` shim
+    (a PPO checkpoint or `OrbitSearch`) and the attacker is an opponent object
+    (`StructuredEvaderPolicy` or a scripted class) — so driving the same MDP
+    with the same hold, shield and `shield_obs` makes the GIF the SEED0 episode
+    of the cell whose numbers the title carries, rather than a look-alike.
+    The `EvadeMDP` route of the S12 visuals cannot do that here: it puts the
+    learner in the evader seat, which reaches only the four learned attackers
+    and reproduces the measured episode only through validity checks V1-P/V1-E.
+
+    The overlay is S4's, unchanged: the FOV cone plus nominal-vs-executed arcs
+    from the shield info that was actually logged, so what is drawn is what was
+    recorded."""
+
+    def __init__(self, cfg, opponent_factory, *, label: str, every: int = 4, **kw):
+        # pe2.render selects the Agg backend and must be imported before
+        # matplotlib.pyplot, hence the import order here (and the lazy import:
+        # the cell workers must not pay for matplotlib).
+        from pe2.render import FovOverlay, Renderer, ShieldOverlay, Trails
+
+        super().__init__(cfg, opponent_factory, **kw)
+        self.label = label
+        self.every = int(every)
+        self.frames: list = []
+        self.trace = []  # _step_inner records the EXECUTED (post-shield) command
+        # 5.5 x 5 at dpi 80 = 440 px, wide enough that the two-line caption
+        # (see `gif_title`) is never clipped: the cell identity is the point.
+        self._r = Renderer(cfg, dpi=80, figsize=(5.5, 5.0))
+        self._t = Trails()
+        self._live = {"nominal": None, "executed": None, "info": None}
+        self._ov = [
+            FovOverlay("pursuer"),
+            ShieldOverlay("pursuer", self.shield, self._live),
+        ]
+
+    def _draw(self, title: str) -> None:
+        self.frames.append(
+            self._r.draw(
+                self.inner.env, trails=self._t, overlays=self._ov, title_prefix=title
+            )
+        )
+
+    def _step_inner(self, action, branch: str = "law"):
+        cfg, env = self.cfg, self.inner.env
+        self._t.append("pursuer", *env.pursuer_pose[:2])
+        self._t.append("evader", *env.evader_pose[:2])
+        a = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+        nominal = ((float(a[0]) + 1.0) / 2.0 * cfg.v_max, float(a[1]) * cfg.omega_max)
+        out = super()._step_inner(action, branch)
+        v, w = self.trace[-1][2], self.trace[-1][3]
+        self._live.update(
+            nominal=nominal,
+            executed=((v + 1.0) / 2.0 * cfg.v_max, w * cfg.omega_max),
+            info=self._last_sinfo,
+        )
+        if env.current_step % self.every == 0:
+            self._draw(f"[{branch}] {self.label}")
+        return out
+
+    def finish(self, outcome: str, step: int, hold_frames: int = 10) -> None:
+        """Freeze the last state so the outcome is readable, then close the
+        figure (one figure per cell, 42 cells)."""
+        for _ in range(hold_frames):
+            self._draw(f"[{outcome.upper()} @ {step}] {self.label}")
+        self._r.close()
+
+
+def gifs_dir() -> pathlib.Path:
+    return OUT / f"{ARTEFACT_PREFIX}_gifs"
+
+
+def gif_path(name: str) -> pathlib.Path:
+    return gifs_dir() / f"{name}.gif"
+
+
+def read_cell(name: str) -> dict:
+    """The cell's record, or SystemExit. The title quotes measured rates, so a
+    GIF without its record would have to invent them (spec section 4)."""
+    path = cells_dir() / f"{name}.json"
+    if not path.exists():
+        raise SystemExit(
+            f"no cell record for {name} at {path}: run --cells first. A GIF title "
+            "carries that cell's measured deadlock and capture rates and is never "
+            "fabricated (spec section 4)."
+        )
+    return json.loads(path.read_text())
+
+
+def gif_title(rec: dict) -> str:
+    """What the frames are captioned with: the cell, its two measured rates and
+    the transfer-only label where it applies. No verdict (spec section 4)."""
+    transfer = " (transfer-only)" if rec["defender"] in TRANSFER_ONLY else ""
+    # Two lines. The recorder prefixes the branch / outcome tag to the first and
+    # `Renderer.draw` appends the step counter to the second, so neither line
+    # grows past the frame width and the cell identity is always legible.
+    return (
+        f"{rec['defender']} vs {rec['attacker']}{transfer} · seed {SEED0}\n"
+        f"deadlock {rec['deadlock_rate']:.3f} · "
+        f"capture {rec['capture_rate']:.3f} (N={rec['n_episodes']})"
+    )
+
+
+def render_cell(name: str, title: str, device: str = "cpu", every: int = 4):
+    """This cell's SEED0 episode as frames. Same defender, attacker, hold,
+    shield and `shield_obs` as `run_cell` — only the recording differs."""
+    from pe2.shield import CBFShield
+
+    spec = CELLS[name]
+    cfg_cell = cell_config()
+    rec = CellRecorder(
+        cfg_cell,
+        opponent_factory(spec["attacker"], cfg_cell, device),
+        label=title,
+        every=every,
+        hold=spec["hold"],
+        shield=CBFShield(cfg_cell, gamma=GAMMA, margin=DELTA),
+        shield_obs=spec["shield_obs"],
+    )
+    log = rec.play_episode(
+        defender_policy(spec["defender"], cfg_cell, device).predict, SEED0
+    )
+    rec.finish(log["outcome"], log["steps"])
+    return rec.frames, log
+
+
+def write_gifs(
+    names: list[str] | None = None,
+    device: str = "cpu",
+    every: int = 4,
+    fps: float = 15.0,
+) -> list[str]:
+    """One GIF per cell, every one on SEED0 with no selection (spec section 4).
+
+    A cell whose GIF exists is skipped; a cell with no record stops the pass
+    BEFORE anything is rendered. Nothing here writes a record or a round
+    artefact — visuals carry no verdict."""
+    from pe2.render import save_gif
+
+    wanted = list(CELLS) if names is None else list(names)
+    unknown = [n for n in wanted if n not in CELLS]
+    if unknown:
+        raise SystemExit(f"unknown cell(s): {unknown}")
+    todo = [n for n in wanted if not gif_path(n).exists()]
+    missing = [n for n in todo if not (cells_dir() / f"{n}.json").exists()]
+    if missing:
+        raise SystemExit(
+            f"no cell record for {missing}: run --cells first. A GIF title carries "
+            "that cell's measured deadlock and capture rates and is never "
+            "fabricated (spec section 4)."
+        )
+    print(
+        f"{len(todo)}/{len(wanted)} GIFs to render "
+        f"({len(wanted) - len(todo)} already exist), all on seed {SEED0}",
+        flush=True,
+    )
+    gifs_dir().mkdir(parents=True, exist_ok=True)
+    for name in todo:
+        frames, log = render_cell(name, gif_title(read_cell(name)), device, every)
+        path = gif_path(name)
+        save_gif(frames, str(path), fps=fps)
+        print(
+            f"wrote {path} ({len(frames)} frames; {log['outcome']} @ {log['steps']})",
+            flush=True,
+        )
+    return todo
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--cells", nargs="*", default=None)
     p.add_argument("--summarize", action="store_true")
+    p.add_argument("--gifs", nargs="*", default=None)
+    p.add_argument("--every", type=int, default=4)
     p.add_argument("--device", default="cpu")
     p.add_argument("--workers", type=int, default=MAX_WORKERS)
     args = p.parse_args()
@@ -1164,6 +1340,8 @@ def main() -> None:
             f"\ncells {v['n_records']}/{v['n_cells']}"
             f"{'' if v['complete'] else ' — INCOMPLETE'}"
         )
+    if args.gifs is not None:
+        write_gifs(args.gifs or None, args.device, args.every)
 
 
 if __name__ == "__main__":
