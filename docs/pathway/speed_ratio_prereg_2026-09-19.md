@@ -76,3 +76,23 @@ seen. Consumed streams before this round: ≤ 1 338 999 (S11's V-P), plus the 1 
 
 `results/derisk/s13_cells/*.json`, `s13_round.{json,png}`; runner `scripts/derisk_s13_speed.py`
 (`--cells | --summarize`, ≤ 6 workers, `OMP_NUM_THREADS=2`), run from a frozen worktree.
+
+## Amendment S13-A1 (2026-09-19, before any cell exists)
+
+Two points raised by the implementer, both settled before any number:
+
+**1. H-SPD-2's power, checked by calculation, not by looking.** The Wald half-width at n = 300 is
+`1.96·sqrt(b + c − (b − c)²/n)/n`, which grows with the discordant count. It exceeds the ±0.10 margin only once
+`b + c ≳ 234`, i.e. 78 % of episodes discordant. Two outcomes drawn independently at rate p have expected
+discordance `2p(1 − p)`, which peaks at 0.50 (b + c ≈ 150, half-width ≈ **0.080**) and is ≈ 0.42 at p = 0.3.
+The test is therefore **able to confirm** at every plausible rate; it can only be rendered uninformative by
+discordance above ~78 %, which requires the two ratios' outcomes to be anti-correlated and would itself be a
+reportable finding. **The margin and n stay as pre-registered.** If a cell pair does return `b + c > 234`, its
+verdict is reported as `UNDETERMINED (underpowered)` rather than `NOT CONFIRMED`, and the discordance is
+reported — this rule is fixed here, before any number.
+
+**2. A validity gate is added: `check_ratio_pairing`.** H-SPD-2 is a paired test ACROSS ratios, so it requires
+that a seed produce the same arena and the same initial poses at every ratio. It does: the env draws obstacles
+and poses before any speed is applied, and `evader_speed_ratio` changes no draw. The runner asserts this on the
+first seed (the analogue of S9's `check_obstacles_nested`) and records the result in `s13_round.json`. If the
+assertion fails, H-SPD-2 is not computed and is reported as `INVALID (unpaired)`.
