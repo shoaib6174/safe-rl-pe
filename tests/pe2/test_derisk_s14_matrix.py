@@ -143,6 +143,20 @@ def _all_confirm(spec):
     return _BASE[d] + (_OWN_BONUS if R.TRAINED_AGAINST.get(a) == d else 0.0)
 
 
+# RCM28 and FT-B-41 tie on BOTH axes: the lowest worst-case deadlock rate and
+# the highest worst-case capture rate, so `free_lunch` is True with no single
+# dominator.
+_TIED = ("RCM28", "FT-B-41")
+
+
+def _tied_both_axes(spec):
+    return 0.2 if spec["defender"] in _TIED else 0.8
+
+
+def _tied_both_capture(spec):
+    return 0.9 if spec["defender"] in _TIED else 0.1
+
+
 # ---------------------------------------------------------------- enumeration
 class TestCells:
     def test_six_defenders_seven_attackers_is_forty_two_cells(self):
@@ -439,20 +453,95 @@ class TestMat1:
         assert s["hypothesis"] == "H-MAT-1"
         assert s["verdict"] == "CONFIRMED"
         assert s["n_specialised"] == 4
+        assert s["n_ambiguous"] == 0
+        assert s["ambiguous"] == []
+        assert s["general"] == []
         for a in R.LEARNED:
             block = s["attackers"][a]
             assert block["verdict"] == "SPECIALISED", a
             assert block["own_defender"] == R.TRAINED_AGAINST[a]
             assert block["argmax_defender"] == R.TRAINED_AGAINST[a]
+            # A1.2: SPECIALISED needs the paired test, not just the argmax
+            assert block["test"]["pass"] is True, a
 
     def test_the_comparator_is_the_next_highest_defender(self):
         s = R.mat1_verdicts(_records(_all_confirm))
         block = s["attackers"]["CTL-D125"]
         # own STR14 0.75; the next highest in that column is TEACHER at 0.35
         assert block["comparator_defender"] == "TEACHER"
+        assert block["comparator_rate"] == pytest.approx(0.35)
+        assert block["own_rate"] == pytest.approx(0.75)
         assert block["test"]["rate_a"] == pytest.approx(0.75)
         assert block["test"]["rate_b"] == pytest.approx(0.35)
         assert block["test"]["pass"] is True
+        assert block["p_vs_runner_up"] == block["test"]["p"]
+        assert block["p_vs_runner_up"] < R.P_GATE
+
+    def test_an_exact_tie_with_the_runner_up_is_ambiguous_not_specialised(self):
+        """A1.2: a tie is not a pass. Equal rates force b == c, so the paired
+        test cannot pass and the attacker lands in AMBIGUOUS."""
+        recs = _records(_all_confirm)
+        _set_ind(recs, "STR14__CTL-D125", _ind(0.35, 300))  # == TEACHER's rate
+        s = R.mat1_verdicts(recs)
+        block = s["attackers"]["CTL-D125"]
+        assert block["own_rate"] == block["comparator_rate"]
+        # own is still AN argmax; the tie-break picks the first in row order, so
+        # the whole argmax set is reported alongside it
+        assert block["own_defender"] in block["argmax_defenders"]
+        assert block["argmax_defenders"] == ["TEACHER", "STR14"]
+        assert block["argmax_defender"] == "TEACHER"
+        assert block["verdict"] == "AMBIGUOUS"
+        assert block["test"]["b"] == block["test"]["c"] == 0
+        assert block["p_vs_runner_up"] == pytest.approx(1.0)
+        assert s["ambiguous"] == ["CTL-D125"]
+        assert s["n_ambiguous"] == 1
+        assert s["general"] == []
+        # 3 of 4 still SPECIALISED, so the round still confirms
+        assert s["n_specialised"] == 3
+        assert s["verdict"] == "CONFIRMED"
+
+    def test_argmax_without_significance_is_ambiguous(self):
+        """b = 5, c = 0 of 300 -> p = 0.0625: the own defender is the argmax but
+        not significantly above the runner-up."""
+        recs = _records(_all_confirm)
+        _set_ind(recs, "TEACHER__CTL-D125", _ind(105 / 300, 300))
+        _set_ind(recs, "STR14__CTL-D125", _ind(110 / 300, 300))
+        block = R.mat1_verdicts(recs)["attackers"]["CTL-D125"]
+        assert block["own_rate"] > block["comparator_rate"]
+        assert block["argmax_defender"] == "STR14"
+        assert block["test"]["b"] == 5
+        assert block["test"]["c"] == 0
+        assert block["p_vs_runner_up"] == pytest.approx(0.0625)
+        assert block["verdict"] == "AMBIGUOUS"
+
+    def test_ambiguous_attackers_neither_confirm_nor_refute(self):
+        """Two AMBIGUOUS attackers leave only 2 SPECIALISED, below CONFIRM_MIN,
+        with no GENERAL attacker at all."""
+        recs = _records(_all_confirm)
+        _set_ind(recs, "STR14__CTL-D125", _ind(0.35, 300))  # tie with TEACHER
+        _set_ind(recs, "RC19__CTL-D225", _ind(0.35, 300))  # tie with TEACHER
+        s = R.mat1_verdicts(recs)
+        assert sorted(s["ambiguous"]) == ["CTL-D125", "CTL-D225"]
+        assert s["n_ambiguous"] == 2
+        assert s["n_specialised"] == 2
+        assert s["general"] == []
+        assert s["verdict"] == "NOT CONFIRMED"
+
+    def test_the_three_outcomes_can_coexist(self):
+        recs = _records(
+            lambda spec: (
+                0.90
+                if (spec["attacker"] == "ATK2-31" and spec["defender"] == "TEACHER")
+                else _all_confirm(spec)
+            )
+        )
+        _set_ind(recs, "STR14__CTL-D125", _ind(0.35, 300))  # tie -> AMBIGUOUS
+        s = R.mat1_verdicts(recs)
+        assert s["attackers"]["CTL-D125"]["verdict"] == "AMBIGUOUS"
+        assert s["attackers"]["ATK2-31"]["verdict"] == "GENERAL"
+        assert s["attackers"]["CTL-D225"]["verdict"] == "SPECIALISED"
+        assert (s["n_specialised"], s["n_ambiguous"], len(s["general"])) == (2, 1, 1)
+        assert s["verdict"] == "NOT CONFIRMED"
 
     def test_an_attacker_stronger_elsewhere_is_general_and_reports_the_p(self):
         def rate(spec):
@@ -514,6 +603,27 @@ class TestMat2:
         tested = [p for p in R.ORDERING if p[1] == "<"]
         assert len(tested) == 4
 
+    def test_amendment_a2_pins_exactly_these_four_tested_comparisons(self):
+        """A2 corrected A1.3's miscount: the tested set is these FOUR pairwise
+        comparisons and H-MAT-2 is CONFIRMED iff all four hold. Pinned by name
+        so the set cannot drift once cells start running."""
+        assert R.TESTED_RELATIONS == (
+            "RCM28 < FT-B-41",
+            "RCM28 < SEL-A-50",
+            "FT-B-41 < RC19",
+            "SEL-A-50 < RC19",
+        )
+        assert R.DESCRIPTIVE_RELATIONS == (
+            "FT-B-41 ~ SEL-A-50",
+            "RC19 <= STR14",
+            "STR14 <= TEACHER",
+        )
+        assert len(R.TESTED_RELATIONS) + len(R.DESCRIPTIVE_RELATIONS) == len(R.ORDERING)
+        s = R.mat2_verdicts(_records(_all_confirm))
+        assert s["n_tested"] == 4
+        assert s["tested_relations"] == list(R.TESTED_RELATIONS)
+        assert s["descriptive_relations"] == list(R.DESCRIPTIVE_RELATIONS)
+
     def test_the_worst_case_is_the_max_over_the_seven_attackers(self):
         s = R.mat2_verdicts(_records(_all_confirm))
         for d, w in _W.items():
@@ -542,12 +652,37 @@ class TestMat2:
             == "SPLITHUG"
         )
 
-    def test_the_weak_and_approximate_relations_are_reported_not_tested(self):
+    def test_the_descriptive_relations_store_no_pass_fail(self):
+        """A2: `~` and both `<=` are reported, never tested, and no pass/fail is
+        stored — nothing a reader of s14_round.json could mistake for a test."""
         s = R.mat2_verdicts(_records(_all_confirm))
-        for key in ("FT-B-41 ~ SEL-A-50", "RC19 <= STR14", "STR14 <= TEACHER"):
-            assert s["relations"][key]["tested"] is False
-        for key in ("RCM28 < FT-B-41", "SEL-A-50 < RC19"):
-            assert s["relations"][key]["tested"] is True
+        for key in R.DESCRIPTIVE_RELATIONS:
+            rel = s["relations"][key]
+            assert rel["tested"] is False
+            assert "test" not in rel
+            assert "holds" not in rel
+            assert "descriptive" in rel["note"]
+            # the rates themselves are still reported
+            assert set(rel["deadlock_rate_in_comparator_column"]) == {
+                rel["lower"],
+                rel["higher"],
+            }
+            assert set(rel["worst_case"]) == {rel["lower"], rel["higher"]}
+        for key in R.TESTED_RELATIONS:
+            rel = s["relations"][key]
+            assert rel["tested"] is True
+            assert isinstance(rel["test"]["pass"], bool)
+            assert isinstance(rel["holds"], bool)
+
+    def test_a_descriptive_relation_can_never_fail_the_hypothesis(self):
+        # invert RC19 <= STR14 hard: STR14's worst case drops far below RC19's
+        recs = _records(_all_confirm)
+        for a in R.ATTACKERS:
+            _set_ind(recs, R.cell_name("STR14", a), _ind(0.01, 300))
+        s = R.mat2_verdicts(recs)
+        assert s["relations"]["RC19 <= STR14"]["worst_case_ordered"] is False
+        assert s["inversions"] == []
+        assert s["verdict"] == "CONFIRMED"
 
     def test_an_inverted_worst_case_fails_and_names_the_pair(self):
         # RCM28's own attacker pins it at 0.66, above FT-B-41's 0.65 but below
@@ -592,6 +727,7 @@ class TestMat3:
         r = R.mat3_report(recs)
         assert r["hypothesis"] == "H-MAT-3"
         assert r["dominating"] == "RCM28"
+        assert r["attaining_both"] == ["RCM28"]
         assert r["free_lunch"] is True
         assert r["worst_case_deadlock"]["RCM28"] == pytest.approx(0.50)
         assert r["worst_case_capture"]["RCM28"] == pytest.approx(0.5)
@@ -603,8 +739,19 @@ class TestMat3:
         )
         r = R.mat3_report(recs)
         assert r["dominating"] is None
+        assert r["attaining_both"] == []
         assert r["free_lunch"] is False
         assert sorted(r["pareto"]) == ["RCM28", "TEACHER"]
+
+    def test_a_tie_on_both_axes_is_explicit_and_not_a_lone_dominator(self):
+        """Two defenders tied on both extremes: `free_lunch` is True but
+        `dominating` is None, so the tied set must be reported explicitly or the
+        prose and the artefact disagree."""
+        recs = _records(_tied_both_axes, capture_fn=_tied_both_capture)
+        r = R.mat3_report(recs)
+        assert r["attaining_both"] == ["RCM28", "FT-B-41"]
+        assert r["dominating"] is None
+        assert r["free_lunch"] is True
 
     def test_the_capture_axis_is_the_worst_case_too(self):
         recs = _records(
@@ -758,8 +905,40 @@ class TestDirection:
         d = R.direction(R.verdicts(_records(_all_confirm)))
         assert "H-MAT-1 CONFIRMED" in d
         assert "iterated best-response" in d
+        assert "4 SPECIALISED, 0 AMBIGUOUS, 0 GENERAL of 4" in d
         assert "H-MAT-2 CONFIRMED" in d
         assert "worst-case test" in d
+
+    def test_the_descriptive_relations_are_named_as_untested(self):
+        """A2: their untested status must be visible, not buried in the JSON."""
+        d = R.direction(R.verdicts(_records(_all_confirm)))
+        assert "Not tested (amendment A2, descriptive only)" in d
+        for key in R.DESCRIPTIVE_RELATIONS:
+            assert key in d
+
+    def test_an_ambiguity_only_shortfall_is_not_a_generality_claim(self):
+        recs = _records(_all_confirm)
+        _set_ind(recs, "STR14__CTL-D125", _ind(0.35, 300))
+        _set_ind(recs, "RC19__CTL-D225", _ind(0.35, 300))
+        v = R.verdicts(recs)
+        assert v["mat1"]["verdict"] == "NOT CONFIRMED"
+        assert v["mat1"]["general"] == []
+        d = R.direction(v)
+        assert "2 SPECIALISED, 2 AMBIGUOUS, 0 GENERAL of 4" in d
+        assert "no generality claim is licensed" in d
+        assert "The shortfall is resolution, not generality" in d
+        assert "property of the shield" not in d
+        assert "CTL-D125" in d and "CTL-D225" in d
+
+    def test_ambiguous_attackers_are_reported_even_when_the_round_confirms(self):
+        recs = _records(_all_confirm)
+        _set_ind(recs, "STR14__CTL-D125", _ind(0.35, 300))
+        v = R.verdicts(recs)
+        assert v["mat1"]["verdict"] == "CONFIRMED"
+        d = R.direction(v)
+        assert "3 SPECIALISED, 1 AMBIGUOUS, 0 GENERAL of 4" in d
+        assert "neither confirm nor refute" in d
+        assert "CTL-D125" in d
 
     def test_general_attackers_become_a_generality_claim(self):
         def rate(spec):
@@ -795,6 +974,42 @@ class TestDirection:
         d = R.direction(v)
         assert "RCM28" in d
         assert "recommendation" in d
+
+    def test_a_transfer_only_recommendation_carries_the_caveat(self):
+        """Spec section 2 requires the label everywhere, and `direction` is the
+        string most likely to end up in the paper."""
+
+        def rate(spec):
+            return 0.05 if spec["defender"] == "SEL-A-50" else 0.80
+
+        v = R.verdicts(_records(rate))
+        assert v["meta_deadlock"]["row_support"] == ["SEL-A-50"]
+        d = R.direction(v)
+        assert (
+            "SEL-A-50 is the paper's recommendation, with a quantified "
+            "equilibrium value. Transfer-only caveat (spec section 2): SEL-A-50"
+        ) in d
+        assert "is not a best response" in d
+
+    def test_the_transfer_only_caveat_names_both_rows_when_both_are_subjects(self):
+        d = R.direction(R.verdicts(_records(_all_confirm)))
+        # the H-MAT-2 clause's subject is the whole ordering, which spans both
+        assert "Transfer-only caveat (spec section 2): TEACHER, SEL-A-50" in d
+        assert "are TRANSFER-ONLY rows" in d
+
+    def test_the_caveat_is_absent_where_no_transfer_only_row_is_a_subject(self):
+        assert R._transfer_note(["RCM28", "RC19"]) == ""
+        assert "TRANSFER-ONLY" in R._transfer_note(["RCM28", "TEACHER"])
+        assert "is a TRANSFER-ONLY row" in R._transfer_note(["TEACHER"])
+
+    def test_a_tie_on_both_axes_is_reported_as_a_tie_not_as_no_free_lunch(self):
+        v = R.verdicts(_records(_tied_both_axes, capture_fn=_tied_both_capture))
+        assert v["mat3"]["free_lunch"] is True
+        assert v["mat3"]["dominating"] is None
+        d = R.direction(v)
+        assert "RCM28, FT-B-41 JOINTLY attain both" in d
+        assert "a tie, so no single defender dominates" in d
+        assert "no defender attains both" not in d
 
     def test_a_violation_stops_the_round_before_anything_else_is_read(self):
         bad = R.cell_name("RC19", "CTL-D225")
@@ -900,3 +1115,50 @@ class TestSummarize:
         blob = R.summarize()
         assert (tmp_path / "s14_round.png").exists()
         assert blob["verdicts"]["complete"] is False
+
+
+# -------------------------------------------------------- the printed summary
+class TestPrintedSummary:
+    def _run(self, tmp_path, monkeypatch, capsys, rate_fn=_all_confirm, **kw):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        monkeypatch.setattr("sys.argv", ["derisk_s14_matrix.py", "--summarize"])
+        R.cells_dir().mkdir(parents=True)
+        for rec in _records(rate_fn, **kw).values():
+            R.write_cell(rec)
+        R.main()
+        return capsys.readouterr().out
+
+    def test_the_untested_relations_are_named_in_the_print_not_only_the_json(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A2: 'their untested status must be visible in the printed summary,
+        not only in the JSON'."""
+        out = self._run(tmp_path, monkeypatch, capsys)
+        assert "H-MAT-2 NOT tested (A2, descriptive only, no pass/fail stored)" in out
+        for key in R.DESCRIPTIVE_RELATIONS:
+            assert key in out
+        assert "H-MAT-2 tested (A2, 4 comparisons, all must hold)" in out
+        for key in R.TESTED_RELATIONS:
+            assert key in out
+
+    def test_the_three_h_mat_1_outcomes_are_named_in_the_print(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        out = self._run(tmp_path, monkeypatch, capsys)
+        assert '"n_ambiguous"' in out
+        assert '"ambiguous"' in out
+        assert "SPECIALISED = argmax AND significant vs the runner-up" in out
+        assert "AMBIGUOUS = argmax but not significant" in out
+        assert "GENERAL = another defender strictly higher" in out
+
+    def test_the_mat3_tie_set_is_printed(self, tmp_path, monkeypatch, capsys):
+        out = self._run(
+            tmp_path,
+            monkeypatch,
+            capsys,
+            rate_fn=_tied_both_axes,
+            capture_fn=_tied_both_capture,
+        )
+        assert '"attaining_both"' in out
+        assert '"free_lunch": true' in out
+        assert "JOINTLY attain both" in out

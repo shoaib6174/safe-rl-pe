@@ -164,8 +164,10 @@ TRANSFER_ONLY = tuple(d for d in DEFENDERS if d not in set(TRAINED_AGAINST.value
 # H-MAT-2's pre-registered ordering on the worst case, written out pairwise.
 # The spec's chain is
 #     RCM28 < FT-B-41 ~ SEL-A-50 < RC19 <= STR14 <= TEACHER
-# so the strict relations are every cross-group pair around each `<`; only
-# those four are TESTED. `~` (the spec's "≈") and `<=` are reported, not tested.
+# and amendment A2 settles the expansion: the substantive claim spans the `~`
+# pair, so the TESTED set is the FOUR cross-group pairs around the two `<`
+# symbols, and H-MAT-2 is CONFIRMED iff all four hold. `~` (the spec's "≈") and
+# both `<=` are descriptive: never tested, no pass/fail stored (A2).
 ORDERING = (
     ("RCM28", "<", "FT-B-41"),
     ("RCM28", "<", "SEL-A-50"),
@@ -426,9 +428,18 @@ def mat1_verdicts(records: dict) -> dict:
     — "the defender with the next-highest rate" when the attacker is specialised,
     and the argmax itself when it is not — and the test is
     `paired_indicator_test(own, other)`, which is meaningful because every cell
-    of the round runs the same 300 seeds. SPECIALISED iff the own defender
-    attains the column maximum; GENERAL otherwise, reported with the paired p.
-    CONFIRMED iff >= CONFIRM_MIN of the 4 are SPECIALISED."""
+    of the round runs the same 300 seeds.
+
+    Amendment A1.2 makes the outcome three-way, and a tie is NOT a pass:
+      SPECIALISED  the own defender is the argmax of the row AND is
+                   significantly above the runner-up (the paired test passes,
+                   i.e. p < P_GATE and b > c);
+      AMBIGUOUS    the own defender is the argmax but not significantly above
+                   the runner-up. An exact tie lands here by construction: equal
+                   rates force b == c, so the paired test cannot pass;
+      GENERAL      some other defender is strictly higher.
+    CONFIRMED iff >= CONFIRM_MIN of the 4 are SPECIALISED. AMBIGUOUS neither
+    confirms nor refutes and is reported with its p against the runner-up."""
     attackers: dict = {}
     for a in LEARNED:
         own = TRAINED_AGAINST[a]
@@ -443,28 +454,45 @@ def mat1_verdicts(records: dict) -> dict:
             continue
         rates = {d: records[names[d]]["deadlock_rate"] for d in DEFENDERS}
         other = max((d for d in DEFENDERS if d != own), key=lambda d: rates[d])
+        best = max(rates.values())
+        # `argmax_defender` breaks a tie by row order; `argmax_defenders`
+        # carries the whole argmax set, so a tie is visible in the artefact
+        # rather than hidden behind the tie-break (A1.2 makes a tie
+        # AMBIGUOUS, so it must be readable).
         argmax = max(DEFENDERS, key=lambda d: rates[d])
+        argmax_all = [d for d in DEFENDERS if rates[d] == best]
+        test = {
+            "test": "paired_indicator",
+            **paired_indicator_test(
+                records[names[own]]["deadlock_ind"],
+                records[names[other]]["deadlock_ind"],
+                P_GATE,
+            ),
+        }
+        if rates[own] < rates[other]:
+            verdict = "GENERAL"
+        elif test["pass"]:
+            verdict = "SPECIALISED"
+        else:
+            verdict = "AMBIGUOUS"
         attackers[a] = {
-            "verdict": "SPECIALISED" if rates[own] >= rates[other] else "GENERAL",
+            "verdict": verdict,
             "own_defender": own,
             "own_cell": names[own],
             "own_rate": rates[own],
             "argmax_defender": argmax,
+            "argmax_defenders": argmax_all,
             "comparator_defender": other,
             "comparator_cell": names[other],
+            "comparator_rate": rates[other],
+            "p_vs_runner_up": test["p"],
             "rates": rates,
             "transfer_only_defenders": list(TRANSFER_ONLY),
-            "test": {
-                "test": "paired_indicator",
-                **paired_indicator_test(
-                    records[names[own]]["deadlock_ind"],
-                    records[names[other]]["deadlock_ind"],
-                    P_GATE,
-                ),
-            },
+            "test": test,
         }
     verdicts_ = [b["verdict"] for b in attackers.values()]
     n_spec = sum(v == "SPECIALISED" for v in verdicts_)
+    n_amb = sum(v == "AMBIGUOUS" for v in verdicts_)
     if "INCOMPLETE" in verdicts_:
         overall = "INCOMPLETE"
     elif n_spec >= CONFIRM_MIN:
@@ -475,9 +503,11 @@ def mat1_verdicts(records: dict) -> dict:
         "hypothesis": "H-MAT-1",
         "verdict": overall,
         "n_specialised": n_spec,
+        "n_ambiguous": n_amb,
         "confirm_min": CONFIRM_MIN,
         "scoring": list(LEARNED),
         "general": [a for a, b in attackers.items() if b["verdict"] == "GENERAL"],
+        "ambiguous": [a for a, b in attackers.items() if b["verdict"] == "AMBIGUOUS"],
         "attackers": attackers,
     }
 
@@ -488,21 +518,20 @@ def _relation(records: dict, worst: dict, lo: str, hi: str, rel: str) -> dict:
     The comparator is the attacker that attains the LARGER side's maximum (spec
     section 3), and the paired test is run in that single column — the two
     defenders met the same evader on the same 300 seeds there, so the episodes
-    pair. A `<` HOLDS iff the worst cases are in the claimed order AND that
-    paired test passes at p < P_GATE; an ordering that inverts can never be
-    rescued by a significant test in some other column, and a gap too small to
-    separate is not a demonstrated `<`."""
+    pair. Amendment A1.1: a `<` HOLDS iff the worst cases are in the claimed
+    order AND that paired test passes at p < P_GATE; an ordering that inverts
+    can never be rescued by a significant test in some other column, and a gap
+    too small to separate is not a demonstrated `<`.
+
+    Amendment A2: `~` and `<=` are DESCRIPTIVE. No test is run for them and no
+    pass/fail is stored — the block carries the two worst cases and the two
+    rates in the comparator column and nothing a reader could mistake for a
+    verdict."""
     comparator = worst[hi]["attacker"]
     a_name, b_name = cell_name(hi, comparator), cell_name(lo, comparator)
-    test = {
-        "test": "paired_indicator",
-        **paired_indicator_test(
-            records[a_name]["deadlock_ind"], records[b_name]["deadlock_ind"], P_GATE
-        ),
-    }
     ordered = worst[lo]["deadlock_rate"] < worst[hi]["deadlock_rate"]
     tested = rel == "<"
-    return {
+    block = {
         "lower": lo,
         "higher": hi,
         "relation": rel,
@@ -514,37 +543,68 @@ def _relation(records: dict, worst: dict, lo: str, hi: str, rel: str) -> dict:
             hi: worst[hi]["deadlock_rate"],
         },
         "worst_case_ordered": bool(ordered),
-        "test": test,
-        "holds": bool(ordered and test["pass"]) if tested else None,
     }
+    if not tested:
+        block["deadlock_rate_in_comparator_column"] = {
+            lo: records[b_name]["deadlock_rate"],
+            hi: records[a_name]["deadlock_rate"],
+        }
+        block["note"] = (
+            "descriptive (amendment A2): reported, never tested, no pass/fail stored"
+        )
+        return block
+    test = {
+        "test": "paired_indicator",
+        **paired_indicator_test(
+            records[a_name]["deadlock_ind"], records[b_name]["deadlock_ind"], P_GATE
+        ),
+    }
+    block["test"] = test
+    block["holds"] = bool(ordered and test["pass"])
+    return block
+
+
+def relation_key(lo: str, rel: str, hi: str) -> str:
+    return f"{lo} {rel} {hi}"
+
+
+TESTED_RELATIONS = tuple(relation_key(*t) for t in ORDERING if t[1] == "<")
+DESCRIPTIVE_RELATIONS = tuple(relation_key(*t) for t in ORDERING if t[1] != "<")
 
 
 def mat2_verdicts(records: dict) -> dict:
     """H-MAT-2: on each defender's worst-case deadlock rate
     `w(d) = max over the 7 attackers`, the pre-registered ordering
-    `RCM28 < FT-B-41 ~ SEL-A-50 < RC19 <= STR14 <= TEACHER` holds. Every strict
-    `<` is tested; `~` and `<=` are reported. CONFIRMED iff every `<` holds."""
+    `RCM28 < FT-B-41 ~ SEL-A-50 < RC19 <= STR14 <= TEACHER` holds.
+
+    Amendment A2: the tested set is the FOUR pairwise `<` comparisons
+    (`TESTED_RELATIONS`) and H-MAT-2 is CONFIRMED iff all four hold;
+    `DESCRIPTIVE_RELATIONS` are reported, never tested, and carry no
+    pass/fail."""
     worst = worst_case_deadlock(records)
     missing = [n for n in CELLS if n not in records]
     if any(w is None for w in worst.values()):
         return {
             "hypothesis": "H-MAT-2",
             "verdict": "INCOMPLETE",
-            "ordering": [" ".join(t) for t in ORDERING],
+            "ordering": [relation_key(*t) for t in ORDERING],
+            "tested_relations": list(TESTED_RELATIONS),
+            "descriptive_relations": list(DESCRIPTIVE_RELATIONS),
             "missing": missing,
         }
     relations = {
-        f"{lo} {rel} {hi}": _relation(records, worst, lo, hi, rel)
+        relation_key(lo, rel, hi): _relation(records, worst, lo, hi, rel)
         for lo, rel, hi in ORDERING
     }
-    tested = {k: b for k, b in relations.items() if b["tested"]}
-    inversions = [k for k, b in tested.items() if not b["holds"]]
+    inversions = [k for k in TESTED_RELATIONS if not relations[k]["holds"]]
     return {
         "hypothesis": "H-MAT-2",
         "verdict": "CONFIRMED" if not inversions else "NOT CONFIRMED",
-        "ordering": [" ".join(t) for t in ORDERING],
-        "n_tested": len(tested),
-        "n_holding": len(tested) - len(inversions),
+        "ordering": [relation_key(*t) for t in ORDERING],
+        "tested_relations": list(TESTED_RELATIONS),
+        "descriptive_relations": list(DESCRIPTIVE_RELATIONS),
+        "n_tested": len(TESTED_RELATIONS),
+        "n_holding": len(TESTED_RELATIONS) - len(inversions),
         "inversions": inversions,
         "worst_case": worst,
         "transfer_only": list(TRANSFER_ONLY),
@@ -558,7 +618,13 @@ def mat3_report(records: dict) -> dict:
     highest worst-case capture rate `c(d) = min over the 7 attackers`. The
     Pareto frontier over `(w(d), -c(d))` is reported; if one defender dominates
     — it is both the argmin of w and the argmax of c — that is stated plainly
-    instead and `free_lunch` is True."""
+    instead and `free_lunch` is True.
+
+    Ties are explicit rather than implied: `attaining_both` lists every defender
+    that attains both extremes, `dominating` is set only when that list has
+    exactly one member, and `free_lunch` is True whenever the list is non-empty.
+    `direction()` reads all three, so the prose and the artefact cannot disagree
+    when two defenders tie."""
     wd, wc = worst_case_deadlock(records), worst_case_capture(records)
     complete = all(v is not None for v in wd.values()) and all(
         v is not None for v in wc.values()
@@ -568,6 +634,7 @@ def mat3_report(records: dict) -> dict:
             "hypothesis": "H-MAT-3",
             "complete": False,
             "pareto": None,
+            "attaining_both": None,
             "dominating": None,
             "free_lunch": None,
             "missing": [n for n in CELLS if n not in records],
@@ -593,6 +660,7 @@ def mat3_report(records: dict) -> dict:
         "worst_case_capture_attacker": {d: wc[d]["attacker"] for d in DEFENDERS},
         "lowest_worst_case_deadlock": [d for d in DEFENDERS if w[d] == best_w],
         "highest_worst_case_capture": [d for d in DEFENDERS if c[d] == best_c],
+        "attaining_both": winners,
         "dominating": winners[0] if len(winners) == 1 else None,
         "free_lunch": bool(winners),
         "pareto": pareto,
@@ -729,10 +797,36 @@ def verdicts(records: dict) -> dict:
     }
 
 
+def _transfer_note(names) -> str:
+    """Spec section 2 requires the transfer-only rows to be labelled EVERYWHERE,
+    and `direction` is the string most likely to be pasted into the paper. Any
+    clause whose subject could be TEACHER or SEL-A-50 carries this."""
+    # canonical row order, so the caveat reads the same wherever it is raised
+    hits = [n for n in TRANSFER_ONLY if n in set(names)]
+    if not hits:
+        return ""
+    return (
+        f" Transfer-only caveat (spec section 2): {', '.join(hits)} "
+        f"{'is a TRANSFER-ONLY row' if len(hits) == 1 else 'are TRANSFER-ONLY rows'} "
+        "— no attacker was trained against "
+        f"{'it' if len(hits) == 1 else 'them'}, so "
+        f"{'its worst case is not a best response' if len(hits) == 1 else 'their worst cases are not best responses'} "
+        "and no claim here is a worst-case-over-best-responses claim for "
+        f"{'it' if len(hits) == 1 else 'them'}."
+    )
+
+
 def direction(v: dict) -> str:
     """Spec section 5, one clause per row, in the spec's order of precedence:
     H-SAFE first (a contact step stops the round), then completeness, then
-    H-MAT-1, H-MAT-2, the meta-game and H-MAT-3."""
+    H-MAT-1, H-MAT-2, the meta-game and H-MAT-3.
+
+    Amendment A1.2 adds AMBIGUOUS to H-MAT-1, and the spec section 5 row
+    "attackers are GENERAL" is only warranted when at least one attacker
+    actually IS general: a shortfall made of ambiguity is a resolution problem,
+    not a generality finding, and is reported as such. Amendment A2's
+    descriptive relations are named in the H-MAT-2 clause so no reader takes
+    them for tested claims."""
     mat1, mat2, mat3, meta, hsafe_ = (
         v["mat1"],
         v["mat2"],
@@ -753,60 +847,108 @@ def direction(v: dict) -> str:
             "a verdict is read (spec section 5)."
         )
     parts = []
+    tally = (
+        f"{mat1['n_specialised']} SPECIALISED, {mat1['n_ambiguous']} AMBIGUOUS, "
+        f"{len(mat1['general'])} GENERAL of {len(LEARNED)}"
+    )
+    amb = (
+        ""
+        if not mat1["ambiguous"]
+        else (
+            f" The AMBIGUOUS attacker(s) {', '.join(mat1['ambiguous'])} are the "
+            "argmax of their own row but not significantly above the runner-up "
+            "(p = "
+            + ", ".join(
+                f"{a} {mat1['attackers'][a]['p_vs_runner_up']:.3g}"
+                for a in mat1["ambiguous"]
+            )
+            + "); under A1.2 they neither confirm nor refute, and no "
+            "defender-specificity claim may be made for them."
+        )
+    )
     if mat1["verdict"] == "CONFIRMED":
         parts.append(
-            f"H-MAT-1 CONFIRMED ({mat1['n_specialised']}/{len(LEARNED)} attackers "
-            "SPECIALISED): our best responses are genuinely defender-specific, so "
-            "the chain is a real iterated best-response sequence and the "
-            "exploitability numbers mean what we say."
+            f"H-MAT-1 CONFIRMED ({tally}): our best responses are genuinely "
+            "defender-specific, so the chain is a real iterated best-response "
+            f"sequence and the exploitability numbers mean what we say.{amb}"
+        )
+    elif mat1["general"]:
+        parts.append(
+            f"H-MAT-1 NOT CONFIRMED ({tally}; GENERAL: "
+            f"{', '.join(mat1['general'])}): the attack is a property of the "
+            "shield, not of any defender — weaker as an arms-race story, STRONGER "
+            f"as a generality claim. Report it as the latter.{amb}"
         )
     else:
         parts.append(
-            f"H-MAT-1 NOT CONFIRMED ({mat1['n_specialised']}/{len(LEARNED)} "
-            f"SPECIALISED; GENERAL: {', '.join(mat1['general']) or 'none'}): the "
-            "attack is a property of the shield, not of any defender — weaker as "
-            "an arms-race story, STRONGER as a generality claim. Report it as the "
-            "latter."
+            f"H-MAT-1 NOT CONFIRMED ({tally}): no attacker is stronger against a "
+            "defender other than its own, so this is NOT the 'attackers are "
+            "GENERAL' row of spec section 5 and no generality claim is licensed. "
+            "The shortfall is resolution, not generality: report the ambiguity."
+            f"{amb}"
         )
+    descriptive = (
+        " Not tested (amendment A2, descriptive only): "
+        f"{', '.join(mat2['descriptive_relations'])}."
+    )
     if mat2["verdict"] == "CONFIRMED":
         parts.append(
-            "H-MAT-2 CONFIRMED: the progression the paper narrates survives a "
-            "single-stream, worst-case test."
+            f"H-MAT-2 CONFIRMED (all {mat2['n_tested']} tested comparisons hold): "
+            "the progression the paper narrates survives a single-stream, "
+            f"worst-case test.{descriptive}"
+            + _transfer_note([d for t in ORDERING for d in (t[0], t[2])])
         )
     else:
         parts.append(
             f"H-MAT-2 NOT CONFIRMED ({mat2['n_holding']}/{mat2['n_tested']} "
             f"comparisons hold; inversions: {', '.join(mat2['inversions'])}): that "
             "defender's advantage was stream- or opponent-specific; the narrative "
-            "is corrected to what the matrix shows."
+            f"is corrected to what the matrix shows.{descriptive}"
+            + _transfer_note(
+                [
+                    d
+                    for k in mat2["inversions"]
+                    for d in (k.split(" < ")[0], k.split(" < ")[1])
+                ]
+            )
         )
-    if len(meta.get("row_support", [])) == 1:
-        d = meta["row_support"][0]
+    support = meta.get("row_support", [])
+    if len(support) == 1:
+        d = support[0]
         parts.append(
-            f"the deadlock meta-game's defender support is concentrated on {d} "
+            f"The deadlock meta-game's defender support is concentrated on {d} "
             f"(equilibrium deadlock rate {meta['value']:.3f}, attacker support "
             f"{', '.join(meta['col_support'])}): {d} is the paper's "
-            "recommendation, with a quantified equilibrium value."
+            "recommendation, with a quantified equilibrium value." + _transfer_note([d])
         )
     else:
         parts.append(
-            "the deadlock meta-game mixes "
-            f"{len(meta.get('row_support', []))} defenders "
-            f"({', '.join(meta.get('row_support', []))}) at equilibrium value "
-            f"{meta['value']:.3f}: no single defender is the recommendation — "
-            "report the mixture."
+            f"The deadlock meta-game mixes {len(support)} defenders "
+            f"({', '.join(support)}) at equilibrium value {meta['value']:.3f}: no "
+            "single defender is the recommendation — report the mixture."
+            + _transfer_note(support)
         )
+    both = mat3.get("attaining_both") or []
     if mat3.get("dominating"):
         parts.append(
             f"H-MAT-3: {mat3['dominating']} dominates — it attains BOTH the lowest "
             "worst-case deadlock rate and the highest worst-case capture rate, so "
             "there is a free lunch here and it is stated plainly."
+            + _transfer_note([mat3["dominating"]])
+        )
+    elif both:
+        parts.append(
+            f"H-MAT-3: {', '.join(both)} JOINTLY attain both the lowest worst-case "
+            "deadlock rate and the highest worst-case capture rate — a tie, so no "
+            "single defender dominates, but there is a free lunch and the tied set "
+            "is the recommendation." + _transfer_note(both)
         )
     else:
         parts.append(
             "H-MAT-3: no defender attains both the lowest worst-case deadlock rate "
-            f"and the highest worst-case capture rate; the Pareto frontier is "
+            "and the highest worst-case capture rate; the Pareto frontier is "
             f"{', '.join(mat3.get('pareto') or [])}."
+            + _transfer_note(mat3.get("pareto") or [])
         )
     return " ".join(parts)
 
@@ -954,16 +1096,46 @@ def main() -> None:
             json.dumps(
                 {
                     "mat1": {
-                        k: v["mat1"][k] for k in ("verdict", "n_specialised", "general")
+                        k: v["mat1"][k]
+                        for k in (
+                            "verdict",
+                            "n_specialised",
+                            "n_ambiguous",
+                            "ambiguous",
+                            "general",
+                        )
                     },
                     "mat2": {
                         k: v["mat2"][k]
-                        for k in ("verdict", "n_holding", "n_tested", "inversions")
+                        for k in (
+                            "verdict",
+                            "n_holding",
+                            "n_tested",
+                            "inversions",
+                            "tested_relations",
+                            "descriptive_relations",
+                        )
                         if k in v["mat2"]
                     },
                 },
                 indent=2,
             )
+        )
+        # A2: the untested status of the descriptive relations must be visible
+        # in the PRINTED summary, not only in the JSON.
+        print(
+            f"H-MAT-2 tested (A2, {len(TESTED_RELATIONS)} comparisons, all must "
+            f"hold): {'; '.join(TESTED_RELATIONS)}"
+        )
+        print(
+            "H-MAT-2 NOT tested (A2, descriptive only, no pass/fail stored): "
+            f"{'; '.join(DESCRIPTIVE_RELATIONS)}"
+        )
+        print(
+            "H-MAT-1 (A1.2): SPECIALISED = argmax AND significant vs the "
+            "runner-up; AMBIGUOUS = argmax but not significant (a tie lands "
+            "here) and neither confirms nor refutes; GENERAL = another defender "
+            "strictly higher."
         )
         print(json.dumps(v["hsafe"], indent=2))
         for key in ("meta_deadlock", "meta_capture"):
@@ -980,7 +1152,10 @@ def main() -> None:
             )
         print(
             json.dumps(
-                {k: v["mat3"].get(k) for k in ("dominating", "free_lunch", "pareto")},
+                {
+                    k: v["mat3"].get(k)
+                    for k in ("attaining_both", "dominating", "free_lunch", "pareto")
+                },
                 indent=2,
             )
         )
