@@ -92,3 +92,27 @@ needed* while surviving elsewhere. The hypothesis is excluded, not merely unsupp
 It is replaced by: **"P1 and P2 hold, P4 fails, P3 N/A"** — the same direction, with M3 read as the
 architectural exclusion above. Every other row stands. If a future round uses a state-dependent σ (a learned
 `log_std` head or `use_sde=True`), M3 becomes askable again and must be re-pre-registered.
+
+## Amendment S15-A2 (2026-09-20, before any measurement of this round exists)
+
+Three defects found in review, all in how M2 is measured. Fixed here, before any number.
+
+**1. The observation delta was measuring the agent's own clock, not the world.** `obs_deltas_median` is taken
+over the full observation, which includes the three S5 `shield_obs` features — one of which is the stall-run
+counter, ticking by exactly 1/40 every immobile step. A probe showed the raw 11 world dimensions move by
+median 0.00000 while the full vector moves by 0.02500, i.e. the reported number was the counter and nothing
+else. **The record must carry the raw-world delta and the shield-feature delta separately**, and the
+write-up must quote the raw-world one when it says whether the world stands still.
+
+**2. P2's median bar is structurally satisfied at `hold = 10`.** A held decision emits an identical action for
+ten steps, so the per-step median change is 0 by construction and P2 cannot be refuted in those cells. A probe
+found 8 nonzero changes in 1056 stalled steps, with a maximum of 0.0221 — above the 0.01 bar. **P2 is
+therefore evaluated on the `hold = 1` cells, where the median is not forced, and reported for `hold = 10`
+alongside as the degenerate case.** The bar itself (median per-step action change < 0.01) is unchanged; only
+which cells decide it is fixed here. The record must additionally carry, report-only, the **maximum** and the
+**nonzero fraction** of per-step action changes, so that "the policy never varies" and "the policy varies
+rarely but really" are distinguishable.
+
+**3. `direction()` still contains the row A1 removed.** The first §4 row must read "P1 and P2 hold, P4 fails,
+P3 N/A"; the code predates A1 and still requires P3 to FAIL, which A1 made impossible, so the round's own
+predicted outcome currently selects no row.
