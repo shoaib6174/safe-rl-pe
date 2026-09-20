@@ -132,3 +132,28 @@ round and must not be hidden inside a "non-match".
 `BASE` is not a remedy and is excluded from the match list; whether `BASE` itself happens to sit within the
 band of `REC` is reported separately, since that would indicate the recovery did nothing in this round and
 would put every other comparison in question.
+
+## Amendment S16-A4 (2026-09-20, recorded ~20 min after launch, BEFORE any arm has produced a gate number)
+
+**`MEM` is confounded and the confound is quantified here so it cannot be discovered afterwards.** §2 says
+every arm shares one configuration and differs in exactly one thing. That is true of `GAM`, `OBS` and `PEN`.
+It is **not** true of `MEM`: `sb3_contrib.RecurrentPPO`'s defaults differ from `PPO`'s in two hyperparameters
+that have nothing to do with recurrence —
+
+| parameter | `PPO` (every other arm) | `RecurrentPPO` (`MEM`) |
+|---|---|---|
+| `n_steps` | 2048 | **128** |
+| `batch_size` | 64 | **128** |
+
+so `MEM` collects rollouts 16× shorter and updates on 2× larger minibatches. With `hold = 10`, a 128-step
+rollout spans roughly 13 decisions, which is short relative to the ~629-step delay D128 measured between an
+escape and its consequence. **`MEM` therefore tests "RecurrentPPO at its defaults", not "memory, all else
+equal".**
+
+**Ruling: the arm runs as pre-registered and is REPORTED with this caveat attached wherever its number
+appears.** I am not re-specifying it mid-round to match `PPO`'s rollout length, because the arms are already
+training and changing one now would be the precise kind of after-the-fact adjustment the stop rule exists to
+prevent. The consequence is fixed here: **a `MEM` failure does NOT license the conclusion that memory fails**
+— only that this configuration did — and if `MEM` is the arm that matters to the eventual paper, it must be
+re-run in its own round with `n_steps` and `batch_size` matched to `BASE`. A `MEM` success is unaffected by
+the caveat and would be the stronger result for having been obtained under a shorter horizon.
