@@ -77,6 +77,13 @@ The honest question a reviewer will ask. Hypotheses to test, in order of likelih
 
 ## 4. Phase 2 — the fixes, pre-registered head to head (≈ 1.5 weeks compute)
 
+> **Updated by D128 (Phase 1 complete).** The measured mechanism is: frozen input (raw-world observation delta
+> 0.000, opponent visible on 2.4 % of stalled steps) + a discount horizon far shorter than the delay to the
+> consequence (escaping multiplies capture 7.1×, but 629 steps later, worth 0.009 at γ = 0.99; γ ≈ 0.9974
+> would be needed to reach even a 0.05 advantage). NOT exploration (σ identical at stalled and free states)
+> and NOT commitment (hold 10 → 1 changes immobility by < 0.05). **A γ / effective-horizon arm is therefore
+> promoted into Phase 2 alongside the four below, and is arguably the most diagnostic of them.**
+
 One round, four arms, same budget and seeds, judged on three axes at once: immobile-step rate, capture against
 ordinary evaders, and violations (which must stay zero).
 
