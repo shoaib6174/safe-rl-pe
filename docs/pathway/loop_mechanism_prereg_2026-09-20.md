@@ -116,3 +116,26 @@ rarely but really" are distinguishable.
 **3. `direction()` still contains the row A1 removed.** The first §4 row must read "P1 and P2 hold, P4 fails,
 P3 N/A"; the code predates A1 and still requires P3 to FAIL, which A1 made impossible, so the round's own
 predicted outcome currently selects no row.
+
+## Amendment S15-A3 (2026-09-20, written after 2 of 8 cells — disclosed, see below)
+
+**Disclosure first.** I am writing this having seen the first two cells (`FT-B-41__ATK4-45` at hold 10 and
+hold 1: immobile 0.251 and 0.258). Those two numbers are the ones P4 bears on. I am not changing a threshold
+or a rule; I am fixing a contradiction between §2 and §4 that existed from the moment this spec was written,
+and I am recording that I noticed it late rather than quietly reconciling the text.
+
+**The contradiction.** §2 labels M3 and M4 "(predicted to FAIL; control)" while stating P3 and P4 as **nulls**
+— "σ is NOT materially lower", "reducing the hold does NOT materially reduce immobility" — and then says "if
+P3 holds, entropy collapse is not the explanation" and "if P4 holds, commitment is not the explanation". So
+what I predicted to fail was the *hypothesis* (entropy collapse explains the loop; commitment explains the
+loop), which corresponds to the *prediction* P3/P4 **holding**. §4's first row then says "P3 and P4 fail",
+which is the opposite, and A1 only repaired the P3 half.
+
+**The operative reading, which is §2's prose and was always the intent:** the predicted picture is
+**P1 holds, P2 holds, P3 `N/A` (A1), P4 holds** — credit assignment and a frozen emitted action explain the
+loop; entropy collapse is excluded by architecture; commitment is excluded by measurement. §4's first row is
+corrected to that. The "if P4 fails" row in §4 keeps its meaning: a *failure* of P4 means the hold DOES reduce
+immobility by ≥ 0.05, which would implicate commitment and add an arm to Phase 2.
+
+**No threshold, cell, seed, policy or bar is altered by this amendment.** P4 still tests |Δ immobility| < 0.05
+between hold 10 and hold 1.
