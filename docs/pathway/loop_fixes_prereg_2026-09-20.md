@@ -73,3 +73,26 @@ seeds, budget, streams, thresholds (0.10, 0.05, 20 immobile steps for `REC`) are
 
 `results/derisk/s16_arm_<ARM>-<seed>.json`, `s16_probe_*`, `ckpts_<ARM>-<seed>/`, `s16_start.json`,
 `s16_round.{json,png}`; runner `scripts/derisk_s16_fixes.py`, run from a frozen worktree.
+
+## Amendment S16-A1 (2026-09-20, before any arm of this round exists): two claims corrected
+
+**1. The recovery's safety argument was overstated — by me, in D125 and in §2 above.** I wrote that the
+recovery "cannot create contact" because `v = 0` never translates the body. The code does not force `v = 0`:
+it asks the filter for `(0, ±ω_max)` and executes **the filter's output**, which the reviewer showed can carry
+`v > 0` at roughly one contact-free state in 1200. **The correct argument is the ordinary one: the recovery's
+action is filtered exactly like any other action, so its safety rests on the filter, not on the zero speed.**
+Empirically it emitted `v = 0` on all 5150 firings observed across 400 000 contact-free states, and safety is
+never worse than `BASE` because the same filter judges both. H-SAFE is unchanged and still counts every
+contact step; `REC` has no privileged status in it.
+
+**2. The escape feature is the LINEARISED admissible set, not the filter's exact one-step test.** §5 says the
+`OBS` outcome would establish a rule to "expose the filter's admissible set to the policy". What the feature
+exposes is the ω range admissible under the DCBF rows evaluated at `v = 0`, intersected with the action box —
+a linearisation. It matched the filter digit-for-digit at the state probed in review, but it is not
+guaranteed to. **Any claim from the `OBS` arm must say "linearised admissible set", and a failure of `OBS`
+does not rule out that the exact set would have worked.**
+
+Pending, non-blocking: two stale docstrings (`evaluate_structured` still says a shield carries no
+cross-episode state, which is false for `RecoveryShield`; and the recovery's own docstring repeats the
+overstated argument corrected above) are to be fixed after the S16 runner lands, to avoid editing `pe2/`
+while it is being built against.
