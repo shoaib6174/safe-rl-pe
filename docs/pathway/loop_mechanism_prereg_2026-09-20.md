@@ -76,3 +76,19 @@ thresholds (10 immobile steps for an entry, 40 for the escape window, 5 moving s
 
 `results/derisk/s15_cells/*.json` (per-cell records with the per-stall-entry table), `s15_round.{json,png}`;
 runner `scripts/derisk_s15_mechanism.py` (`--cells | --summarize`), run from a frozen worktree.
+
+## Amendment S15-A1 (2026-09-20, before any measurement of this round exists)
+
+**M3 cannot be measured as written, and that is the answer to M3.** The policies are SB3 `ActorCriticPolicy`
+with a `DiagGaussianDistribution` and `use_sde=False`, i.e. a **single learned `log_std` shared across all
+states** (FT-B-41: `[-0.8162, -1.3118]`). The runner verifies this empirically rather than assuming it, by
+recording the spread of σ over every observation seen (`sigma_spread`, expected exactly 0). P3's verdict is
+therefore **`N/A (state-independent sigma)`**, and the useful statement is stronger than the failed control I
+predicted: **entropy collapse at stalled states specifically is impossible for this architecture** — σ is
+identical at stalled and non-stalled states by construction, so exploration cannot be dying *where it is
+needed* while surviving elsewhere. The hypothesis is excluded, not merely unsupported.
+
+**Consequence for §4.** Its first row ("P1 and P2 hold, P3 and P4 fail") can never be selected as written.
+It is replaced by: **"P1 and P2 hold, P4 fails, P3 N/A"** — the same direction, with M3 read as the
+architectural exclusion above. Every other row stands. If a future round uses a state-dependent σ (a learned
+`log_std` head or `use_sde=True`), M3 becomes askable again and must be re-pre-registered.
