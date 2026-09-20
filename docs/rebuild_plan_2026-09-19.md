@@ -39,7 +39,11 @@ injection attack on reciprocal collision avoidance, not a learning pathology.
 > thesis: translation is genuinely inadmissible at a stalled state (0/150) but rotation is admissible in
 > 150/150, so escape requires a ROTATE-THEN-MOVE manoeuvre that a minimal-intervention objective never
 > proposes and a memoryless policy cannot execute. The thesis in §1 should be read in that sharper form.
-> Only V3 remains.**
+> **V3 is DONE too (D127): the loop survives exploration — deterministic vs stochastic immobility is
+> 0.276 → 0.275 for FT-B-41 and 0.293 → 0.333 for RC19 at their converged σ (0.36–0.43). An untrained net at
+> σ = 1.0 halves it but still deadlocks 30 % of episodes. Under stochastic sampling the trained policy is
+> barely better than the untrained one, despite an immobility penalty in its reward. PHASE 0 IS COMPLETE AND
+> ALL THREE CHECKS PASSED — proceed to Phase 1.**
 
 Run these BEFORE writing a line. Each is pre-registered separately.
 
