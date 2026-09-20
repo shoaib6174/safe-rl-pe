@@ -381,9 +381,16 @@ def evaluate_structured(
     seed0 + i, deterministic predict, frozen opponent). Same log schema as
     evaluate_sb3_policy so win_count / Wilson / McNemar apply unchanged.
 
-    `shield_factory()` builds ONE shield for the whole call (a shield carries
-    no cross-episode state; ShieldMetrics is rebuilt per episode), and the
-    logs then carry the shield block as well."""
+    `shield_factory()` builds ONE shield for the whole call and the logs then
+    carry the shield block as well. ShieldMetrics is rebuilt per episode, and
+    `CBFShield` / `NoOpShield` / `PredictiveShield` are memoryless, so for
+    those the episodes stay independent. `RecoveryShield` is NOT: its immobile
+    run and its two recovery counters span the whole call by design, so an
+    episode that ends mid-stall carries that run into the next one. This
+    function offers no per-episode hook, so a caller that needs paired-seed
+    independence must drive the episodes itself (one call per seed) rather
+    than rely on the factory; otherwise the carry-over must be accepted and
+    stated."""
     mdp = SearchMDP(
         cfg,
         opponent_factory,

@@ -2480,23 +2480,28 @@ class TestEscapeFeatures:
         assert seen_narrow > 0  # the feature is not a constant
 
 
-class _RecoveryCounter:
-    """Tallies `recovery_fired` across a whole evaluation without adding any
-    counter to the library class."""
-
-    def __init__(self, shield):
-        self.shield = shield
-        self.fired = 0
-        self.moving_recoveries = 0
-        self._filter = shield.filter
-        shield.filter = self._wrapped
-
-    def _wrapped(self, action, state, obstacles, v_max=None):
-        u, info = self._filter(action, state, obstacles, v_max)
-        if info["recovery_fired"]:
-            self.fired += 1
-            self.moving_recoveries += int(float(u[0]) != 0.0)
-        return u, info
+# The reviewer's deterministic counter-example to "a recovery never
+# translates the body" (prereg amendment S16-A2). At this contact-free pose
+# (min_clearance_hard = +0.0445 m) BOTH pure-turn requests come back at
+# |omega| = omega_max, so the tie-break keeps the positive one -- and the
+# filter's optimum for that request carries v = 0.2308 m/s, because
+# w_v * 0.2308^2 = 7.99 < w_omega * omega_max^2 = 8.07, the cost of the
+# (0, 0) candidate. The behaviour is INTENDED and is pinned here as such.
+TRANSLATING_STATE = np.array(
+    [-0.07064576830378932, -1.2049636282548635, -1.502340038876147]
+)
+TRANSLATING_OBSTACLES = [
+    {
+        "x": 0.8706624472426947,
+        "y": -1.0440609605637112,
+        "radius": 0.7604374439433474,
+    },
+    {
+        "x": 0.09973352459107954,
+        "y": 3.4013264429348435,
+        "radius": 0.8530087311769763,
+    },
+]
 
 
 class TestRecoveryShield:
@@ -2619,14 +2624,65 @@ class TestRecoveryShield:
                 return np.array([1.0, 0.0], dtype=np.float32), None
 
         shield = RecoveryShield(CFG)
-        spy = _RecoveryCounter(shield)
         mdp = SearchMDP(CFG, GreedyEvader, hold=10, shield=shield)
         for i in range(50):
             log = mdp.play_episode(Straight().predict, 1_730_000 + i)
             assert log["violations"] == 0
         assert mdp.violations_total == 0
-        assert spy.fired > 0  # the zero above is not vacuous
-        assert spy.moving_recoveries == 0  # v = 0: the recovery never translates
+        assert shield.n_recoveries > 0  # the zero above is not vacuous
+        # RECORDED, deliberately NOT asserted to be zero (prereg S16-A2). A
+        # firing executes whatever the filter returns for the pure-turn
+        # request, which is occasionally a translation; the base rate is
+        # ~4e-6 per firing, so a zero on 50 episodes would be underpowered
+        # and must never be read as an invariant. The invariant is the
+        # violation count above, which holds because a recovery action is
+        # CBF-filtered exactly like any other.
+        assert 0 <= shield.n_recoveries_translating <= shield.n_recoveries
+        print(
+            f"\nrecovery firings: {shield.n_recoveries}, "
+            f"translating: {shield.n_recoveries_translating}"
+        )
+
+    def test_a_firing_recovery_may_execute_forward_motion(self):
+        """INTENDED behaviour, not a bug (prereg amendment S16-A2).
+
+        `RecoveryShield` REQUESTS `(0, ±omega_max)`; it executes what
+        `CBFShield.filter` returns for that request, and that is occasionally
+        a translation. The behaviour is kept -- it is what section 2
+        pre-registers and it is bit-for-bit the path that produced D125 --
+        so the safety argument is the ordinary one (the action is filtered
+        like any other), NOT `v = 0`.
+        """
+        from pe2.shield import RecoveryShield
+
+        shield = RecoveryShield(CFG, recovery_after=1)
+        u, info = shield.filter(
+            (0.0, 0.0), TRANSLATING_STATE, TRANSLATING_OBSTACLES, v_max=CFG.v_max
+        )
+        assert info["recovery_fired"] is True
+        assert u[0] == pytest.approx(0.23079258, abs=1e-7)  # 23 % of v_max
+        assert u[1] == pytest.approx(CFG.omega_max)
+        # and it happened at a CONTACT-FREE pose on the exact tier, so this is
+        # the filter's optimum, not a barrier emergency
+        assert info["method"] == "exact"
+        assert info["min_clearance_hard"] > 0.0
+        assert (shield.n_recoveries, shield.n_recoveries_translating) == (1, 1)
+
+    def test_counters_tally_firings_and_the_translating_subset(self):
+        from pe2.shield import RecoveryShield
+
+        shield = RecoveryShield(CFG, recovery_after=1)
+        assert (shield.n_recoveries, shield.n_recoveries_translating) == (0, 0)
+        for _ in range(3):  # a pure-rotation escape: fires, does not translate
+            shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)
+        assert (shield.n_recoveries, shield.n_recoveries_translating) == (3, 0)
+        # a non-firing step must not be counted at all
+        shield.filter(FULL_SPEED, CORNER_POSE, [], v_max=CFG.v_max)
+        assert shield.n_recoveries == 3
+        shield.filter(
+            (0.0, 0.0), TRANSLATING_STATE, TRANSLATING_OBSTACLES, v_max=CFG.v_max
+        )
+        assert (shield.n_recoveries, shield.n_recoveries_translating) == (4, 1)
 
     def test_the_counter_spans_episodes_because_the_shield_does(self):
         # Documented, deliberate: a shield carries no episode hook, so the

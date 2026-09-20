@@ -566,9 +566,22 @@ class RecoveryShield(CBFShield):
     positive sign, so the rule is deterministic) -- provided that `|ω|`
     clears `RECOVERY_OMEGA_MIN`. Otherwise the normal result stands.
 
-    The recovery asks for `v = 0`, which never translates the body, and the
-    turn it asks for is itself put through the same filter, so it cannot make
-    contact; `test_zero_violations_over_fifty_random_episodes` measures that.
+    **The recovery REQUESTS a pure turn; it does not execute one.** What it
+    executes is whatever `CBFShield.filter` returns for that request, and
+    that is occasionally a TRANSLATION: `filter` scores an enumerated
+    candidate set by `w_v·(v − v_nom)² + w_ω·(ω − ω_nom)²`, so a candidate
+    carrying `v < √(w_ω·ω_max² / w_v) ≈ 0.23 m/s` can beat `(0, 0)` when its
+    ω is nearer `±ω_max`. A deterministic instance is pinned by
+    `test_a_firing_recovery_may_execute_forward_motion` (v = 0.2308 m/s at a
+    contact-free pose). The base rate is ~4e-6 of contact-free states, but it
+    is not zero, so **the safety argument is the ordinary one: a recovery
+    action is CBF-filtered exactly like any other action, so its safety rests
+    on the filter, not on a zero speed** (prereg amendments S16-A1/A2). The
+    behaviour is deliberately KEPT rather than forced to `v = 0`: it is what
+    §2 pre-registers, it is bit-for-bit the path that produced D125, and
+    admissible forward motion escapes the immobility better than a turn.
+    `n_recoveries` / `n_recoveries_translating` count firings and the subset
+    that translated, so a round can report that fraction.
 
     The reported info carries every key `CBFShield` reports plus
     `recovery_fired`. On a recovery step the *barrier* and *executed* fields
@@ -581,6 +594,8 @@ class RecoveryShield(CBFShield):
     The immobile run is shield state, not episode state, and a shield has no
     episode hook: a run that is still open when an episode ends continues
     into the next one. Build one `RecoveryShield` per episode if that matters.
+    The two counters span episodes for the same reason, which is what a
+    per-run total wants.
     """
 
     def __init__(
@@ -589,6 +604,8 @@ class RecoveryShield(CBFShield):
         super().__init__(cfg, **cbf_kwargs)
         self.recovery_after = int(recovery_after)
         self._immobile_run = 0
+        self.n_recoveries = 0  # steps on which the recovery fired
+        self.n_recoveries_translating = 0  # of those, the ones with v_exec > 0
 
     def filter(
         self,
@@ -627,6 +644,8 @@ class RecoveryShield(CBFShield):
             v_max,
         )
         rec["recovery_fired"] = True
+        self.n_recoveries += 1
+        self.n_recoveries_translating += int(float(best_u[0]) > 0.0)
         return best_u, rec
 
 
