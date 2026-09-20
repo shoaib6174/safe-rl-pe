@@ -18,6 +18,18 @@ trace rather than argued:
 M3 and M4 are CONTROLS: the round is only informative because two of its four
 predictions are expected to fail.
 
+Amendments, both pre-registered before any number of this round existed:
+  A1  M3 is EXCLUDED BY THE ARCHITECTURE, not merely unsupported — these
+      policies' sigma is one learned `log_std` with no state input, so P3's
+      verdict is `N/A (state-independent sigma)` and section 4's first row is
+      "P1 and P2 hold, P4 fails, P3 N/A".
+  A2  M2 is measured in three corrected parts: the observation change is split
+      into the raw world dimensions and the agent's own shield features (the
+      stall counter alone ticks 1/40 per immobile step); P2's verdict is read
+      from the hold-1 cells, where a held decision does not force a median of 0,
+      with hold 10 reported beside it as the degenerate case; and the maximum
+      per-step action change and the nonzero fraction are recorded report-only.
+
 Why this script drives its own episode loop: the round needs per-step traces and
 `pe2.structured.evaluate_structured` returns per-episode logs. The loop here is
 `SingleAgentWrapper(cfg, "pursuer", opponent_factory)` driven by
@@ -51,6 +63,7 @@ from pe2.config import EnvConfig
 from pe2.evade import D_POS
 from pe2.exploitability import SingleAgentWrapper
 from pe2.metrics import DEADLOCK_STEPS
+from pe2.obs import obs_dim
 from pe2.scripted import GreedyEvader
 
 CKPT_ROOT = pathlib.Path("results/derisk")  # read-only inputs
@@ -66,10 +79,18 @@ ESCAPE_MOVING_STEPS = 5  # and last at least this many consecutive steps
 ESCAPE_V_FRAC = 0.1  # "moving" is v_exec > this fraction of v_max
 P1_RTG_BAR = 0.05  # |Δ discounted return-to-go| below this: P1 holds
 P1_CAPTURE_BAR = 0.15  # capture rate after an escape below this: P1 holds
+P2_ACTION_BAR = 0.01  # median per-step action change below this: P2 holds
 P3_SIGMA_RATIO_BAR = 0.8  # sigma_stalled / sigma_free above this: P3 holds
 P4_IMMOBILE_BAR = 0.05  # |Δ immobile-step rate| below this: P4 holds
 HOLDS = (10, 1)  # M4: the same policies at the trained hold and at 1
-MAIN_HOLD = 10  # M1-M3 read the hold-10 cells
+MAIN_HOLD = 10  # M1 and M3 read the hold-10 cells
+# A2.2: a held decision emits an identical action for `hold` steps, so at
+# hold 10 the per-step median change is 0 by construction and P2 cannot be
+# refuted there. P2's verdict is read from the hold-1 cells; the hold-10 cells
+# are reported beside it as the structurally-degenerate case.
+P2_HOLD = 1
+# A1: M3's verdict when the policy's sigma does not depend on the observation.
+SIGMA_NA = "N/A (state-independent sigma)"
 EVADER_HOLD = 10  # the attacker's own hold, unchanged by M4 (as in S6/S9)
 OMP_THREADS = "2"
 
@@ -117,9 +138,13 @@ def cells_dir() -> pathlib.Path:
     return OUT / "s15_cells"
 
 
+def cells_at(hold: int) -> list[str]:
+    return [n for n, s in CELLS.items() if s["hold"] == hold]
+
+
 def main_cells() -> list[str]:
-    """The hold-10 cells, which M1-M3 are read from."""
-    return [n for n, s in CELLS.items() if s["hold"] == MAIN_HOLD]
+    """The hold-10 cells, which M1 and M3 are read from."""
+    return cells_at(MAIN_HOLD)
 
 
 def _model(path, device: str):
@@ -302,16 +327,48 @@ def _median(xs) -> float:
     return float(np.median(np.asarray(xs, dtype=float))) if len(xs) else float("nan")
 
 
+def _step_deltas(block: np.ndarray) -> np.ndarray:
+    """Per-step L2 changes down the rows of `block`. A block with no columns
+    (an unshielded policy has no shield features) has no defined change, which
+    is an empty series rather than a series of zeros."""
+    block = np.asarray(block)
+    if block.ndim != 2 or block.shape[1] == 0:
+        return np.zeros(0)
+    return np.linalg.norm(np.diff(block, axis=0), axis=1)
+
+
 def _entries_of(episode: int, tr: dict, cfg: EnvConfig) -> list[dict]:
-    """M1 + M2 per stall entry of one traced episode."""
+    """M1 + M2 per stall entry of one traced episode.
+
+    Stall entries are read off the filter's `immobile` flag (executed speed in
+    the stall band, no condition on the nominal), NOT `stalled` — the spec's
+    entry is "a run of >= 10 consecutive immobile steps".
+
+    A2.1: the observation change is recorded SPLIT. The learner observation is
+    `obs_dim(cfg)` world dimensions followed, for a `shield_obs` policy, by the
+    three S5 shield features — one of which is the stall-run counter, which
+    ticks by exactly 1 / DEADLOCK_STEPS on every immobile step. Measured over
+    the whole vector, "the observation moves" is that counter and nothing else,
+    which is the conflation M2 exists to avoid. `obs_delta_world_median` is the
+    number the write-up quotes; `obs_delta_shield_median` is the agent's own
+    clock, reported beside it.
+
+    A2.2: the maximum per-step action change and the fraction of steps on which
+    it was nonzero are recorded REPORT-ONLY, so that "the policy never varies"
+    and "the policy varies rarely but really" stay distinguishable. The
+    pre-registered median is still what P2's verdict reads.
+    """
     out = []
     total = len(tr["immobile"])
+    n_world = min(obs_dim(cfg), tr["obs"].shape[1])
     for start, length in stall_entries(tr["immobile"]):
         escaped, steps_to_escape = escape_after(start, tr["v_exec"], cfg.v_max)
         steps_remaining = total - start
         run = slice(start, start + length)
-        d_act = np.linalg.norm(np.diff(tr["action"][run], axis=0), axis=1)
-        d_obs = np.linalg.norm(np.diff(tr["obs"][run], axis=0), axis=1)
+        d_act = _step_deltas(tr["action"][run])
+        d_obs = _step_deltas(tr["obs"][run])
+        d_world = _step_deltas(tr["obs"][run, :n_world])
+        d_shield = _step_deltas(tr["obs"][run, n_world:])
         out.append(
             {
                 "episode": episode,
@@ -322,7 +379,13 @@ def _entries_of(episode: int, tr: dict, cfg: EnvConfig) -> list[dict]:
                 "steps_remaining": steps_remaining,
                 "return_to_go": return_to_go(tr["outcome"], steps_remaining),
                 "action_deltas_median": _median(d_act),
+                "action_deltas_max": float(d_act.max()) if d_act.size else float("nan"),
+                "action_deltas_nonzero_fraction": (
+                    float(np.mean(d_act > 0.0)) if d_act.size else float("nan")
+                ),
                 "obs_deltas_median": _median(d_obs),
+                "obs_delta_world_median": _median(d_world),
+                "obs_delta_shield_median": _median(d_shield),
                 "visible_fraction": float(np.mean(tr["visible"][run])),
             }
         )
@@ -544,47 +607,80 @@ def m1_verdict(records: dict) -> dict:
     }
 
 
+def _m2_block(records: dict, hold: int) -> dict:
+    """M2's statistics pooled over the cells at one hold, plus a per-cell split.
+    Every quantity but `action_delta_median` is report-only."""
+    names = [n for n in cells_at(hold) if n in records]
+
+    def stats(entries: list[dict]) -> dict:
+        return {
+            "n_entries": len(entries),
+            "action_delta_median": _median(
+                [e["action_deltas_median"] for e in entries]
+            ),
+            "action_delta_max": _median([e["action_deltas_max"] for e in entries]),
+            "action_nonzero_fraction": _mean(
+                [e["action_deltas_nonzero_fraction"] for e in entries]
+            ),
+            "obs_delta_median": _median([e["obs_deltas_median"] for e in entries]),
+            "obs_delta_world_median": _median(
+                [e["obs_delta_world_median"] for e in entries]
+            ),
+            "obs_delta_shield_median": _median(
+                [e["obs_delta_shield_median"] for e in entries]
+            ),
+            "visible_fraction": _mean([e["visible_fraction"] for e in entries]),
+        }
+
+    block = stats([e for n in names for e in records[n]["entries"]])
+    block["hold"] = hold
+    block["missing"] = [n for n in cells_at(hold) if n not in records]
+    block["per_cell"] = {n: stats(records[n]["entries"]) for n in names}
+    return block
+
+
 def m2_verdict(records: dict) -> dict:
     """P2: the emitted action is near-constant during stall runs — median
-    per-step action change < 0.01 on the [-1, 1] action space. Each stall run
-    contributes its own median per-step change (the record's
+    per-step action change < P2_ACTION_BAR on the [-1, 1] action space.
+
+    Each stall run contributes its own median per-step change (the record's
     `action_deltas_median`) and the verdict reads the median over runs, so no
-    single very long run can carry the number. The observation change and the
-    visibility fraction are reported and NOT gated: the spec states M2 so that
-    "the observation is constant" can be refuted."""
-    missing = _missing_main(records)
-    entries = [e for n in main_cells() if n in records for e in records[n]["entries"]]
-    per_cell = {
-        n: {
-            "n_entries": len(records[n]["entries"]),
-            "action_delta_median": _median(
-                [e["action_deltas_median"] for e in records[n]["entries"]]
-            ),
-            "obs_delta_median": _median(
-                [e["obs_deltas_median"] for e in records[n]["entries"]]
-            ),
-            "visible_fraction": _mean(
-                [e["visible_fraction"] for e in records[n]["entries"]]
-            ),
-        }
-        for n in main_cells()
-        if n in records
-    }
-    action = _median([e["action_deltas_median"] for e in entries])
-    if missing or not entries:
+    single very long run can carry the number.
+
+    A2.2: the verdict is read from the **hold-1** cells. A held decision emits
+    an identical action for `hold` steps, so at hold 10 at most one per-step
+    change in ten can be nonzero and the median is 0 whatever the policy does —
+    P2 would be unfalsifiable there. The hold-10 cells are reported beside it
+    as the structurally-degenerate case, together with the maximum per-step
+    change and the nonzero fraction, so "the policy never varies" and "the
+    policy varies rarely but really" stay distinguishable.
+
+    A2.1: the observation change is reported SPLIT into the raw world
+    dimensions and the agent's own shield features, and NOT gated: M2 exists so
+    that "the observation is constant" can be refuted rather than assumed, and
+    measured over the whole vector it would only be the stall counter ticking.
+    """
+    decide = _m2_block(records, P2_HOLD)
+    other = _m2_block(records, MAIN_HOLD)
+    if decide["missing"] or not decide["n_entries"]:
         verdict = "INCOMPLETE"
     else:
-        verdict = "HOLDS" if action < 0.01 else "FAILS"
+        verdict = "HOLDS" if decide["action_delta_median"] < P2_ACTION_BAR else "FAILS"
     return {
         "hypothesis": "P2",
         "prediction": "HOLD",
         "verdict": verdict,
-        "missing": missing,
-        "n_entries": len(entries),
-        "action_delta_median": action,
-        "obs_delta_median": _median([e["obs_deltas_median"] for e in entries]),
-        "visible_fraction": _mean([e["visible_fraction"] for e in entries]),
-        "per_cell": per_cell,
+        "decided_on_hold": P2_HOLD,
+        "missing": decide["missing"],
+        **{k: v for k, v in decide.items() if k not in ("hold", "missing")},
+        f"hold{MAIN_HOLD}": other
+        | {
+            "note": (
+                "structurally degenerate: a decision held for "
+                f"{MAIN_HOLD} steps forces a per-step median of 0, so this "
+                "block is reported and never gated (A2.2)"
+            )
+        },
     }
 
 
@@ -616,7 +712,7 @@ def m3_verdict(records: dict) -> dict:
     if missing:
         verdict = "INCOMPLETE"
     elif not dependent:
-        verdict = "N/A (state-independent sigma)"
+        verdict = SIGMA_NA
     elif ratio is None:
         verdict = "INCOMPLETE"
     else:
@@ -681,15 +777,20 @@ def m4_verdict(records: dict) -> dict:
 
 
 def hsafe(records: dict) -> dict:
-    """H-SAFE: 0 pursuer contact steps in every cell."""
-    offenders = [n for n, r in records.items() if int(r.get("violations", 0))]
-    steps = sum(int(r.get("violations", 0)) for r in records.values())
+    """H-SAFE: 0 pursuer contact steps in every cell.
+
+    Only the round's OWN eight cells are counted: a stray or hand-edited file
+    in `s15_cells/` must not be able to contribute a violation or inflate the
+    number of cells measured."""
+    mine = [n for n in CELLS if n in records]
+    offenders = [n for n in mine if int(records[n].get("violations", 0))]
+    steps = sum(int(records[n].get("violations", 0)) for n in mine)
     missing = [n for n in CELLS if n not in records]
     return {
         "verdict": "FAILS" if steps else ("INCOMPLETE" if missing else "HOLDS"),
         "violation_steps": steps,
         "offenders": sorted(offenders),
-        "cells_measured": len(records),
+        "cells_measured": len(mine),
     }
 
 
@@ -699,7 +800,9 @@ def hsafe(records: dict) -> dict:
 DIRECTIONS = (
     {
         "key": "predicted",
-        "result": "P1 and P2 hold, P3 and P4 fail",
+        # amendment A1: P3 can never FAIL for a state-independent sigma, so the
+        # row that required it is replaced by the one the amendment states.
+        "result": "P1 and P2 hold, P4 fails, P3 N/A",
         "direction": (
             "The predicted picture: no gradient signal to escape, and a "
             "near-constant emitted action. The paper's mechanism section is "
@@ -746,13 +849,23 @@ DIRECTIONS = (
 
 
 def direction(blocks: dict) -> list[dict]:
-    """The spec section 4 rows this round's verdicts select. An outcome the
-    table does not cover (every prediction holding, or a vacuous M3 alongside
-    holding controls) selects no row; `verdicts` says so in `notes` rather than
-    inventing a sixth row here."""
+    """The spec section 4 rows this round's verdicts select.
+
+    Amendment A1: the predicted row is "P1 and P2 hold, P4 fails, P3 N/A" — M3
+    is excluded by the architecture rather than failed, so `N/A` selects the row
+    exactly as a FAIL would have. A FAILING M3 still selects it too, for a
+    future round whose policy has a state-dependent sigma.
+
+    An outcome the table does not cover (every prediction holding, say) selects
+    no row; `verdicts` says so in `notes` rather than inventing a sixth row."""
     v = {k: blocks[k]["verdict"] for k in ("m1", "m2", "m3", "m4")}
     by_key = {row["key"]: row for row in DIRECTIONS}
-    if (v["m1"], v["m2"], v["m3"], v["m4"]) == ("HOLDS", "HOLDS", "FAILS", "FAILS"):
+    if (
+        v["m1"] == "HOLDS"
+        and v["m2"] == "HOLDS"
+        and v["m3"] in ("FAILS", SIGMA_NA)
+        and v["m4"] == "FAILS"
+    ):
         return [by_key["predicted"]]
     return [
         by_key[f"p{i}_fails"]
@@ -770,15 +883,16 @@ def verdicts(records: dict) -> dict:
         "m4": m4_verdict(records),
     }
     notes = []
-    if blocks["m3"]["verdict"].startswith("N/A"):
+    if blocks["m3"]["verdict"] == SIGMA_NA:
         notes.append(
-            "M3 is vacuous for these policies: their action sigma is "
-            "state-independent (one learned log_std parameter, SB3's default "
-            "Gaussian head), so sigma at stalled states EQUALS sigma "
-            "elsewhere by construction and P3 is reported as "
-            "'N/A (state-independent sigma)', not as a measured ratio. The "
-            "spec section 4 row for the predicted picture requires P3 to "
-            "FAIL and therefore cannot be selected."
+            "M3 is excluded by the architecture, not merely unsupported "
+            "(amendment A1): these policies' action sigma is state-independent "
+            "(one learned log_std parameter, SB3's default Gaussian head), so "
+            "sigma at stalled states EQUALS sigma elsewhere by construction. "
+            "Entropy collapse AT STALLED STATES is therefore impossible here, "
+            "and P3 is reported as 'N/A (state-independent sigma)' rather than "
+            "as a measured ratio. A1 replaced the spec section 4 predicted row "
+            "with 'P1 and P2 hold, P4 fails, P3 N/A', which this N/A selects."
         )
     if not missing and not direction(blocks):
         notes.append(
@@ -793,7 +907,7 @@ def verdicts(records: dict) -> dict:
         "complete": not missing,
         "missing": missing,
         "n_cells": len(CELLS),
-        "n_records": len(records),
+        "n_records": len([n for n in CELLS if n in records]),
         "seed0": SEED0,
         "n_episodes": N_EPISODES,
     }
@@ -831,22 +945,55 @@ def write_figure(records: dict, path: pathlib.Path) -> None:
     ax.legend(fontsize=7)
 
     ax = axes[1]
-    act = [v["m2"]["per_cell"][n]["action_delta_median"] for n in names]
-    obs = [v["m2"]["per_cell"][n]["obs_delta_median"] for n in names]
-    ax.bar(x - 0.2, act, 0.4, label="action")
-    ax.bar(x + 0.2, obs, 0.4, label="observation")
-    ax.axhline(0.01, color="k", ls="--", lw=1, label="P2 bar 0.01")
+    # A2.2: both holds are shown — the hold-1 cells decide P2, the hold-10 ones
+    # are the degenerate case. A2.1: the world delta, not the full vector.
+    m2, m2_deg = v["m2"], v["m2"][f"hold{MAIN_HOLD}"]
+    pair_names = [
+        (cell_name(p, o, P2_HOLD), cell_name(p, o, MAIN_HOLD))
+        for p in POLICIES
+        for o in OPPONENTS
+    ]
+    pair_names = [
+        (a, b) for a, b in pair_names if a in m2["per_cell"] and b in m2_deg["per_cell"]
+    ]
+    mx = np.arange(len(pair_names))
+    ax.bar(
+        mx - 0.25,
+        [m2["per_cell"][a]["action_delta_median"] for a, _ in pair_names],
+        0.25,
+        label=f"action (hold {P2_HOLD}, decides)",
+    )
+    ax.bar(
+        mx,
+        [m2_deg["per_cell"][b]["action_delta_median"] for _, b in pair_names],
+        0.25,
+        label=f"action (hold {MAIN_HOLD}, degenerate)",
+    )
+    ax.bar(
+        mx + 0.25,
+        [m2["per_cell"][a]["obs_delta_world_median"] for a, _ in pair_names],
+        0.25,
+        label=f"observation, world dims (hold {P2_HOLD})",
+    )
+    ax.axhline(P2_ACTION_BAR, color="k", ls="--", lw=1, label=f"P2 bar {P2_ACTION_BAR}")
     # symlog, not log: a median change of exactly 0 is the interesting reading
     # here and must render as 0 rather than be pushed off a log axis.
     ax.set_yscale("symlog", linthresh=1e-4)
+    ax.set_xticks(mx)
+    ax.set_xticklabels(
+        [a.replace(f"__h{P2_HOLD}", "").replace("__", "\n") for a, _ in pair_names],
+        fontsize=7,
+    )
+    ax.set_xlim(-0.6, len(pair_names) - 0.4)
     ax.set_ylabel("median per-step L2 change during stall runs")
     ax.set_title(
-        f"M2 / P2 {v['m2']['verdict']}\n"
-        f"action {v['m2']['action_delta_median']:.2e}, "
-        f"obs {v['m2']['obs_delta_median']:.2e}, "
-        f"visible {v['m2']['visible_fraction']:.3f}"
+        f"M2 / P2 {m2['verdict']} (decided at hold {P2_HOLD})\n"
+        f"action {m2['action_delta_median']:.2e} "
+        f"(max {m2['action_delta_max']:.2e}, nz {m2['action_nonzero_fraction']:.3f})\n"
+        f"obs world {m2['obs_delta_world_median']:.2e} / "
+        f"shield {m2['obs_delta_shield_median']:.2e}"
     )
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=6)
 
     ax = axes[2]
     st = [v["m3"]["per_cell"][n]["sigma_stalled"] or 0.0 for n in names]
@@ -859,7 +1006,8 @@ def write_figure(records: dict, path: pathlib.Path) -> None:
         ax.text(
             0.5,
             0.55,
-            "sigma is state-independent\n(one learned log_std):\nM3 is vacuous",
+            "sigma is state-independent\n(one learned log_std):\n"
+            "collapse at stalls is EXCLUDED",
             transform=ax.transAxes,
             ha="center",
             fontsize=9,
@@ -877,10 +1025,12 @@ def write_figure(records: dict, path: pathlib.Path) -> None:
     ax.set_title(f"M4 / P4 {v['m4']['verdict']} (bar |Δ| < {P4_IMMOBILE_BAR})")
     ax.legend(fontsize=7)
 
-    for a in axes[:3]:
+    for a in (axes[0], axes[2]):  # the M2 panel carries its own pair ticks
         a.set_xticks(x)
         a.set_xticklabels(labels, fontsize=7)
         a.set_xlim(-0.6, len(names) - 0.4)  # bar width stays sane on a partial round
+    for a in axes:
+        a.title.set_fontsize(9)
     fig.suptitle(
         f"S15 — why the shielded policy does not escape the loop "
         f"(N={N_EPISODES}, seeds {SEED0}+; P3 and P4 are controls)"
@@ -920,6 +1070,19 @@ def main() -> None:
         for key in ("m1", "m2", "m3", "m4"):
             b = v[key]
             print(f"{b['hypothesis']} ({b['prediction']}): {b['verdict']}")
+        m2, deg = v["m2"], v["m2"][f"hold{MAIN_HOLD}"]
+        # A2.2 / A2.1: both holds, and the world delta beside the shield one.
+        print(
+            f"  P2 median action change: hold {P2_HOLD} "
+            f"{m2['action_delta_median']:.4g} (decides, bar {P2_ACTION_BAR}) | "
+            f"hold {MAIN_HOLD} {deg['action_delta_median']:.4g} (degenerate)"
+        )
+        print(
+            f"  P2 report-only: max {m2['action_delta_max']:.4g}, nonzero "
+            f"{m2['action_nonzero_fraction']:.4g}; obs world "
+            f"{m2['obs_delta_world_median']:.4g} / shield "
+            f"{m2['obs_delta_shield_median']:.4g}"
+        )
         print(json.dumps(v["hsafe"], indent=2))
         for row in v["direction"]:
             print(f"\n[{row['result']}] {row['direction']}")

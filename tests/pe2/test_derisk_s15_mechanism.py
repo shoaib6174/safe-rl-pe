@@ -11,6 +11,7 @@ import importlib.util
 import json
 import pathlib
 
+import numpy as np
 import pytest
 
 _PATH = (
@@ -42,7 +43,11 @@ def _entry(
     steps_remaining=300,
     return_to_go=None,
     action_deltas_median=0.0,
-    obs_deltas_median=0.02,
+    action_deltas_max=0.02,
+    action_deltas_nonzero_fraction=0.05,
+    obs_deltas_median=0.025,
+    obs_delta_world_median=0.0,
+    obs_delta_shield_median=0.025,
     visible_fraction=0.0,
 ):
     return {
@@ -58,7 +63,11 @@ def _entry(
             else return_to_go
         ),
         "action_deltas_median": action_deltas_median,
+        "action_deltas_max": action_deltas_max,
+        "action_deltas_nonzero_fraction": action_deltas_nonzero_fraction,
         "obs_deltas_median": obs_deltas_median,
+        "obs_delta_world_median": obs_delta_world_median,
+        "obs_delta_shield_median": obs_delta_shield_median,
         "visible_fraction": visible_fraction,
     }
 
@@ -139,6 +148,7 @@ def _records(
     delta_rtg=0.0,
     capture_rate_escaped=0.0,
     action_delta=0.0,
+    action_delta_h1=None,
     immobile_h10=0.40,
     immobile_h1=0.40,
     sigma_stalled=0.35,
@@ -146,15 +156,16 @@ def _records(
     sigma_state_dependent=False,
     violations_fn=None,
 ):
-    """A full 8-cell record set under the named behaviour."""
+    """A full 8-cell record set under the named behaviour. Both holds carry
+    entries: M1 and M3 read the hold-10 cells, M2's verdict reads the hold-1
+    ones (A2.2)."""
     recs = {}
     for name, spec in R.CELLS.items():
         main = spec["hold"] == R.MAIN_HOLD
+        delta = action_delta if (main or action_delta_h1 is None) else action_delta_h1
         recs[name] = _record(
             name,
-            entries=_entries_for(delta_rtg, capture_rate_escaped, action_delta)
-            if main
-            else [],
+            entries=_entries_for(delta_rtg, capture_rate_escaped, delta),
             immobile_step_rate=immobile_h10 if main else immobile_h1,
             violations=0 if violations_fn is None else violations_fn(spec),
             sigma_stalled=sigma_stalled,
@@ -197,9 +208,12 @@ class TestCells:
         assert R.ESCAPE_V_FRAC == 0.1
         assert R.P1_RTG_BAR == 0.05
         assert R.P1_CAPTURE_BAR == 0.15
+        assert R.P2_ACTION_BAR == 0.01
         assert R.P3_SIGMA_RATIO_BAR == 0.8
         assert R.P4_IMMOBILE_BAR == 0.05
         assert R.MAIN_HOLD == 10
+        assert R.P2_HOLD == 1
+        assert R.SIGMA_NA == "N/A (state-independent sigma)"
 
 
 # ------------------------------------------------------------- stall entries
@@ -264,6 +278,79 @@ class TestEscape:
 
     def test_a_moving_run_cut_short_by_the_episode_end_is_not_an_escape(self):
         assert R.escape_after(0, [STOP] * 10 + [GO] * 4, V_MAX) == (False, None)
+
+
+# ------------------------------------------------- the entries of one episode
+def _traced(n_world=11, n_shield=3, total=30, run=(5, 20)):
+    """A hand-built trace: immobile over `run`, the world dimensions frozen and
+    only the shield stall counter ticking (1 / DEADLOCK_STEPS per step), and one
+    action change inside the run. `stalled` is deliberately ALL FALSE — the
+    spec's entry is a run of immobile steps, and the filter's two flags differ
+    (`stalled` additionally requires the nominal to want to move)."""
+    start, length = run
+    immobile = [start <= i < start + length for i in range(total)]
+    v_exec = [0.0 if m else 0.5 for m in immobile]
+    obs = np.zeros((total, n_world + n_shield), dtype=np.float32)
+    obs[:, :n_world] = 0.25  # the world stands still
+    if n_shield:
+        obs[:, -1] = np.arange(total) / 40.0  # the agent's own stall counter
+    action = np.zeros((total, 2), dtype=float)
+    action[start + 5] = [0.5, 0.0]  # one changed decision inside the run
+    return {
+        "outcome": "timeout",
+        "obs": obs,
+        "action": action,
+        "immobile": immobile,
+        "stalled": [False] * total,
+        "v_exec": v_exec,
+        "visible": [False] * total,
+    }
+
+
+class TestEntriesOf:
+    def test_entries_are_read_off_immobile_not_stalled(self):
+        cfg = R.EnvConfig()
+        tr = _traced()
+        assert not any(tr["stalled"])  # the other flag says nothing happened
+        entries = R._entries_of(3, tr, cfg)
+        assert len(entries) == 1
+        assert entries[0]["step"] == 5
+        assert entries[0]["episode"] == 3
+
+    def test_steps_remaining_is_measured_from_the_entry_to_the_episode_end(self):
+        cfg = R.EnvConfig()
+        tr = _traced(total=30, run=(5, 20))
+        e = R._entries_of(0, tr, cfg)[0]
+        assert e["steps_remaining"] == 30 - 5
+        assert e["return_to_go"] == pytest.approx(-(0.99**25))
+
+    def test_the_world_delta_and_the_shield_delta_are_recorded_separately(self):
+        cfg = R.EnvConfig()
+        e = R._entries_of(0, _traced(), cfg)[0]
+        assert e["obs_delta_world_median"] == 0.0
+        assert e["obs_delta_shield_median"] == pytest.approx(1 / 40, abs=1e-6)
+        # the full vector is the shield counter and nothing else
+        assert e["obs_deltas_median"] == pytest.approx(1 / 40, abs=1e-6)
+
+    def test_an_unshielded_observation_has_no_shield_delta(self):
+        cfg = R.EnvConfig()
+        e = R._entries_of(0, _traced(n_shield=0), cfg)[0]
+        assert e["obs_delta_world_median"] == 0.0
+        assert np.isnan(e["obs_delta_shield_median"])
+
+    def test_the_action_maximum_and_nonzero_fraction_are_recorded(self):
+        cfg = R.EnvConfig()
+        e = R._entries_of(0, _traced(), cfg)[0]
+        assert e["action_deltas_median"] == 0.0  # the pre-registered statistic
+        assert e["action_deltas_max"] == pytest.approx(0.5)
+        # 19 per-step changes inside a 20-step run, 2 of them nonzero
+        assert e["action_deltas_nonzero_fraction"] == pytest.approx(2 / 19)
+
+    def test_the_escape_is_wired_to_v_exec(self):
+        cfg = R.EnvConfig()
+        e = R._entries_of(0, _traced(), cfg)[0]
+        assert e["escaped"] is True
+        assert e["steps_to_escape"] == 20
 
 
 # -------------------------------------------------------------- return-to-go
@@ -345,16 +432,66 @@ class TestM2:
         assert R.m2_verdict(_records(action_delta=0.01))["verdict"] == "FAILS"
         assert R.m2_verdict(_records(action_delta=0.0099))["verdict"] == "HOLDS"
 
+    # --- A2.2: the verdict is decided on the hold-1 cells ---------------------
+    def test_the_verdict_is_decided_on_the_hold_one_cells(self):
+        # hold 10 is structurally degenerate (a held decision forces a median of
+        # 0); only the hold-1 cells may decide, so this must FAIL.
+        v = R.m2_verdict(_records(action_delta=0.0, action_delta_h1=0.2))
+        assert v["decided_on_hold"] == 1
+        assert v["verdict"] == "FAILS"
+        assert v["action_delta_median"] == pytest.approx(0.2)
+
+    def test_a_degenerate_hold_ten_cannot_rescue_a_failing_hold_one(self):
+        v = R.m2_verdict(_records(action_delta=0.0, action_delta_h1=0.05))
+        assert v["verdict"] == "FAILS"
+        assert v["hold10"]["action_delta_median"] == pytest.approx(0.0)
+
+    def test_both_holds_are_reported(self):
+        v = R.m2_verdict(_records(action_delta=0.0, action_delta_h1=0.003))
+        assert v["verdict"] == "HOLDS"
+        assert v["action_delta_median"] == pytest.approx(0.003)
+        assert v["hold10"]["action_delta_median"] == pytest.approx(0.0)
+        assert v["hold10"]["hold"] == 10
+        assert "degenerate" in v["hold10"]["note"]
+        assert set(v["per_cell"]) == set(R.cells_at(1))
+        assert set(v["hold10"]["per_cell"]) == set(R.cells_at(10))
+
+    def test_the_report_only_maximum_and_nonzero_fraction_are_carried(self):
+        recs = _records(action_delta=0.0)
+        for name in R.cells_at(1):
+            for e in recs[name]["entries"]:
+                e["action_deltas_max"] = 0.0221
+                e["action_deltas_nonzero_fraction"] = 0.0076
+        v = R.m2_verdict(recs)
+        assert v["verdict"] == "HOLDS"  # the median still decides
+        assert v["action_delta_max"] == pytest.approx(0.0221)
+        assert v["action_nonzero_fraction"] == pytest.approx(0.0076)
+
+    # --- A2.1: the observation delta is split and never gated -----------------
     def test_the_observation_change_is_reported_and_not_gated(self):
         recs = _records(action_delta=0.001)
-        for name, spec in R.CELLS.items():
-            if spec["hold"] == R.MAIN_HOLD:
-                for e in recs[name]["entries"]:
-                    e["obs_deltas_median"] = 0.5
+        for name in recs:
+            for e in recs[name]["entries"]:
+                e["obs_deltas_median"] = 0.5
+                e["obs_delta_world_median"] = 0.4
+                e["obs_delta_shield_median"] = 0.025
         v = R.m2_verdict(recs)
         assert v["verdict"] == "HOLDS"
         assert v["obs_delta_median"] == pytest.approx(0.5)
+        assert v["obs_delta_world_median"] == pytest.approx(0.4)
+        assert v["obs_delta_shield_median"] == pytest.approx(0.025)
         assert "visible_fraction" in v
+
+    def test_a_frozen_world_beside_a_ticking_shield_counter_is_visible(self):
+        recs = _records(action_delta=0.0)
+        for name in recs:
+            for e in recs[name]["entries"]:
+                e["obs_deltas_median"] = 0.025
+                e["obs_delta_world_median"] = 0.0
+                e["obs_delta_shield_median"] = 0.025
+        v = R.m2_verdict(recs)
+        assert v["obs_delta_world_median"] == 0.0
+        assert v["obs_delta_shield_median"] == pytest.approx(0.025)
 
     def test_incomplete_without_entries(self):
         recs = _records(action_delta=0.001)
@@ -362,9 +499,9 @@ class TestM2:
             recs[name]["entries"] = []
         assert R.m2_verdict(recs)["verdict"] == "INCOMPLETE"
 
-    def test_incomplete_when_a_main_cell_is_missing(self):
+    def test_incomplete_when_a_deciding_cell_is_missing(self):
         recs = _records(action_delta=0.001)
-        del recs[R.cell_name("FT-B-41", "GREEDY", 10)]
+        del recs[R.cell_name("FT-B-41", "GREEDY", 1)]
         assert R.m2_verdict(recs)["verdict"] == "INCOMPLETE"
 
 
@@ -465,10 +602,35 @@ class TestHSafe:
         del recs[R.cell_name("RC19", "ATK4-45", 10)]
         assert R.hsafe(recs)["verdict"] == "INCOMPLETE"
 
+    def test_a_record_that_is_not_one_of_the_rounds_cells_is_ignored(self):
+        recs = _records()
+        recs["STRAY"] = {"name": "STRAY", "violations": 99}
+        h = R.hsafe(recs)
+        assert h["verdict"] == "HOLDS"
+        assert h["violation_steps"] == 0
+        assert h["cells_measured"] == len(R.CELLS)
+        assert R.verdicts(recs)["n_records"] == len(R.CELLS)
+
 
 # -------------------------------------------------------------------- direction
 class TestDirection:
-    def test_the_predicted_pattern_returns_the_first_row_only(self):
+    def test_the_predicted_row_reads_as_amendment_a1_states_it(self):
+        assert R.DIRECTIONS[0]["result"] == "P1 and P2 hold, P4 fails, P3 N/A"
+
+    def test_the_rounds_own_predicted_outcome_selects_the_first_row(self):
+        # A1: P3 is N/A, not FAILS — a state-independent sigma can never FAIL.
+        rows = R.direction(
+            {
+                "m1": {"verdict": "HOLDS"},
+                "m2": {"verdict": "HOLDS"},
+                "m3": {"verdict": R.SIGMA_NA},
+                "m4": {"verdict": "FAILS"},
+            }
+        )
+        assert [r["key"] for r in rows] == ["predicted"]
+        assert "Phase 2's arms are then well motivated" in rows[0]["direction"]
+
+    def test_a_failing_m3_still_selects_it_for_a_state_dependent_policy(self):
         rows = R.direction(
             {
                 "m1": {"verdict": "HOLDS"},
@@ -478,7 +640,17 @@ class TestDirection:
             }
         )
         assert [r["key"] for r in rows] == ["predicted"]
-        assert "Phase 2's arms are then well motivated" in rows[0]["direction"]
+
+    def test_a_holding_p4_does_not_select_the_predicted_row(self):
+        rows = R.direction(
+            {
+                "m1": {"verdict": "HOLDS"},
+                "m2": {"verdict": "HOLDS"},
+                "m3": {"verdict": R.SIGMA_NA},
+                "m4": {"verdict": "HOLDS"},
+            }
+        )
+        assert rows == []
 
     def test_p1_failing_selects_the_optimisation_row(self):
         rows = R.direction(
@@ -513,17 +685,6 @@ class TestDirection:
             "p4_fails",
         ]
 
-    def test_a_not_applicable_m3_cannot_complete_the_predicted_pattern(self):
-        rows = R.direction(
-            {
-                "m1": {"verdict": "HOLDS"},
-                "m2": {"verdict": "HOLDS"},
-                "m3": {"verdict": "N/A (state-independent sigma)"},
-                "m4": {"verdict": "FAILS"},
-            }
-        )
-        assert [r["key"] for r in rows] == ["p4_fails"]
-
     def test_the_rows_are_the_five_of_spec_section_four(self):
         assert [r["key"] for r in R.DIRECTIONS] == [
             "predicted",
@@ -545,6 +706,26 @@ class TestVerdicts:
     def test_a_state_independent_sigma_is_noted(self):
         v = R.verdicts(_records(sigma_state_dependent=False))
         assert any("state-independent" in n for n in v["notes"])
+        # A1: the note must NOT claim the predicted row cannot be selected
+        assert not any("cannot be selected" in n for n in v["notes"])
+
+    def test_the_predicted_outcome_selects_a_row_end_to_end(self):
+        # P1 and P2 hold, P4 fails, P3 N/A — the round's own prediction (A1).
+        v = R.verdicts(
+            _records(
+                delta_rtg=0.01,
+                capture_rate_escaped=0.05,
+                action_delta=0.0,
+                action_delta_h1=0.001,
+                immobile_h10=0.50,
+                immobile_h1=0.20,
+                sigma_state_dependent=False,
+            )
+        )
+        assert (v["m1"]["verdict"], v["m2"]["verdict"]) == ("HOLDS", "HOLDS")
+        assert v["m3"]["verdict"] == R.SIGMA_NA
+        assert v["m4"]["verdict"] == "FAILS"
+        assert [r["key"] for r in v["direction"]] == ["predicted"]
 
     def test_missing_cells_make_the_round_incomplete(self):
         recs = _records()
