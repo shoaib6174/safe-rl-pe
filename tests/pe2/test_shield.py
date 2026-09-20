@@ -2379,3 +2379,265 @@ class TestPredictiveShieldOptimisationsArePureSpeedups:
                 assert shield._accept(u, state, obstacles) == (
                     contact_free and worst >= margin
                 )
+
+
+# --- S16 Task 1: RecoveryShield + the escape-direction feature ------------
+#
+# Hand-checkable poses, all with NO obstacles so every number below follows
+# from the four wall rows alone (x_lim = y_lim = 4.85).
+#
+# STALL_POSE = (4.805, 0, +1.2): the body row (h = 0.045, a_omega = 0) is
+# satisfied at v = 0, and the soft +x wall row binds:
+#     h   = x_lim - (x + d cos th) = 0.045 - 0.1 cos 1.2 = 0.0087642
+#     c1  = dt * d * sin th        = 0.05 * 0.1 * sin 1.2 = 0.00466020
+#     c2  = -gamma * h             = -0.2 * 0.0087642     = -0.00175284
+#     c1 * omega >= c2  =>  omega >= c2 / c1 = -0.3761312
+# so turning further INTO the wall is blocked and turning away is free. The
+# mirror pose (theta = -1.2) blocks the other sign. A full-speed nominal is
+# immobile at both.
+STALL_POSE = np.array([4.805, 0.0, 1.2])
+STALL_POSE_MIRROR = np.array([4.805, 0.0, -1.2])
+STALL_OMEGA_LO = -0.37613120240498926  # rad/s, the bound derived above
+FREE_POSE = np.array([0.0, 0.0, 0.0])  # nothing within 4.85 m: nothing binds
+# Nose into the corner: every pure turn is refused as well, so the recovery
+# has nothing better than the normal result to offer.
+CORNER_POSE = np.array([4.9, 4.9, np.pi / 4])
+FULL_SPEED = (CFG.v_max, 0.0)
+
+
+class TestEscapeFeatures:
+    def test_bounds_are_the_dcbf_rows_at_zero_speed(self):
+        from pe2.shield import escape_omega_bounds
+
+        shield = CBFShield(CFG)
+        lo, hi = escape_omega_bounds(shield, STALL_POSE, [])
+        assert lo == pytest.approx(STALL_OMEGA_LO)
+        assert hi == CFG.omega_max  # the box edge: nothing binds on that side
+
+    def test_features_are_the_bounds_normalised_by_omega_max(self):
+        from pe2.shield import escape_features
+
+        f = escape_features(CBFShield(CFG), STALL_POSE, [])
+        assert f.shape == (2,) and f.dtype == np.float32
+        np.testing.assert_allclose(
+            f, [STALL_OMEGA_LO / CFG.omega_max, 1.0], rtol=0, atol=1e-7
+        )
+
+    def test_feature_sign_reflects_which_turn_the_filter_admits(self):
+        from pe2.shield import escape_features
+
+        shield = CBFShield(CFG)
+        for pose, blocked_sign in ((STALL_POSE, -1.0), (STALL_POSE_MIRROR, +1.0)):
+            f = escape_features(shield, pose, [])
+            # the blocked side is pulled in off the box edge, the free side is not
+            if blocked_sign < 0:
+                assert -1.0 < f[0] < 0.0 and f[1] == pytest.approx(1.0)
+            else:
+                assert 0.0 < f[1] < 1.0 and f[0] == pytest.approx(-1.0)
+            # and the filter agrees: the free sign executes the larger |omega|
+            up, _ = shield.filter((0.0, CFG.omega_max), pose, [], v_max=CFG.v_max)
+            um, _ = shield.filter((0.0, -CFG.omega_max), pose, [], v_max=CFG.v_max)
+            free = um if blocked_sign > 0 else up
+            other = up if blocked_sign > 0 else um
+            assert abs(free[1]) > abs(other[1])
+
+    def test_free_pose_gives_the_whole_action_box(self):
+        from pe2.shield import escape_features
+
+        np.testing.assert_allclose(
+            escape_features(CBFShield(CFG), FREE_POSE, []), [-1.0, 1.0]
+        )
+
+    def test_infeasible_rows_give_zero_zero(self):
+        from pe2.shield import escape_features, escape_omega_bounds
+
+        # Body on the +x wall heading straight at it: the soft row has
+        # a_omega = d sin(0) = 0 and h = -0.1 < 0, so c1 = 0 while c2 > 0 --
+        # no omega satisfies it at v = 0.
+        pose = np.array([4.85, 0.0, 0.0])
+        assert escape_omega_bounds(CBFShield(CFG), pose, []) is None
+        np.testing.assert_allclose(
+            escape_features(CBFShield(CFG), pose, []), [0.0, 0.0]
+        )
+
+    def test_no_shield_gives_the_whole_action_box(self):
+        from pe2.shield import escape_features
+
+        np.testing.assert_allclose(escape_features(None, STALL_POSE, []), [-1.0, 1.0])
+
+    def test_features_stay_inside_the_unit_interval_everywhere(self):
+        from pe2.shield import escape_features
+
+        rng = np.random.default_rng(16_001)
+        shield = CBFShield(CFG)
+        seen_narrow = 0
+        for _ in range(400):
+            obstacles = _random_obstacles(rng)
+            state = _random_free_state(rng, obstacles)
+            f = escape_features(shield, state, obstacles)
+            assert f.shape == (2,) and np.all(f >= -1.0) and np.all(f <= 1.0)
+            seen_narrow += int(f[0] > -1.0 or f[1] < 1.0)
+        assert seen_narrow > 0  # the feature is not a constant
+
+
+class _RecoveryCounter:
+    """Tallies `recovery_fired` across a whole evaluation without adding any
+    counter to the library class."""
+
+    def __init__(self, shield):
+        self.shield = shield
+        self.fired = 0
+        self.moving_recoveries = 0
+        self._filter = shield.filter
+        shield.filter = self._wrapped
+
+    def _wrapped(self, action, state, obstacles, v_max=None):
+        u, info = self._filter(action, state, obstacles, v_max)
+        if info["recovery_fired"]:
+            self.fired += 1
+            self.moving_recoveries += int(float(u[0]) != 0.0)
+        return u, info
+
+
+class TestRecoveryShield:
+    def test_fires_at_exactly_the_twentieth_immobile_step(self):
+        from pe2.shield import RECOVERY_AFTER, RecoveryShield
+
+        assert RECOVERY_AFTER == 20
+        shield = RecoveryShield(CFG)
+        for step in range(1, 20):
+            u, info = shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)
+            assert info["immobile"], f"step {step} was not immobile"
+            assert info["recovery_fired"] is False, f"fired early at step {step}"
+            np.testing.assert_allclose(u, [0.0, 0.0], atol=1e-12)
+        u, info = shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)
+        assert info["recovery_fired"] is True
+        assert u[1] == pytest.approx(CFG.omega_max)
+
+    def test_recovery_after_is_configurable(self):
+        from pe2.shield import RecoveryShield
+
+        shield = RecoveryShield(CFG, recovery_after=3)
+        fired = [
+            shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)[1][
+                "recovery_fired"
+            ]
+            for _ in range(4)
+        ]
+        assert fired == [False, False, True, True]
+
+    def test_picks_the_sign_the_filter_admits(self):
+        from pe2.shield import RecoveryShield
+
+        for pose, sign in ((STALL_POSE, +1.0), (STALL_POSE_MIRROR, -1.0)):
+            shield = RecoveryShield(CFG, recovery_after=1)
+            u, info = shield.filter(FULL_SPEED, pose, [], v_max=CFG.v_max)
+            assert info["recovery_fired"] is True
+            assert u[1] == pytest.approx(sign * CFG.omega_max)
+
+    def test_counter_resets_on_a_step_that_moves(self):
+        from pe2.shield import RecoveryShield
+
+        shield = RecoveryShield(CFG, recovery_after=5)
+        for _ in range(4):
+            assert not shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)[1][
+                "recovery_fired"
+            ]
+        _, info = shield.filter(FULL_SPEED, FREE_POSE, [], v_max=CFG.v_max)
+        assert info["immobile"] is False and info["recovery_fired"] is False
+        # the run restarted: four more immobile steps must still not fire
+        for _ in range(4):
+            assert not shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)[1][
+                "recovery_fired"
+            ]
+        assert shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)[1][
+            "recovery_fired"
+        ]
+
+    def test_falls_back_to_the_normal_result_when_no_turn_is_admissible(self):
+        from pe2.shield import RECOVERY_OMEGA_MIN, RecoveryShield
+
+        assert RECOVERY_OMEGA_MIN == 0.1
+        shield = RecoveryShield(CFG, recovery_after=1)
+        ref, _ = CBFShield(CFG).filter(FULL_SPEED, CORNER_POSE, [], v_max=CFG.v_max)
+        u, info = shield.filter(FULL_SPEED, CORNER_POSE, [], v_max=CFG.v_max)
+        assert abs(u[1]) <= RECOVERY_OMEGA_MIN
+        assert info["recovery_fired"] is False
+        assert np.array_equal(u, ref)
+
+    def test_recovery_step_still_reports_the_policys_own_nominal(self):
+        from pe2.shield import RecoveryShield
+
+        shield = RecoveryShield(CFG, recovery_after=1)
+        _, info = shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)
+        assert info["recovery_fired"] is True
+        # the recovery must not launder the stall away: the policy still asked
+        # for full speed and still got none of it
+        assert info["v_nom"] == pytest.approx(CFG.v_max)
+        assert info["v_exec"] == pytest.approx(0.0)
+        assert info["immobile"] is True and info["stalled"] is True
+        assert info["intervention"] is True
+
+    def test_info_keys_match_the_base_shield_plus_recovery_fired(self):
+        from pe2.shield import RecoveryShield
+
+        _, base = CBFShield(CFG).filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)
+        _, info = RecoveryShield(CFG, recovery_after=1).filter(
+            FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max
+        )
+        assert set(info) == set(base) | {"recovery_fired"}
+
+    def test_identical_to_cbf_shield_until_the_threshold_is_reached(self):
+        from pe2.shield import RecoveryShield
+
+        rng = np.random.default_rng(16_002)
+        base = CBFShield(CFG)
+        shield = RecoveryShield(CFG, recovery_after=10**9)
+        n_immobile = 0
+        for _ in range(500):
+            obstacles = _random_obstacles(rng)
+            state = _random_free_state(rng, obstacles)
+            nom = (
+                rng.uniform(0.0, CFG.v_max),
+                rng.uniform(-CFG.omega_max, CFG.omega_max),
+            )
+            u_ref, info_ref = base.filter(nom, state, obstacles, v_max=CFG.v_max)
+            u, info = shield.filter(nom, state, obstacles, v_max=CFG.v_max)
+            assert np.array_equal(u, u_ref)
+            assert info.pop("recovery_fired") is False
+            assert info == info_ref
+            n_immobile += int(info_ref["immobile"])
+        assert n_immobile > 0  # the counter really was being exercised
+
+    def test_zero_violations_over_fifty_random_episodes(self):
+        from pe2.scripted import GreedyEvader
+        from pe2.shield import RecoveryShield
+        from pe2.structured import SearchMDP
+
+        class Straight:  # drives at walls, so the filter stalls it constantly
+            def predict(self, obs, deterministic=True):
+                return np.array([1.0, 0.0], dtype=np.float32), None
+
+        shield = RecoveryShield(CFG)
+        spy = _RecoveryCounter(shield)
+        mdp = SearchMDP(CFG, GreedyEvader, hold=10, shield=shield)
+        for i in range(50):
+            log = mdp.play_episode(Straight().predict, 1_730_000 + i)
+            assert log["violations"] == 0
+        assert mdp.violations_total == 0
+        assert spy.fired > 0  # the zero above is not vacuous
+        assert spy.moving_recoveries == 0  # v = 0: the recovery never translates
+
+    def test_the_counter_spans_episodes_because_the_shield_does(self):
+        # Documented, deliberate: a shield carries no episode hook, so the
+        # immobile run continues across an episode boundary. Pinned here so a
+        # caller that needs per-episode counting builds a fresh shield.
+        from pe2.shield import RecoveryShield
+
+        shield = RecoveryShield(CFG, recovery_after=3)
+        shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)
+        shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)
+        assert shield._immobile_run == 2
+        assert shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)[1][
+            "recovery_fired"
+        ]

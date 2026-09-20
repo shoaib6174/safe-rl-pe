@@ -729,3 +729,220 @@ class TestStructuredPursuerPolicy:
         assert spy.shapes and all(s == (14,) for s in spy.shapes)
         assert w._opponent.decisions == len(spy.shapes)
         assert w._opponent.last_exec is not None and len(w._opponent.last_exec) == 2
+
+
+class TestEscapeObs:
+    """S16 arm OBS: two extra features carrying the admissible omega range at
+    v = 0 (docs/pathway/loop_fixes_prereg_2026-09-20.md section 2)."""
+
+    def test_off_by_default_the_observation_is_unchanged(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader, hold=10, shield=CBFShield(CFG))
+        assert m.escape_obs is False
+        assert m.observation_space.shape == (11,)
+        obs, _ = m.reset(seed=900_2000)
+        assert obs.shape == (11,)
+
+    def test_shield_obs_alone_is_still_three_features(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(
+            CFG, GreedyEvader, hold=10, shield=CBFShield(CFG), shield_obs=True
+        )
+        obs, _ = m.reset(seed=900_2001)
+        assert m.observation_space.shape == (14,) and obs.shape == (14,)
+
+    def test_escape_obs_adds_exactly_two_features(self):
+        from pe2.shield import CBFShield, escape_features
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(
+            CFG,
+            GreedyEvader,
+            hold=10,
+            shield=CBFShield(CFG),
+            shield_obs=True,
+            escape_obs=True,
+        )
+        assert m.observation_space.shape == (16,)
+        obs, _ = m.reset(seed=900_2002)
+        assert obs.shape == (16,) and obs.dtype == np.float32
+        env = m.inner.env
+        np.testing.assert_array_equal(
+            obs[-2:], escape_features(m.shield, env.pursuer_pose, env.obstacles)
+        )
+
+    def test_escape_obs_without_shield_obs_adds_two(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(
+            CFG, GreedyEvader, hold=10, shield=CBFShield(CFG), escape_obs=True
+        )
+        assert m.observation_space.shape == (13,)
+        obs, _ = m.reset(seed=900_2003)
+        assert obs.shape == (13,)
+
+    def test_features_track_the_current_pose_through_an_episode(self):
+        from pe2.shield import CBFShield, escape_features
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(
+            CFG, GreedyEvader, hold=10, shield=CBFShield(CFG), escape_obs=True
+        )
+        obs, _ = m.reset(seed=900_2004)
+        for _ in range(20):
+            obs, _r, term, trunc, _i = m.step(np.array([1.0, 0.0], dtype=np.float32))
+            env = m.inner.env
+            np.testing.assert_array_equal(
+                obs[-2:], escape_features(m.shield, env.pursuer_pose, env.obstacles)
+            )
+            if term or trunc:
+                break
+
+    def test_without_a_shield_the_features_are_the_whole_box(self):
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader, hold=10, escape_obs=True)
+        obs, _ = m.reset(seed=900_2005)
+        np.testing.assert_allclose(obs[-2:], [-1.0, 1.0])
+
+    def test_evaluate_structured_passes_escape_obs_through(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import evaluate_structured
+
+        class Spy:
+            def __init__(self):
+                self.shapes = []
+
+            def predict(self, obs, deterministic=True):
+                self.shapes.append(obs.shape)
+                return np.array([1.0, 0.0], dtype=np.float32), None
+
+        spy = Spy()
+        evaluate_structured(
+            spy,
+            CFG,
+            GreedyEvader,
+            1,
+            900_2006,
+            hold=10,
+            shield_factory=lambda: CBFShield(CFG),
+            shield_obs=True,
+            escape_obs=True,
+        )
+        assert spy.shapes and all(s == (16,) for s in spy.shapes)
+
+    def test_structured_pursuer_policy_feeds_sixteen_dims(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import StructuredPursuerPolicy
+
+        class Spy:
+            def __init__(self):
+                self.shapes = []
+
+            def predict(self, obs, deterministic=True):
+                self.shapes.append(obs.shape)
+                return np.array([1.0, 0.0], dtype=np.float32), None
+
+        spy = Spy()
+        w = SingleAgentWrapper(
+            CFG,
+            "evader",
+            lambda: StructuredPursuerPolicy(
+                spy, CFG, CBFShield(CFG), HOLD, True, escape_obs=True
+            ),
+        )
+        w.reset(seed=900_2007)
+        for _ in range(60):
+            _, _, term, trunc, info = w.step(np.array([1.0, 0.0], dtype=np.float32))
+            w._opponent.record(
+                bool(info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"])
+            )
+            if term or trunc:
+                break
+        assert spy.shapes and all(s == (16,) for s in spy.shapes)
+
+
+class TestLearnerObsRoutesAgree:
+    """`SearchMDP` and `StructuredPursuerPolicy` each assemble the learner's
+    observation themselves. V1-P pins the executed commands; this pins the
+    INPUT, feature for feature, so the two cannot drift apart."""
+
+    @staticmethod
+    def _routes(seed, shield_obs, escape_obs, n_wanted):
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP, StructuredPursuerPolicy
+
+        class Spy:
+            def __init__(self):
+                self.rows = []
+
+            def predict(self, obs, deterministic=True):
+                self.rows.append(np.asarray(obs, dtype=np.float32).copy())
+                return np.array([0.3, -0.7], dtype=np.float32), None
+
+        mdp_spy, pol_spy = Spy(), Spy()
+        got = 0
+        i = 0
+        while got < n_wanted:
+            s = seed + i
+            i += 1
+            SearchMDP(
+                CFG,
+                BoxRoundTripEvader,
+                hold=HOLD,
+                shield=CBFShield(CFG),
+                shield_obs=shield_obs,
+                escape_obs=escape_obs,
+            ).play_episode(mdp_spy.predict, s)
+            w = SingleAgentWrapper(
+                CFG,
+                "evader",
+                lambda: StructuredPursuerPolicy(
+                    pol_spy, CFG, CBFShield(CFG), HOLD, shield_obs, escape_obs
+                ),
+            )
+            w.reset(seed=s)
+            pol = w._opponent
+            ev = GreedyEvader()
+            ev.reset()
+            while True:
+                v, om = ev.act(w._last_joint_obs["evader"], w.env)
+                _, _, term, trunc, info = w.step(
+                    np.array(
+                        [2 * v / CFG.evader_v_max - 1, om / CFG.omega_max],
+                        dtype=np.float32,
+                    )
+                )
+                pol.record(
+                    bool(
+                        info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"]
+                    )
+                )
+                if term or trunc:
+                    break
+            got = min(len(mdp_spy.rows), len(pol_spy.rows))
+            assert i < 40, "not enough decision points on this seed stream"
+        return mdp_spy.rows, pol_spy.rows
+
+    def test_the_two_routes_build_the_same_observation_on_200_states(self):
+        mdp_rows, pol_rows = self._routes(900_2100, True, True, 200)
+        assert len(mdp_rows) == len(pol_rows) >= 200
+        for k, (a, b) in enumerate(zip(mdp_rows, pol_rows, strict=True)):
+            assert a.shape == b.shape == (16,)
+            assert np.array_equal(a, b), f"decision {k}: {a} != {b}"
+        # and the agreement is not the agreement of two constants: the escape
+        # pair really is narrowed by the map on a large share of these states
+        escape = np.array([row[-2:] for row in mdp_rows])
+        assert len(np.unique(escape, axis=0)) > 1
+        assert ((escape[:, 0] > -1.0) | (escape[:, 1] < 1.0)).sum() > 50
+
+    def test_the_two_routes_agree_with_only_the_escape_features_on(self):
+        mdp_rows, pol_rows = self._routes(900_2200, False, True, 200)
+        assert len(mdp_rows) >= 200
+        for a, b in zip(mdp_rows, pol_rows, strict=True):
+            assert a.shape == (13,) and np.array_equal(a, b)

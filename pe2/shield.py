@@ -65,6 +65,8 @@ from pe2.env import pursuer_step, wrap_angle
 INTERVENTION_ATOL = 1e-4  # |Δu| above this counts as an intervention (root convention)
 STALL_V_FRAC = 0.05  # executed speed <= this fraction of v_max counts as stopped
 MOVE_V_FRAC = 0.5  # nominal speed >= this fraction of v_max counts as "wanted to move"
+RECOVERY_AFTER = 20  # consecutive immobile steps before RecoveryShield fires (D125)
+RECOVERY_OMEGA_MIN = 0.1  # rad/s a pure turn must clear to be worth taking
 
 
 @dataclass
@@ -549,6 +551,131 @@ class NoOpShield(CBFShield):
         u = np.array([v_nom, w_nom], dtype=np.float64)
         cons = self.constraints(state, obstacles)
         return u, self._info("none", True, u, v_nom, w_nom, cons, v_max)
+
+
+class RecoveryShield(CBFShield):
+    """`CBFShield` plus the scripted rotation recovery of S16 arm `REC`.
+
+    D125-D128: a shielded pursuer can spend hundreds of steps asking for a
+    forward command the filter refuses while a pure turn is admissible the
+    whole time, and nothing in its observation or its discounted return tells
+    it to take that turn. This subclass takes it for it: after
+    `recovery_after` consecutive steps whose filtered result is `immobile`,
+    the nominal is replaced by a pure turn `(0, ±ω_max)` -- both signs are
+    filtered and the one with the larger executed `|ω|` wins (ties go to the
+    positive sign, so the rule is deterministic) -- provided that `|ω|`
+    clears `RECOVERY_OMEGA_MIN`. Otherwise the normal result stands.
+
+    The recovery asks for `v = 0`, which never translates the body, and the
+    turn it asks for is itself put through the same filter, so it cannot make
+    contact; `test_zero_violations_over_fifty_random_episodes` measures that.
+
+    The reported info carries every key `CBFShield` reports plus
+    `recovery_fired`. On a recovery step the *barrier* and *executed* fields
+    describe the turn that was executed, but `v_nom`, `intervention` and
+    `stalled` are still measured against the POLICY's own nominal -- the
+    recovery must not launder away the fact that the policy asked to move and
+    was refused, or the stall metrics the round is judged on would read as
+    solved wherever the recovery merely papered over them.
+
+    The immobile run is shield state, not episode state, and a shield has no
+    episode hook: a run that is still open when an episode ends continues
+    into the next one. Build one `RecoveryShield` per episode if that matters.
+    """
+
+    def __init__(
+        self, cfg: EnvConfig, recovery_after: int = RECOVERY_AFTER, **cbf_kwargs
+    ):
+        super().__init__(cfg, **cbf_kwargs)
+        self.recovery_after = int(recovery_after)
+        self._immobile_run = 0
+
+    def filter(
+        self,
+        action: tuple[float, float] | np.ndarray,
+        state: np.ndarray,
+        obstacles: list[dict],
+        v_max: float | None = None,
+    ) -> tuple[np.ndarray, dict]:
+        """`CBFShield.filter`, with the rotation recovery on top."""
+        u, info = super().filter(action, state, obstacles, v_max)
+        if not info["immobile"]:
+            self._immobile_run = 0
+            info["recovery_fired"] = False
+            return u, info
+        self._immobile_run += 1
+        if self._immobile_run < self.recovery_after:
+            info["recovery_fired"] = False
+            return u, info
+        best_u, best_info = None, None
+        for omega in (self.cfg.omega_max, -self.cfg.omega_max):
+            u_try, info_try = super().filter((0.0, omega), state, obstacles, v_max)
+            if best_u is None or abs(u_try[1]) > abs(best_u[1]):
+                best_u, best_info = u_try, info_try
+        if abs(best_u[1]) <= RECOVERY_OMEGA_MIN:
+            info["recovery_fired"] = False
+            return u, info
+        v_max = self.cfg.v_max if v_max is None else v_max
+        v_nom, w_nom = self._clip_nominal(action, v_max)
+        rec = self._info(
+            best_info["method"],
+            best_info["feasible"],
+            best_u,
+            v_nom,
+            w_nom,
+            self.constraints(state, obstacles),
+            v_max,
+        )
+        rec["recovery_fired"] = True
+        return best_u, rec
+
+
+def escape_omega_bounds(
+    shield: CBFShield, state: np.ndarray, obstacles: list[dict]
+) -> tuple[float, float] | None:
+    """The interval of ω `shield`'s DCBF rows admit at v = 0, ∩ the action box.
+
+    Each row `c0·v + c1·ω ≥ c2` collapses at v = 0 to `c1·ω ≥ c2`: a lower
+    bound when c1 > 0, an upper bound when c1 < 0, and a feasibility test
+    (`0 ≥ c2`) when c1 is exactly zero -- which is what every HARD body row
+    is, since translating is the only way to change a body barrier. Returns
+    None when the rows admit no ω at all.
+
+    This is the LINEARISED admissible set, not the filter's own exact
+    one-step test, so it is the set the QP's candidates are located from and
+    not a promise about what `CBFShield.filter` will return.
+    """
+    lo, hi = -shield.cfg.omega_max, shield.cfg.omega_max
+    for _c0, c1, c2 in shield._dcbf_rows(shield.constraints(state, obstacles)):
+        if c1 == 0.0:
+            if c2 > 0.0:
+                return None
+            continue
+        bound = c2 / c1
+        if c1 > 0.0:
+            lo = max(lo, bound)
+        else:
+            hi = min(hi, bound)
+    return None if lo > hi else (lo, hi)
+
+
+def escape_features(
+    shield: CBFShield | None, state: np.ndarray, obstacles: list[dict]
+) -> np.ndarray:
+    """`escape_omega_bounds` normalised by ω_max and clipped to [−1, 1].
+
+    The two observation features of S16 arm `OBS`: which way the filter will
+    let the robot turn if it stops. `(0, 0)` means no turn is admissible;
+    `(−1, 1)` means every turn is, which is also what `shield=None` reports —
+    an unshielded run refuses nothing.
+    """
+    if shield is None:
+        return np.array([-1.0, 1.0], dtype=np.float32)
+    bounds = escape_omega_bounds(shield, state, obstacles)
+    if bounds is None:
+        return np.zeros(2, dtype=np.float32)
+    scaled = np.asarray(bounds, dtype=np.float64) / shield.cfg.omega_max
+    return np.clip(scaled, -1.0, 1.0).astype(np.float32)
 
 
 def _backup_choice(contact_free: np.ndarray, worst: np.ndarray, obj: np.ndarray) -> int:

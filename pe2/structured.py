@@ -39,6 +39,7 @@ from pe2.scripted import (
     _clip_omega,
     wrap_angle,
 )
+from pe2.shield import escape_features
 
 HOLD = 10  # env steps one search decision is held (spec section 2)
 R_ACQ = 0.2  # acquisition bonus per invisible->visible onset (arm SA)
@@ -144,6 +145,7 @@ class SearchMDP(gym.Env):
         shield=None,
         shield_obs: bool = False,
         stall_penalty: float = 0.0,
+        escape_obs: bool = False,
     ):
         super().__init__()
         self.cfg = cfg
@@ -182,12 +184,20 @@ class SearchMDP(gym.Env):
         # is pinned. The scripted law keeps the raw observation. `stall_penalty`
         # subtracts w per stalled env step in a learner's span; NOT
         # potential-based by design (the objective must change).
+        # S16 arm OBS (loop_fixes_prereg_2026-09-20.md section 2, D128):
+        # `escape_obs` appends the admissible omega range at v = 0 -- which way
+        # the filter would let the pursuer turn if it stopped asking to move.
+        # Unlike `shield_obs` these are read from the CURRENT true pose, not
+        # from the last executed step, because they are a property of the map
+        # and the pose rather than of what the filter just did.
         self.shield_obs = bool(shield_obs)
+        self.escape_obs = bool(escape_obs)
         self.stall_penalty = float(stall_penalty)
         self.span_stalled = 0
-        if self.shield_obs:
+        extra = 3 * self.shield_obs + 2 * self.escape_obs
+        if extra:
             self.observation_space = spaces.Box(
-                low=-2.0, high=2.0, shape=(obs_dim(cfg) + 3,), dtype=np.float32
+                low=-2.0, high=2.0, shape=(obs_dim(cfg) + extra,), dtype=np.float32
             )
 
     # -- internals -------------------------------------------------------
@@ -276,12 +286,21 @@ class SearchMDP(gym.Env):
             dtype=np.float32,
         )
 
+    def escape_features(self) -> np.ndarray:
+        """`pe2.shield.escape_features` at the pursuer's CURRENT true pose --
+        the pose the decision about to be taken will act from."""
+        env = self.inner.env
+        return escape_features(self.shield, env.pursuer_pose, env.obstacles)
+
     def _learner_obs(self, obs: np.ndarray) -> np.ndarray:
-        if not self.shield_obs:
+        if not (self.shield_obs or self.escape_obs):
             return obs
-        return np.concatenate(
-            [np.asarray(obs, dtype=np.float32), self.shield_features()]
-        )
+        parts = [np.asarray(obs, dtype=np.float32)]
+        if self.shield_obs:
+            parts.append(self.shield_features())
+        if self.escape_obs:
+            parts.append(self.escape_features())
+        return np.concatenate(parts)
 
     # -- gym API (training) ---------------------------------------------
     def reset(self, *, seed: int | None = None, options: dict | None = None):
@@ -356,6 +375,7 @@ def evaluate_structured(
     hold: int = HOLD,
     shield_factory: Callable[[], object] | None = None,
     shield_obs: bool = False,
+    escape_obs: bool = False,
 ) -> list[dict]:
     """Paired-seed evaluation of a search policy inside SearchMDP (seeds
     seed0 + i, deterministic predict, frozen opponent). Same log schema as
@@ -370,6 +390,7 @@ def evaluate_structured(
         hold=hold,
         shield=shield_factory() if shield_factory is not None else None,
         shield_obs=shield_obs,
+        escape_obs=escape_obs,
     )
     return [mdp.play_episode(model.predict, seed0 + i) for i in range(n_episodes)]
 
@@ -579,12 +600,14 @@ class StructuredPursuerPolicy:
         shield=None,
         hold: int = HOLD,
         shield_obs: bool = False,
+        escape_obs: bool = False,
     ):
         self.model = model
         self.cfg = cfg
         self.shield = shield
         self.hold = int(hold)
         self.shield_obs = bool(shield_obs)
+        self.escape_obs = bool(escape_obs)
         self.law = InterceptLaw(cfg)
         self.metrics = None
         self.last_sinfo = None
@@ -623,18 +646,24 @@ class StructuredPursuerPolicy:
             dtype=np.float32,
         )
 
+    def _escape_features(self, env) -> np.ndarray:
+        """`SearchMDP.escape_features` on this route: same function, same
+        pose, so the learner sees the identical two numbers either way."""
+        return escape_features(self.shield, env.pursuer_pose, env.obstacles)
+
     def act(self, obs: np.ndarray, env) -> tuple[float, float]:
         self._recorded = False
         a = self.law.act(obs)
         if a is None:
             if self._hold_left <= 0:
-                lobs = (
-                    np.concatenate(
-                        [np.asarray(obs, dtype=np.float32), self._features()]
-                    )
-                    if self.shield_obs
-                    else obs
-                )
+                lobs = obs
+                if self.shield_obs or self.escape_obs:
+                    parts = [np.asarray(obs, dtype=np.float32)]
+                    if self.shield_obs:
+                        parts.append(self._features())
+                    if self.escape_obs:
+                        parts.append(self._escape_features(env))
+                    lobs = np.concatenate(parts)
                 self._held, _ = self.model.predict(lobs, deterministic=True)
                 self._hold_left = self.hold
                 self.decisions += 1
