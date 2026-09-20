@@ -30,16 +30,25 @@ Two evaluation-path corrections this round needs, both pinned by tests:
     threads it through an episode and resets it at each episode boundary, so
     MEM is evaluated as the recurrent policy it was trained as.
 
-Two readings the spec leaves open, fixed here BEFORE any number exists:
+Pre-registration amendments this runner implements (all written before any arm
+of this round exists):
+  - S16-A1: arm OBS exposes the LINEARISED admissible set (the DCBF rows at
+    v = 0), not the filter's exact one-step test; its direction row says so.
+  - S16-A2: a REC firing executes whatever the filter admits for the pure-turn
+    request, which is occasionally forward motion. The round therefore REPORTS
+    `recoveries` and `recoveries_translating` per gate cell -- how often the
+    immobility was escapable by moving all along -- and gates nothing on them.
+  - S16-A3: H-FIX-2's match test is ONE-SIDED (mean <= REC's + MATCH_BAR), and
+    an arm more than MATCH_BAR BELOW REC is labelled `MATCHES (BEATS REC)` and
+    leads the direction rather than hiding inside a match. BASE is excluded
+    from the match list and reported separately as `base_matches`.
+
+One reading the spec still leaves open, fixed here BEFORE any number exists:
   - H-FIX-1's capture guard ("its GreedyEvader capture is not significantly
     below BASE's") is applied SEED-MATCHED and by the round's own >= 2/3 rule:
     an arm is downgraded to `SOLVES (weaker)` iff BASE is significantly better
     (paired exact McNemar, p < 0.05) on at least PASS_MIN of the three seeds.
     The pooled seed-matched test is recorded beside it, report-only.
-  - H-FIX-2's "within 0.05 of REC's" is read ONE-SIDED: an arm matches iff its
-    mean is at most REC's + 0.05. An arm far BELOW REC beats the scripted
-    recovery and cannot sensibly be called a non-match; the two-sided flag and
-    a `beats` flag are recorded so both readings are visible.
 
 Usage:
   ./venv/bin/python scripts/derisk_s16_fixes.py --measure-start
@@ -377,6 +386,35 @@ def shield_factory_for(cfg: EnvConfig, recovery: bool):
     return lambda: CBFShield(cfg)
 
 
+class _RecoveryTally:
+    """Totals `RecoveryShield`'s firing counters across one evaluation.
+
+    Prereg amendment S16-A2: a firing executes whatever the filter admits for
+    the pure-turn request, which is occasionally forward motion, and the shield
+    now counts firings (`n_recoveries`) and the translating subset
+    (`n_recoveries_translating`) so this round can report the fraction -- it
+    says how often the immobility was escapable by MOVING all along. The
+    counters are per shield and this round builds one shield per episode, so
+    they have to be summed over the episodes of an evaluation. A shield with no
+    such counters (the plain `CBFShield` arms) tallies zero."""
+
+    def __init__(self, factory):
+        self._factory = factory
+        self.shields: list = []
+
+    def __call__(self):
+        self.shields.append(self._factory())
+        return self.shields[-1]
+
+    @property
+    def fired(self) -> int:
+        return sum(getattr(s, "n_recoveries", 0) for s in self.shields)
+
+    @property
+    def translating(self) -> int:
+        return sum(getattr(s, "n_recoveries_translating", 0) for s in self.shields)
+
+
 def gate_arm(
     model,
     *,
@@ -390,16 +428,17 @@ def gate_arm(
     entry each. Each entry is stashed into `holder["gate"]` as it completes, so
     a crash part-way through still hands `run_arm` the violations seen."""
     cfg = EnvConfig()
-    factory = shield_factory_for(cfg, recovery)
+    base_factory = shield_factory_for(cfg, recovery)
     out: dict = {}
     for name in GATE_OPPONENTS:
+        tally = _RecoveryTally(base_factory)
         logs = evaluate_arm_policy(
             model,
             cfg,
             gate_opponent_factory(name, device),
             GATE_N,
             GATE_SEED0,
-            shield_factory=factory,
+            shield_factory=tally,
             shield_obs=SHIELD_OBS,
             escape_obs=escape_obs,
             recurrent=recurrent,
@@ -427,12 +466,22 @@ def gate_arm(
             "n_immobile": int(sh["n_immobile"]),
             "pursuer_violations": int(sh["violation_steps"]),
         }
+        if recovery:
+            out[name] |= {
+                "recoveries": tally.fired,
+                "recoveries_translating": tally.translating,
+            }
         if holder is not None:
             holder.setdefault("gate", {})[name] = out[name]
         print(
             f"    vs {name:8s}: immobile {sh['immobile_step_rate']:.3f}, "
             f"deadlock eps {sh['deadlock_episode_rate']:.3f}, capture {k / n:.3f}, "
-            f"violations {sh['violation_steps']}",
+            f"violations {sh['violation_steps']}"
+            + (
+                f", recoveries {tally.fired} ({tally.translating} translating)"
+                if recovery
+                else ""
+            ),
             flush=True,
         )
     return out
@@ -819,13 +868,21 @@ def run_rec_arm(seed: int, device: str) -> dict:
             "pursuer_violations": int(
                 sum(e["pursuer_violations"] for e in gate.values())
             ),
+            # S16-A2, reported not gated: how often a firing escaped by moving
+            # rather than by turning.
+            "recoveries": int(sum(e["recoveries"] for e in gate.values())),
+            "recoveries_translating": int(
+                sum(e["recoveries_translating"] for e in gate.values())
+            ),
         },
         "provenance": provenance(),
     }
     verdict, reason = _arm_verdict(gate)
     result["verdict"] = verdict
     result["reason"] = (
-        f"{reason}; gate violations {result['final']['pursuer_violations']}"
+        f"{reason}; recoveries {result['final']['recoveries']} "
+        f"({result['final']['recoveries_translating']} translating); "
+        f"gate violations {result['final']['pursuer_violations']}"
     )
     _write_json(_arm_file(arm), result)
     print(f"[{arm}] {verdict}: {result['reason']}", flush=True)
@@ -926,7 +983,14 @@ def solving(fix1: dict) -> list[str]:
 
 def fix2_verdicts(results: dict) -> dict:
     """H-FIX-2, the headline: does a learned arm MATCH the scripted recovery?
-    Read one-sided (see the module docstring); the two-sided flag is recorded."""
+
+    Amendment S16-A3: the test is ONE-SIDED — a learned arm matches iff its mean
+    immobile-step rate is at most REC's + MATCH_BAR — and an arm strictly below
+    REC by more than MATCH_BAR is additionally labelled `MATCHES (BEATS REC)`,
+    because beating the scripted recovery would be the round's most surprising
+    and most publishable outcome and must not hide inside a match. `BASE` is not
+    a remedy: it is excluded from `matching` and reported as `base_matches`.
+    The strict two-sided flag is kept on every family, report-only."""
     rec = [immobile_rate(results, f"REC-{s}") for s in SEEDS]
     rec_mean = None if any(v is None for v in rec) else _mean(rec)
     per: dict = {}
@@ -943,16 +1007,32 @@ def fix2_verdicts(results: dict) -> dict:
             continue
         mean = _mean(rates)
         delta = mean - rec_mean
+        beats = bool(delta < -MATCH_BAR)
+        if delta > MATCH_BAR:
+            verdict = "DOES NOT MATCH"
+        else:
+            verdict = "MATCHES (BEATS REC)" if beats else "MATCHES"
         per[fam] = {
-            "verdict": "MATCHES" if delta <= MATCH_BAR else "DOES NOT MATCH",
+            "verdict": verdict,
             "mean": mean,
             "delta": delta,
-            "beats": bool(delta < -MATCH_BAR),
+            "beats": beats,
             "two_sided_within": bool(abs(delta) <= MATCH_BAR),
         }
-    matching = [f for f in REMEDIES if per[f]["verdict"] == "MATCHES"]
+    matching = [f for f in REMEDIES if per[f]["verdict"].startswith("MATCHES")]
+    beating = [f for f in REMEDIES if per[f]["beats"]]
     if rec_mean is None or any(v["verdict"] == "INCOMPLETE" for v in per.values()):
         headline = "INCOMPLETE"
+    elif beating:
+        headline = (
+            f"REFUTED, and more: {', '.join(beating)} BEATS REC (mean immobile-step rate "
+            f"more than {MATCH_BAR} BELOW the scripted recovery's)"
+            + (
+                f"; also matching: {', '.join(f for f in matching if f not in beating)}"
+                if len(matching) > len(beating)
+                else ""
+            )
+        )
     elif matching:
         headline = (
             "REFUTED: the pre-registered expectation was that no learned arm matches "
@@ -965,7 +1045,8 @@ def fix2_verdicts(results: dict) -> dict:
         "rec": {s: v for s, v in zip(SEEDS, rec, strict=True)},
         "per_family": per,
         "matching": matching,
-        "base_matches": per["BASE"]["verdict"] == "MATCHES",
+        "beating": beating,
+        "base_matches": per["BASE"]["verdict"].startswith("MATCHES"),
         "H_FIX_2": headline,
     }
 
@@ -1082,7 +1163,16 @@ def direction(h: dict) -> str:
             + "."
         )
     if matching:
-        text = MATCH_DIRECTION[matching[0]]
+        beating = [f for f in matching if f in (h.get("beating") or [])]
+        # amendment S16-A3: beating the scripted recovery leads, it does not
+        # hide inside the match row.
+        lead = (
+            f"{', '.join(beating)} BEATS REC — a learned arm is more than {MATCH_BAR} "
+            "BELOW the scripted recovery, the round's most surprising outcome. "
+            if beating
+            else ""
+        )
+        text = lead + MATCH_DIRECTION[matching[0]]
         if len(matching) > 1:
             text += f" Also matching REC: {', '.join(matching[1:])}."
         return warning + text
@@ -1148,6 +1238,7 @@ def summarize(results: dict, start: dict | None = None) -> dict:
                 "incomplete": not complete,
                 "solving": solving(f1),
                 "matching": f2["matching"],
+                "beating": f2["beating"],
                 "base_matches": f2["base_matches"],
             }
         ),

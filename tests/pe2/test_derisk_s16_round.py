@@ -344,6 +344,47 @@ class TestPerEpisodeShield:
         assert got == ref
 
 
+class TestRecoveryTally:
+    """Prereg amendment S16-A2: a firing executes what the filter admits, which
+    is occasionally forward motion, and `RecoveryShield` now counts firings and
+    the translating subset so the round can report that fraction. The counters
+    live on the shield and this round builds one shield per episode, so they
+    have to be totalled across an evaluation."""
+
+    class _Fake:
+        def __init__(self, fired, translating):
+            self.n_recoveries = fired
+            self.n_recoveries_translating = translating
+
+    def test_totals_across_the_per_episode_shields(self):
+        made = iter([self._Fake(4, 1), self._Fake(0, 0), self._Fake(6, 2)])
+        tally = R._RecoveryTally(lambda: next(made))
+        assert (tally.fired, tally.translating) == (0, 0)
+        for _ in range(3):
+            tally()
+        assert (tally.fired, tally.translating) == (10, 3)
+        assert len(tally.shields) == 3
+
+    def test_a_plain_shield_tallies_zero(self):
+        from pe2.config import EnvConfig
+        from pe2.shield import CBFShield
+
+        tally = R._RecoveryTally(lambda: CBFShield(EnvConfig()))
+        tally()
+        assert (tally.fired, tally.translating) == (0, 0)
+
+    def test_a_recovery_gate_reports_the_firings(self, monkeypatch):
+        monkeypatch.setattr(R, "GATE_OPPONENTS", ("GREEDY",))
+        monkeypatch.setattr(R, "GATE_N", 3)
+        monkeypatch.setattr(R, "GATE_SEED0", R.GATE_SEED0 + 27)
+        entry = R.gate_arm(TestPerEpisodeShield._Stall(), recovery=True)["GREEDY"]
+        assert entry["recoveries"] > 0  # the recovery really fired
+        assert 0 <= entry["recoveries_translating"] <= entry["recoveries"]
+        assert entry["pursuer_violations"] == 0
+        plain = R.gate_arm(TestPerEpisodeShield._Stall(), recovery=False)["GREEDY"]
+        assert "recoveries" not in plain  # only the REC arm reports them
+
+
 # ----------------------------------------------------------------------------
 # section 4: the three hypotheses
 # ----------------------------------------------------------------------------
@@ -428,8 +469,16 @@ class TestFix2:
         assert h["per_family"]["GAM"]["verdict"] == "DOES NOT MATCH"
         h = R.fix2_verdicts(_full(rec=(0.30, 0.30, 0.30), gam=(0.02, 0.02, 0.02)))
         g = h["per_family"]["GAM"]
-        assert g["verdict"] == "MATCHES" and g["beats"] is True
-        assert g["two_sided_within"] is False
+        assert g["beats"] is True and g["two_sided_within"] is False
+        # amendment S16-A3: beating REC must not hide inside the match label
+        assert g["verdict"] == "MATCHES (BEATS REC)"
+        assert h["beating"] == ["GAM"] and "GAM" in h["matching"]
+        assert "BEATS REC" in h["H_FIX_2"]
+
+    def test_beating_is_only_strictly_below_the_bar(self):
+        h = R.fix2_verdicts(_full(rec=(0.30, 0.30, 0.30), gam=(0.25, 0.25, 0.25)))
+        assert h["per_family"]["GAM"]["verdict"] == "MATCHES"
+        assert h["beating"] == []
 
     def test_base_matching_rec_is_reported_separately(self):
         h = R.fix2_verdicts(_full(rec=(0.40, 0.40, 0.40)))
@@ -510,6 +559,7 @@ class TestDirection:
             "incomplete": False,
             "solving": ["REC"],
             "matching": [],
+            "beating": [],
             "base_matches": False,
         }
         return R.direction(h | kw)
@@ -537,6 +587,10 @@ class TestDirection:
         assert "horizon rule" in self._d(matching=["GAM"])
         assert "memoryless architectures" in self._d(matching=["MEM"])
         assert "D113" in self._d(matching=["PEN"])
+
+    def test_an_arm_that_beats_rec_leads_the_direction(self):
+        d = self._d(matching=["OBS"], beating=["OBS"])
+        assert "BEATS REC" in d and "observation-design rule" in d
 
     def test_several_matches_name_them_all(self):
         d = self._d(matching=["GAM", "OBS"])
