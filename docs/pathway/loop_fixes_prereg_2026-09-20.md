@@ -96,3 +96,24 @@ Pending, non-blocking: two stale docstrings (`evaluate_structured` still says a 
 cross-episode state, which is false for `RecoveryShield`; and the recovery's own docstring repeats the
 overstated argument corrected above) are to be fixed after the S16 runner lands, to avoid editing `pe2/`
 while it is being built against.
+
+## Amendment S16-A2 (2026-09-20, before any arm exists): the recovery may translate, and that is kept
+
+A deeper probe in review falsified A1's empirical half: a **deterministic** firing exists that executes
+`v = 0.2308 m/s` (23 % of `v_max`) at a contact-free pose. The base rate is ~4e-6, which is why 5150 firings
+showed none. So the recovery is not a pure rotation: it *requests* `(0, ±ω_max)` and executes whatever the
+filter returns, which is occasionally a translation.
+
+**Ruling: the behaviour is KEPT, not fixed to force `v = 0`.** Three reasons. It is what §2 pre-registers
+("request `(0, ω)` in whichever sign the filter admits" — the request is the rotation, the execution is
+filtered as always). It is bit-for-bit the code path that produced the D125 diagnostic, so changing it now
+would mean the `REC` arm no longer matches the result that motivated this whole round. And when the filter
+does return forward motion for a turn request, that motion is admissible and escapes the immobility better
+than a turn would, which is the arm's purpose.
+
+**What must change instead:** (a) the docstring claiming `v = 0` is structural is false and is corrected;
+(b) a test asserting `moving_recoveries == 0` asserts a non-invariant and is demoted to **recording** the
+count; (c) the round reports, as a free diagnostic, the **fraction of recovery firings that translated rather
+than rotated** — a number worth having, since it says how often the immobility was escapable by moving all
+along. H-SAFE is unaffected: every recovery action is CBF-filtered exactly like every other action, and
+contact steps are counted for `REC` as for every arm.
