@@ -117,3 +117,18 @@ count; (c) the round reports, as a free diagnostic, the **fraction of recovery f
 than rotated** — a number worth having, since it says how often the immobility was escapable by moving all
 along. H-SAFE is unaffected: every recovery action is CBF-filtered exactly like every other action, and
 contact steps are counted for `REC` as for every arm.
+
+## Amendment S16-A3 (2026-09-20, before any arm exists): H-FIX-2's match test is one-sided
+
+§4's H-FIX-2 says a learned arm MATCHES `REC` iff its mean immobile-step rate is "within 0.05" of `REC`'s.
+Taken as a two-sided band that is wrong: an arm **0.10 below** `REC` — i.e. substantially BETTER than the
+scripted recovery — would fall outside the band and be recorded as a non-match, which is absurd.
+
+**Corrected: a learned arm MATCHES iff its mean immobile-step rate against `ATK4-45` is ≤ `REC`'s + 0.05.**
+One-sided. An arm at or below `REC` matches trivially, and an arm strictly below `REC` by more than 0.05 is
+additionally flagged **`BEATS REC`**, which would be the most surprising and most publishable outcome of the
+round and must not be hidden inside a "non-match".
+
+`BASE` is not a remedy and is excluded from the match list; whether `BASE` itself happens to sit within the
+band of `REC` is reported separately, since that would indicate the recovery did nothing in this round and
+would put every other comparison in question.
