@@ -114,3 +114,18 @@ consumed stream.
 One implementation bug worth naming because it would have silently blocked the round: S16's
 `require_arm_not_run` guard refused any re-gated arm, because a re-used family's checkpoint directory already
 exists. Found by the smoke, fixed and tested.
+
+## Amendment S17-A3 (2026-09-21, before any arm exists): the crash policy, decided in advance
+
+The runner writes an `UNDETERMINED` record for a crashed gate, and its stop-rule guard then refuses that arm
+forever. Because this round runs unattended, the remedy is fixed here rather than improvised later:
+
+**A crashed arm stays crashed.** Its `UNDETERMINED` record is not deleted and the arm is not re-run. Its
+family's three hypotheses are then decided on the surviving seeds under the existing ≥ 2 of 3 rule; if the
+losses make a family undecidable (fewer than 2 usable seeds), that family is reported **`INCOMPLETE`** and
+takes no verdict. This matches how every previous round in this programme treated a crashed arm and keeps the
+stop rule intact: nothing is re-run after a number is seen, including a number that failed to appear.
+
+Also recorded as the implementer's choices, not pre-registered and immaterial to any verdict: full per-step
+traces are kept for the first 5 episodes of each cell (aggregates cover all 500), and the probe stream is
+1 750 000+ per A2.
