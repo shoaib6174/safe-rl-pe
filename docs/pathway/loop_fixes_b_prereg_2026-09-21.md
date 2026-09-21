@@ -93,3 +93,24 @@ completeness, but **`recovery_kind` will be `forward`, `rotation` or `none` in t
 Also recorded, from Task 1's 50-episode safety test and consistent with D130: of **714 firings, 689 were
 `forward` and 25 `rotation`, with 0 violations** — independent support, before this round's gate, that the
 escape is almost always a straight command rather than a turn.
+
+## Amendment S17-A2 (2026-09-21, before any arm of this round exists): inputs pinned, probe stream recorded
+
+This round has no `--measure-start` step, so unlike S16 nothing in the code pins the checkpoints it consumes.
+Four of seven arm families are re-used S16 policies and the gate opponent is an S16-era attacker, so those
+inputs are pinned here instead, by SHA-256 prefix, before any arm runs:
+
+| input | sha256 (first 12) |
+|---|---|
+| gate attacker `ATK4-45_10000000.zip` | `5a9b1724d1e8` (identical to the value S16 recorded at its own start) |
+| `BASE-60/61/62` | `8fe1046fd116` / `38c64127557c` / `c7cb7ab57350` |
+| `OBS-60/61/62` | `e1422dfc1433` / `e352c83cc61a` / `b94aa28612c3` |
+| `GAM-60/61/62` | `a5383b61af3f` / `ead26637d7d8` / `bb519cd77002` |
+
+Also recorded, since §3 fixes only the gate stream: the `OBSGAM` training probes use stream **1 750 000+**,
+chosen by the implementer and adopted here. It is disjoint from the gate stream (1 740 000+) and from every
+consumed stream.
+
+One implementation bug worth naming because it would have silently blocked the round: S16's
+`require_arm_not_run` guard refused any re-gated arm, because a re-used family's checkpoint directory already
+exists. Found by the smoke, fixed and tested.
