@@ -2697,3 +2697,277 @@ class TestRecoveryShield:
         assert shield.filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)[1][
             "recovery_fired"
         ]
+
+
+# --- S17 Task 1: RecoveryShieldV2, the forward-offering recovery -----------
+#
+# More hand-checkable wall-only poses (x_lim = y_lim = 4.85, d = 0.1,
+# dt = 0.05, gamma = 0.2, move_eps = 0.05 * v_max = 0.05 m/s).
+#
+# REC2_ROT_POSE = (4.74, 0, 0): nose square-on to the +x wall.
+#     soft +x row: h = x_lim - (x + d cos 0) = 4.85 - 4.84 = 0.01
+#                  a_v = -1, a_omega = d sin 0 = 0
+#     dt*a_v*v + gamma*h >= 0  =>  -0.05 v >= -0.002  =>  v <= 0.04
+# so EVERY forward candidate is capped BELOW move_eps while omega is
+# unconstrained by that row -- exactly the state in which V2 must fall back
+# to V1's rotation. (The body row, h = 0.11, is looser and does not bind.)
+REC2_ROT_POSE = np.array([4.74, 0.0, 0.0])
+# REC2_POLICY_POSE / _NOM: found by search, pinned by the assertions in
+# `test_the_policys_own_nominal_is_tried_before_the_rotations` rather than by
+# magic numbers -- both forward candidates come back below 0.02 m/s there
+# while the policy's own nominal comes back above it (yet still immobile).
+REC2_POLICY_POSE = np.array([4.755, 0.0, -0.12])
+REC2_POLICY_NOM = (1.0, -2.6)
+REC2_POLICY_EPS = 0.02
+
+
+class TestRecoveryShieldV2:
+    def test_fires_at_exactly_the_twentieth_immobile_step(self):
+        from pe2.shield import RECOVERY_AFTER, RecoveryShieldV2
+
+        shield = RecoveryShieldV2(CFG)
+        assert shield.recovery_after == RECOVERY_AFTER == 20
+        for step in range(1, 20):
+            u, info = shield.filter(FULL_SPEED, REC2_ROT_POSE, [], v_max=CFG.v_max)
+            assert info["immobile"], f"step {step} was not immobile"
+            assert info["recovery_fired"] is False, f"fired early at step {step}"
+            assert info["recovery_kind"] == "none"
+            assert u[0] == pytest.approx(0.04)  # the bound derived above
+        u, info = shield.filter(FULL_SPEED, REC2_ROT_POSE, [], v_max=CFG.v_max)
+        assert info["recovery_fired"] is True
+        assert info["recovery_kind"] == "rotation"
+
+    def test_recovery_after_is_configurable(self):
+        from pe2.shield import RecoveryShieldV2
+
+        shield = RecoveryShieldV2(CFG, recovery_after=3)
+        fired = [
+            shield.filter(FULL_SPEED, REC2_ROT_POSE, [], v_max=CFG.v_max)[1][
+                "recovery_fired"
+            ]
+            for _ in range(4)
+        ]
+        assert fired == [False, False, True, True]
+
+    def test_counter_resets_on_a_step_that_moves(self):
+        from pe2.shield import RecoveryShieldV2
+
+        shield = RecoveryShieldV2(CFG, recovery_after=5)
+        for _ in range(4):
+            assert not shield.filter(FULL_SPEED, REC2_ROT_POSE, [], v_max=CFG.v_max)[1][
+                "recovery_fired"
+            ]
+        _, info = shield.filter(FULL_SPEED, FREE_POSE, [], v_max=CFG.v_max)
+        assert info["immobile"] is False and info["recovery_fired"] is False
+        for _ in range(4):
+            assert not shield.filter(FULL_SPEED, REC2_ROT_POSE, [], v_max=CFG.v_max)[1][
+                "recovery_fired"
+            ]
+        assert shield.filter(FULL_SPEED, REC2_ROT_POSE, [], v_max=CFG.v_max)[1][
+            "recovery_fired"
+        ]
+
+    def test_the_default_move_eps_is_the_immobility_threshold(self):
+        from pe2.shield import STALL_V_FRAC, RecoveryShieldV2
+
+        # move_eps = None means "moves" is exactly "not immobile", so the two
+        # thresholds can never disagree at the default.
+        shield = RecoveryShieldV2(CFG, recovery_after=1)
+        assert shield.move_eps is None
+        assert STALL_V_FRAC * CFG.v_max == 0.05
+
+    # --- the candidate order, which is the whole point of V2 (D130) -------
+
+    def test_full_speed_wins_when_both_forward_candidates_move(self):
+        """The ORDER test: at a pose where BOTH `(v_max, 0)` and
+        `(0.5 v_max, 0)` come back moving, the full-speed one must be the one
+        executed, because it is offered first."""
+        from pe2.shield import RecoveryShieldV2
+
+        base = CBFShield(CFG)
+        full, _ = base.filter((CFG.v_max, 0.0), FREE_POSE, [], v_max=CFG.v_max)
+        half, _ = base.filter((0.5 * CFG.v_max, 0.0), FREE_POSE, [], v_max=CFG.v_max)
+        # the premise: both move, and they are distinguishable
+        assert full[0] > 0.05 and half[0] > 0.05
+        assert full[0] != pytest.approx(half[0])
+
+        # a policy asking for nothing is immobile, so the recovery fires
+        shield = RecoveryShieldV2(CFG, recovery_after=1)
+        u, info = shield.filter((0.0, 0.0), FREE_POSE, [], v_max=CFG.v_max)
+        assert info["recovery_fired"] is True
+        assert info["recovery_kind"] == "forward"
+        np.testing.assert_allclose(u, full)
+        assert u[0] != pytest.approx(half[0])
+        assert (shield.n_recoveries, shield.n_recoveries_forward) == (1, 1)
+        assert shield.n_recoveries_rotation == 0
+
+    def test_the_policys_own_nominal_is_tried_before_the_rotations(self):
+        from pe2.shield import RecoveryShieldV2
+
+        base = CBFShield(CFG)
+        eps = REC2_POLICY_EPS
+        full = base.filter((CFG.v_max, 0.0), REC2_POLICY_POSE, [], v_max=CFG.v_max)[0]
+        half = base.filter(
+            (0.5 * CFG.v_max, 0.0), REC2_POLICY_POSE, [], v_max=CFG.v_max
+        )[0]
+        pol, pol_info = base.filter(
+            REC2_POLICY_NOM, REC2_POLICY_POSE, [], v_max=CFG.v_max
+        )
+        # the premise: neither forward candidate clears eps, the policy's own
+        # nominal does, and it is nonetheless immobile (so the recovery fires)
+        assert full[0] <= eps and half[0] <= eps
+        assert pol[0] > eps and pol_info["immobile"] is True
+
+        shield = RecoveryShieldV2(CFG, recovery_after=1, move_eps=eps)
+        u, info = shield.filter(REC2_POLICY_NOM, REC2_POLICY_POSE, [], v_max=CFG.v_max)
+        assert info["recovery_fired"] is True
+        assert info["recovery_kind"] == "policy"
+        np.testing.assert_allclose(u, pol)
+        # and it is counted as a firing but as neither a forward nor a rotation
+        assert shield.n_recoveries == 1
+        assert (shield.n_recoveries_forward, shield.n_recoveries_rotation) == (0, 0)
+
+    def test_falls_back_to_rotation_when_no_candidate_moves(self):
+        from pe2.shield import RecoveryShield, RecoveryShieldV2
+
+        base = CBFShield(CFG)
+        for cand in (
+            (CFG.v_max, 0.0),
+            (0.5 * CFG.v_max, 0.0),
+            FULL_SPEED,
+            (0.0, CFG.omega_max),
+            (0.0, -CFG.omega_max),
+        ):
+            u_c, _ = base.filter(cand, REC2_ROT_POSE, [], v_max=CFG.v_max)
+            assert u_c[0] <= 0.05, f"{cand} moved; the premise is wrong"
+
+        shield = RecoveryShieldV2(CFG, recovery_after=1)
+        u, info = shield.filter(FULL_SPEED, REC2_ROT_POSE, [], v_max=CFG.v_max)
+        assert info["recovery_fired"] is True
+        assert info["recovery_kind"] == "rotation"
+        assert abs(u[1]) == pytest.approx(CFG.omega_max)
+        assert u[1] > 0.0  # ties break to the positive sign, as in V1
+        # and it is bit-for-bit what V1 would have done here
+        u_v1, _ = RecoveryShield(CFG, recovery_after=1).filter(
+            FULL_SPEED, REC2_ROT_POSE, [], v_max=CFG.v_max
+        )
+        assert np.array_equal(u, u_v1)
+        assert (shield.n_recoveries, shield.n_recoveries_rotation) == (1, 1)
+        assert shield.n_recoveries_forward == 0
+
+    def test_no_admissible_turn_falls_back_to_the_normal_result(self):
+        from pe2.shield import RECOVERY_OMEGA_MIN, RecoveryShieldV2
+
+        shield = RecoveryShieldV2(CFG, recovery_after=1)
+        ref, _ = CBFShield(CFG).filter(FULL_SPEED, CORNER_POSE, [], v_max=CFG.v_max)
+        u, info = shield.filter(FULL_SPEED, CORNER_POSE, [], v_max=CFG.v_max)
+        assert abs(u[1]) <= RECOVERY_OMEGA_MIN
+        assert info["recovery_fired"] is False
+        assert info["recovery_kind"] == "none"
+        assert np.array_equal(u, ref)
+        assert shield.n_recoveries == 0
+
+    def test_v2_escapes_forward_where_v1_only_spins(self):
+        """D130 in one assertion: at `STALL_POSE` a half-speed straight
+        command is admissible and moves the body, and V1 never offers it."""
+        from pe2.shield import RecoveryShield, RecoveryShieldV2
+
+        u2, info2 = RecoveryShieldV2(CFG, recovery_after=1).filter(
+            FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max
+        )
+        u1, info1 = RecoveryShield(CFG, recovery_after=1).filter(
+            FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max
+        )
+        assert info1["recovery_fired"] and info2["recovery_fired"]
+        assert info2["recovery_kind"] == "forward"
+        assert u2[0] > 0.05 and u1[0] == pytest.approx(0.0)
+
+    # --- equivalence, keys, safety ----------------------------------------
+
+    def test_info_keys_match_the_base_shield_plus_the_two_recovery_keys(self):
+        from pe2.shield import RecoveryShieldV2
+
+        _, base = CBFShield(CFG).filter(FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max)
+        _, info = RecoveryShieldV2(CFG, recovery_after=1).filter(
+            FULL_SPEED, STALL_POSE, [], v_max=CFG.v_max
+        )
+        assert set(info) == set(base) | {"recovery_fired", "recovery_kind"}
+
+    def test_recovery_step_still_reports_the_policys_own_nominal(self):
+        from pe2.shield import RecoveryShieldV2
+
+        shield = RecoveryShieldV2(CFG, recovery_after=1)
+        _, info = shield.filter(FULL_SPEED, REC2_ROT_POSE, [], v_max=CFG.v_max)
+        assert info["recovery_fired"] is True
+        assert info["v_nom"] == pytest.approx(CFG.v_max)
+        assert info["v_exec"] == pytest.approx(0.0)
+        assert info["immobile"] is True and info["stalled"] is True
+        assert info["intervention"] is True
+
+    def test_identical_to_cbf_shield_until_the_threshold_is_reached(self):
+        from pe2.shield import RecoveryShieldV2
+
+        rng = np.random.default_rng(17_002)
+        base = CBFShield(CFG)
+        shield = RecoveryShieldV2(CFG, recovery_after=10**9)
+        n_immobile = 0
+        for _ in range(500):
+            obstacles = _random_obstacles(rng)
+            state = _random_free_state(rng, obstacles)
+            nom = (
+                rng.uniform(0.0, CFG.v_max),
+                rng.uniform(-CFG.omega_max, CFG.omega_max),
+            )
+            u_ref, info_ref = base.filter(nom, state, obstacles, v_max=CFG.v_max)
+            u, info = shield.filter(nom, state, obstacles, v_max=CFG.v_max)
+            assert np.array_equal(u, u_ref)
+            assert info.pop("recovery_fired") is False
+            assert info.pop("recovery_kind") == "none"
+            assert info == info_ref
+            n_immobile += int(info_ref["immobile"])
+        assert n_immobile > 0  # the counter really was being exercised
+        assert shield.n_recoveries == 0
+
+    def test_zero_violations_over_fifty_random_episodes(self):
+        from pe2.scripted import GreedyEvader
+        from pe2.shield import RecoveryShieldV2
+        from pe2.structured import SearchMDP
+
+        class Straight:  # drives at walls, so the filter stalls it constantly
+            def predict(self, obs, deterministic=True):
+                return np.array([1.0, 0.0], dtype=np.float32), None
+
+        shield = RecoveryShieldV2(CFG)
+        mdp = SearchMDP(CFG, GreedyEvader, hold=10, shield=shield)
+        for i in range(50):
+            log = mdp.play_episode(Straight().predict, 1_740_000 + i)
+            assert log["violations"] == 0
+        assert mdp.violations_total == 0
+        assert shield.n_recoveries > 0  # the zero above is not vacuous
+        assert (
+            shield.n_recoveries_forward + shield.n_recoveries_rotation
+            <= shield.n_recoveries
+        )
+        print(
+            f"\nV2 firings: {shield.n_recoveries}, "
+            f"forward: {shield.n_recoveries_forward}, "
+            f"rotation: {shield.n_recoveries_rotation}"
+        )
+
+    def test_counters_start_at_zero_and_only_count_firings(self):
+        from pe2.shield import RecoveryShieldV2
+
+        shield = RecoveryShieldV2(CFG, recovery_after=1)
+        assert (
+            shield.n_recoveries,
+            shield.n_recoveries_forward,
+            shield.n_recoveries_rotation,
+        ) == (0, 0, 0)
+        for _ in range(3):
+            shield.filter(FULL_SPEED, REC2_ROT_POSE, [], v_max=CFG.v_max)
+        assert (shield.n_recoveries, shield.n_recoveries_rotation) == (3, 3)
+        shield.filter((0.0, 0.0), FREE_POSE, [], v_max=CFG.v_max)
+        assert (shield.n_recoveries, shield.n_recoveries_forward) == (4, 1)
+        # a step that does not fire is not counted at all
+        shield.filter(FULL_SPEED, CORNER_POSE, [], v_max=CFG.v_max)
+        assert shield.n_recoveries == 4

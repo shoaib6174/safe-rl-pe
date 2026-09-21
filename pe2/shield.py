@@ -649,6 +649,163 @@ class RecoveryShield(CBFShield):
         return best_u, rec
 
 
+class RecoveryShieldV2(CBFShield):
+    """`RecoveryShield` with FORWARD candidates offered first (S17 prereg §2).
+
+    D130 is the measurement that forces this class: a straight command moved
+    the body in 100 % of 326 states sampled deep inside the long spins of the
+    S16 `REC` arm, and V1 never offers one -- it only ever requests
+    `(0, ±ω_max)`, so the arm it produced could satisfy an immobility metric
+    by rotating on the spot. V2 keeps V1's trigger and V1's fallback and
+    changes only what is offered.
+
+    On a step whose immobile run has reached `recovery_after`, the candidates
+    are tried in this FIXED priority order:
+
+        1. `(v_max, 0)`          -- kind "forward"
+        2. `(0.5·v_max, 0)`      -- kind "forward"
+        3. the policy's nominal  -- kind "policy"
+        4. `(0, +ω_max)`         -- kind "rotation"
+        5. `(0, −ω_max)`         -- kind "rotation"
+
+    Each is filtered by `CBFShield.filter` exactly as any other action, and
+    the FIRST whose filtered output moves (`v_exec > move_eps`) is executed.
+    If none moves, the rotation with the larger executed `|ω|` is executed
+    (ties to the positive sign), provided it clears `RECOVERY_OMEGA_MIN` --
+    that tail is V1's behaviour unchanged. Otherwise nothing fires and the
+    ordinary filtered result stands.
+
+    **Safety is the ordinary argument and nothing more** (prereg §2): every
+    candidate passes through the same CBF filter as any other action, so
+    H-SAFE covers the recovery with no special pleading. Nothing here rests
+    on a candidate's speed being zero -- candidates 1 and 2 are explicitly
+    forward requests.
+
+    `move_eps` is the speed above which a filtered candidate counts as
+    moving. `None` (the default) means `STALL_V_FRAC * v_max` on the v_max of
+    the call, so "moves" is exactly "not `immobile`" and the two thresholds
+    can never disagree. **At that default `recovery_kind == "policy"` is
+    unreachable**, because the firing condition IS that the policy's nominal
+    came back immobile and candidate 3 reproduces it; the category exists so
+    the fixed order of §2 is implemented as written, and it becomes reachable
+    with an explicit `move_eps` below the immobility threshold.
+
+    Info carries every key `CBFShield` reports plus `recovery_fired` and
+    `recovery_kind` ("forward" | "policy" | "rotation" | "none"), on EVERY
+    step, firing or not -- prereg §2 requires the category to be recorded
+    throughout so the attribution D130 could not resolve is a measurement.
+    As in V1, a firing step's *barrier* and *executed* fields describe what
+    was executed while `v_nom`, `intervention` and `stalled` still describe
+    the POLICY's own nominal, so the recovery cannot launder away the fact
+    that the policy asked to move and was refused.
+
+    `n_recoveries` counts firings; `n_recoveries_forward` and
+    `n_recoveries_rotation` count the two categories a round reports (their
+    sum is below `n_recoveries` exactly when a "policy" firing occurred).
+
+    The immobile run and the counters are shield state, not episode state,
+    and span episodes for the same reason V1's do: a shield has no episode
+    hook. Build one per episode if that matters -- the S17 gate does.
+    """
+
+    def __init__(
+        self,
+        cfg: EnvConfig,
+        recovery_after: int = RECOVERY_AFTER,
+        move_eps: float | None = None,
+        **cbf_kwargs,
+    ):
+        super().__init__(cfg, **cbf_kwargs)
+        self.recovery_after = int(recovery_after)
+        self.move_eps = None if move_eps is None else float(move_eps)
+        self._immobile_run = 0
+        self.n_recoveries = 0  # steps on which the recovery fired
+        self.n_recoveries_forward = 0  # of those, the ones a forward candidate won
+        self.n_recoveries_rotation = 0  # of those, the ones a rotation won
+
+    def filter(
+        self,
+        action: tuple[float, float] | np.ndarray,
+        state: np.ndarray,
+        obstacles: list[dict],
+        v_max: float | None = None,
+    ) -> tuple[np.ndarray, dict]:
+        """`CBFShield.filter`, with the forward-offering recovery on top."""
+        u, info = super().filter(action, state, obstacles, v_max)
+        if not info["immobile"]:
+            self._immobile_run = 0
+            return self._quiet(u, info)
+        self._immobile_run += 1
+        if self._immobile_run < self.recovery_after:
+            return self._quiet(u, info)
+
+        v_cap = self.cfg.v_max if v_max is None else v_max
+        eps = STALL_V_FRAC * v_cap if self.move_eps is None else self.move_eps
+        v_nom, w_nom = self._clip_nominal(action, v_cap)
+        rotations = []
+        for kind, cand in (
+            ("forward", (v_cap, 0.0)),
+            ("forward", (0.5 * v_cap, 0.0)),
+            ("policy", (v_nom, w_nom)),
+            ("rotation", (0.0, self.cfg.omega_max)),
+            ("rotation", (0.0, -self.cfg.omega_max)),
+        ):
+            u_try, info_try = super().filter(cand, state, obstacles, v_max)
+            if kind == "rotation":
+                rotations.append((u_try, info_try))
+            if float(u_try[0]) > eps:
+                return self._fire(
+                    kind, u_try, info_try, state, obstacles, v_nom, w_nom, v_cap
+                )
+
+        # Nothing moved: V1's tail, unchanged. Larger executed |omega| wins,
+        # ties to the positive sign, and a turn too small to be worth taking
+        # leaves the ordinary result standing.
+        best_u, best_info = max(rotations, key=lambda r: abs(float(r[0][1])))
+        if abs(float(best_u[1])) <= RECOVERY_OMEGA_MIN:
+            return self._quiet(u, info)
+        return self._fire(
+            "rotation", best_u, best_info, state, obstacles, v_nom, w_nom, v_cap
+        )
+
+    @staticmethod
+    def _quiet(u: np.ndarray, info: dict) -> tuple[np.ndarray, dict]:
+        """Tag a step on which the recovery did not fire."""
+        info["recovery_fired"] = False
+        info["recovery_kind"] = "none"
+        return u, info
+
+    def _fire(
+        self,
+        kind: str,
+        u: np.ndarray,
+        cand_info: dict,
+        state: np.ndarray,
+        obstacles: list[dict],
+        v_nom: float,
+        w_nom: float,
+        v_cap: float,
+    ) -> tuple[np.ndarray, dict]:
+        """Execute candidate `u`, reporting it against the POLICY's nominal."""
+        info = self._info(
+            cand_info["method"],
+            cand_info["feasible"],
+            u,
+            v_nom,
+            w_nom,
+            self.constraints(state, obstacles),
+            v_cap,
+        )
+        info["recovery_fired"] = True
+        info["recovery_kind"] = kind
+        self.n_recoveries += 1
+        if kind == "forward":
+            self.n_recoveries_forward += 1
+        elif kind == "rotation":
+            self.n_recoveries_rotation += 1
+        return u, info
+
+
 def escape_omega_bounds(
     shield: CBFShield, state: np.ndarray, obstacles: list[dict]
 ) -> tuple[float, float] | None:
