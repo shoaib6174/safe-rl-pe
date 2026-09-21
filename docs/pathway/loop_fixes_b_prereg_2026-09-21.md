@@ -80,3 +80,16 @@ budget, streams and the three bars (0.05 deadlock, 0.05 spin fraction, p < 0.05 
 
 `results/derisk/s17_arm_*.json`, `ckpts_OBSGAM-*/`, `s17_round.{json,png}`; runner
 `scripts/derisk_s17_fixes_b.py`, run from a frozen worktree.
+
+## Amendment S17-A1 (2026-09-21, before any arm exists): the `policy` recovery category is unreachable
+
+§2 lists the policy's own nominal as the third candidate and `policy` as one of four recorded categories. At
+the default `move_eps = 0.05·v_max` that category **cannot occur**: the recovery only fires because the
+nominal came back immobile, and candidate 3 merely re-tries the same command, so it fails the same test.
+It is implemented and tested (with an explicit smaller `move_eps`, where it is reachable) and retained for
+completeness, but **`recovery_kind` will be `forward`, `rotation` or `none` in this round and a zero count for
+`policy` is expected, not a bug.**
+
+Also recorded, from Task 1's 50-episode safety test and consistent with D130: of **714 firings, 689 were
+`forward` and 25 `rotation`, with 0 violations** — independent support, before this round's gate, that the
+escape is almost always a straight command rather than a turn.
