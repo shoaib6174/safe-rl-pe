@@ -7,8 +7,8 @@ rate that belongs to an arm. Three checks:
 
   CG1  the column labels are true. At 150 intervened states drawn from real
        episodes, the VARIANCE of the per-step task reward across the admissible
-       action set, per column. Required: SPARSE ~ 0, DENSE-FLAT ~ 0,
-       DENSE-VARY > 0. If DENSE-FLAT is not flat on `I`, the column is
+       action set, per column. Required: SPARSE ~ 0, DENSE-RARE ~ 0,
+       DENSE-VARY > 0. If DENSE-RARE is not flat on `I`, the column is
        mislabelled and the columns are renamed before any capture rate is
        looked at.
   CG2  the primary metric is not satisfiable by inaction. A policy that always
@@ -81,14 +81,14 @@ R_ACQ = 0.0
 OMP_THREADS = "2"
 
 # The only tolerance in this file, and it is the brief's, not one of mine:
-# DENSE-FLAT is NOT FLAT when its mean variance exceeds SPARSE's by more than
-# this. SPARSE's is 0 by construction, so this is "DENSE-FLAT varies at all".
+# DENSE-RARE is NOT FLAT when its mean variance exceeds SPARSE's by more than
+# this. SPARSE's is 0 by construction, so this is "DENSE-RARE varies at all".
 FLAT_ATOL = 1e-9
 # Sampling RNG for CG1's one-state-per-episode draw (see the module docstring).
 CG1_RNG_SEED = 0
 
-COLUMNS = ("SPARSE", "DFLAT", "DVARY")
-COLUMN_LABEL = {"SPARSE": "SPARSE", "DFLAT": "DENSE-FLAT", "DVARY": "DENSE-VARY"}
+COLUMNS = ("SPARSE", "DRARE", "DVARY")
+COLUMN_LABEL = {"SPARSE": "SPARSE", "DRARE": "DENSE-RARE", "DVARY": "DENSE-VARY"}
 
 
 def _write_json(path: pathlib.Path, obj) -> None:
@@ -230,7 +230,7 @@ def column_values(
     identically, for every action. That is by construction and is recorded as a
     measured 0 so the gate's own table shows it rather than asserting it.
 
-    DENSE-FLAT and DENSE-VARY are evaluated through the same two functions
+    DENSE-RARE and DENSE-VARY are evaluated through the same two functions
     `DenseRewardWrapper` pays — `visibility_term` on the successor observation,
     and `SearchStalenessTracker.observe_and_reward` from the staleness state
     `st` recorded before the step — so the gate cannot pass on a second copy of
@@ -250,7 +250,7 @@ def column_values(
             st["y_lim"],
         )
         vals["SPARSE"].append(0.0)
-        vals["DFLAT"].append(
+        vals["DRARE"].append(
             visibility_term(
                 w_vis, build_observation(pose, st["evader_pose"], st["obstacles"], cfg)
             )
@@ -294,11 +294,11 @@ def state_variances(
 
 
 def cg1_verdict(per_state: list[dict]) -> dict:
-    """SPARSE ~ 0, DENSE-FLAT ~ 0, DENSE-VARY > 0 (spec section 6).
+    """SPARSE ~ 0, DENSE-RARE ~ 0, DENSE-VARY > 0 (spec section 6).
 
-    The only tolerance is the brief's: DENSE-FLAT is NOT FLAT when its mean
+    The only tolerance is the brief's: DENSE-RARE is NOT FLAT when its mean
     variance exceeds SPARSE's by more than `FLAT_ATOL`. SPARSE's is 0 by
-    construction, so that is "DENSE-FLAT varies at all". DENSE-VARY's criterion
+    construction, so that is "DENSE-RARE varies at all". DENSE-VARY's criterion
     is the spec's own words, `> 0`, and no bar is invented beneath it.
 
     A state where the filter fell below its exact tier has an EMPTY admissible
@@ -326,13 +326,13 @@ def cg1_verdict(per_state: list[dict]) -> dict:
             "requirement": "~ 0 (terminal-only: constant across actions)",
             "pass": bool(means["SPARSE"] == 0.0),
         },
-        "DFLAT": {
-            "mean_variance": means["DFLAT"],
-            "n_states_varying": n_varying["DFLAT"],
-            "excess_over_sparse": excess["DFLAT"],
+        "DRARE": {
+            "mean_variance": means["DRARE"],
+            "n_states_varying": n_varying["DRARE"],
+            "excess_over_sparse": excess["DRARE"],
             "requirement": f"~ 0: excess over SPARSE <= {FLAT_ATOL}",
-            "pass": bool(excess["DFLAT"] <= FLAT_ATOL),
-            "label": "FLAT" if excess["DFLAT"] <= FLAT_ATOL else "NOT-FLAT",
+            "pass": bool(excess["DRARE"] <= FLAT_ATOL),
+            "label": "FLAT" if excess["DRARE"] <= FLAT_ATOL else "NOT-FLAT",
         },
         "DVARY": {
             "mean_variance": means["DVARY"],
@@ -351,7 +351,7 @@ def cg1_verdict(per_state: list[dict]) -> dict:
         "mean_variance": means,
         "per_column": per_column,
         "note": (
-            "DENSE-FLAT not flat on I means the column is mislabelled: spec "
+            "DENSE-RARE not flat on I means the column is mislabelled: spec "
             "section 6 requires the columns to be renamed before any capture "
             "rate is looked at."
         ),
@@ -422,7 +422,7 @@ class RolloutCollector(gym.Wrapper):
             sim.pursuer_pose, sim.obstacles, sim.current_step
         )
         self.streams["SPARSE"].append(float(reward))
-        self.streams["DFLAT"].append(
+        self.streams["DRARE"].append(
             visibility_term(self.w_vis, self.env._last_joint_obs["pursuer"])
         )
         self.streams["DVARY"].append(self.w_search * search)

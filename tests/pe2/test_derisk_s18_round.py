@@ -141,11 +141,11 @@ def _full(**overrides):
 
 def _crossover(**overrides):
     """The pre-registered PASS pattern: the penalty lowers capture in SPARSE and
-    in DENSE-FLAT, and raises it in DENSE-VARY, with the zero-motion request
+    in DENSE-RARE, and raises it in DENSE-VARY, with the zero-motion request
     fraction rising exactly where capture falls."""
     cells = {
         "SPARSE_PEN": (0.20, 0.30, 0.50),
-        "DFLAT_PEN": (0.20, 0.30, 0.50),
+        "DRARE_PEN": (0.20, 0.30, 0.50),
         "DVARY_PEN": (0.60, 0.30, 0.10),
     }
     return _full(**(cells | overrides))
@@ -210,8 +210,8 @@ class TestProtocol:
         assert R.CELL_ORDER == (
             "SPARSE-BASE",
             "SPARSE-PEN",
-            "DFLAT-BASE",
-            "DFLAT-PEN",
+            "DRARE-BASE",
+            "DRARE-PEN",
             "DVARY-BASE",
             "DVARY-PEN",
         )
@@ -230,24 +230,37 @@ class TestProtocol:
         assert sum(s["penalty"] for s in R.ARMS.values()) == 9
 
     def test_the_three_columns_are_the_specs_table(self):
-        """Section 2: SPARSE is neither dense nor varying, DENSE-FLAT is dense
-        but flat on `I`, DENSE-VARY is both. DENSE-FLAT is the discriminating
-        cell and must not be labelled as varying."""
+        """Section 2 as amended by A4. SPARSE is neither dense nor varying,
+        DENSE-RARE is dense but carries gradient on `I` at only 1.4 % of states,
+        DENSE-VARY at 56 %. DENSE-RARE is the discriminating cell and must not
+        be labelled as varying."""
         assert R.COLUMNS["SPARSE"] == {
             "weight": None,
             "dense": False,
             "varies_on_I": False,
+            "gradient_coverage": 0.0,
         }
-        assert R.COLUMNS["DFLAT"] == {
+        assert R.COLUMNS["DRARE"] == {
             "weight": "w_vis",
             "dense": True,
             "varies_on_I": False,
+            "gradient_coverage": 2 / 148,
         }
         assert R.COLUMNS["DVARY"] == {
             "weight": "w_search",
             "dense": True,
             "varies_on_I": True,
+            "gradient_coverage": 83 / 148,
         }
+
+    def test_gradient_coverage_is_cg1s_measurement_and_is_ordered(self):
+        """A4: the columns' defining property is MEASURED, not assumed, and it
+        is a three-point scale -- which is what licenses the monotone secondary
+        reading. A binary `varies_on_I` alone could not express it."""
+        cov = [R.COLUMNS[c]["gradient_coverage"] for c in ("SPARSE", "DRARE", "DVARY")]
+        assert cov[0] < cov[1] < cov[2]
+        assert cov[0] == 0.0
+        assert cov[1] < 0.02 and cov[2] > 0.5
 
     def test_every_arm_has_the_same_observation_width(self):
         assert R.obs_width() == 16  # 11 env + 3 shield_obs + 2 escape_obs
@@ -367,7 +380,7 @@ class TestRewardVariant:
         from pe2.exploitability import SingleAgentWrapper
 
         inner = SingleAgentWrapper(EnvConfig(), "pursuer", R.GreedyEvader)
-        wrapped = R.reward_wrapper_for("DFLAT", CALIBRATION)(inner)
+        wrapped = R.reward_wrapper_for("DRARE", CALIBRATION)(inner)
         assert wrapped.w_vis == 0.02 and wrapped.w_search == 0.0
         assert wrapped.w_evis == 0.0 and wrapped.w_pbrs == 0.0
 
@@ -385,8 +398,8 @@ class TestRewardVariant:
         [
             ("SPARSE-BASE-70", None, 0.0),
             ("SPARSE-PEN-71", None, 0.5),
-            ("DFLAT-BASE-72", "DenseRewardWrapper", 0.0),
-            ("DFLAT-PEN-70", "DenseRewardWrapper", 0.5),
+            ("DRARE-BASE-72", "DenseRewardWrapper", 0.0),
+            ("DRARE-PEN-70", "DenseRewardWrapper", 0.5),
             ("DVARY-BASE-71", "DenseRewardWrapper", 0.0),
             ("DVARY-PEN-72", "DenseRewardWrapper", 0.5),
         ],
@@ -743,7 +756,7 @@ class TestHCross:
 
 
 class TestHMech:
-    """H-MECH (the discriminating test): DENSE-FLAT patterns with SPARSE — the
+    """H-MECH (the discriminating test): DENSE-RARE patterns with SPARSE — the
     penalty lowers capture there too, on >= 2/3 seeds."""
 
     def test_dense_flat_patterning_with_sparse_passes(self):
@@ -753,25 +766,25 @@ class TestHMech:
     def test_dense_flat_patterning_with_dense_vary_fails_and_names_it(self):
         """The pre-registered alternative outcome: the variable is density after
         all, not gradient on the intervened set."""
-        h = R.h_mech(_crossover(DFLAT_PEN=(0.60, 0.30, 0.10)))
+        h = R.h_mech(_crossover(DRARE_PEN=(0.60, 0.30, 0.10)))
         assert h["verdict"] == "FAIL" and h["patterns_with"] == "DVARY"
-        assert "DFLAT: penalty RAISES capture" in h["observed"]
+        assert "DRARE: penalty RAISES capture" in h["observed"]
 
     def test_a_split_dense_flat_column_patterns_with_neither(self):
         res = _crossover()
-        res["DFLAT-PEN-70"] = _arm("DFLAT-PEN-70", 0.90, 0.30, 0.50)
-        res["DFLAT-PEN-71"] = _arm("DFLAT-PEN-71", 0.40, 0.30, 0.50)
+        res["DRARE-PEN-70"] = _arm("DRARE-PEN-70", 0.90, 0.30, 0.50)
+        res["DRARE-PEN-71"] = _arm("DRARE-PEN-71", 0.40, 0.30, 0.50)
         h = R.h_mech(res)
         assert h["verdict"] == "FAIL" and h["patterns_with"] == "NEITHER"
 
     def test_two_of_three_seeds_is_enough(self):
         res = _crossover()
-        res["DFLAT-PEN-72"] = _arm("DFLAT-PEN-72", 0.90, 0.30, 0.50)
+        res["DRARE-PEN-72"] = _arm("DRARE-PEN-72", 0.90, 0.30, 0.50)
         assert R.h_mech(res)["verdict"] == "PASS"
 
     def test_incomplete(self):
         res = _crossover()
-        del res["DFLAT-PEN-72"]
+        del res["DRARE-PEN-72"]
         h = R.h_mech(res)
         assert h["verdict"] == "INCOMPLETE" and h["patterns_with"] is None
 
@@ -783,7 +796,7 @@ class TestHZero:
     def test_it_passes_when_the_requests_rise_where_capture_falls(self):
         h = R.h_zero(_crossover())
         assert h["verdict"] == "PASS"
-        assert h["affected_columns"] == ["SPARSE", "DFLAT"]
+        assert h["affected_columns"] == ["SPARSE", "DRARE"]
         assert h["per_column"]["SPARSE"]["n_rise"] == 3
         assert h["per_column"]["SPARSE"]["per_seed"][70]["base"] == pytest.approx(0.20)
         assert h["per_column"]["SPARSE"]["per_seed"][70]["pen"] == pytest.approx(0.50)
@@ -809,9 +822,9 @@ class TestHZero:
         assert h["verdict"] == "VACUOUS" and h["affected_columns"] == []
 
     def test_every_affected_column_must_pass_not_just_one(self):
-        h = R.h_zero(_crossover(DFLAT_PEN=(0.20, 0.30, 0.05)))
+        h = R.h_zero(_crossover(DRARE_PEN=(0.20, 0.30, 0.05)))
         assert h["per_column"]["SPARSE"]["verdict"] == "PASS"
-        assert h["per_column"]["DFLAT"]["verdict"] == "FAIL"
+        assert h["per_column"]["DRARE"]["verdict"] == "FAIL"
         assert h["verdict"] == "FAIL"
 
     def test_two_of_three_seeds_is_enough(self):
@@ -846,9 +859,9 @@ class TestSafety:
         res["DVARY-PEN-70"]["train_violations"] = 1
         assert R.hsafe(res)["verdict"] == "FAILS"
         res = _full()
-        res["DFLAT-BASE-72"]["final"]["pursuer_violations"] = 3
+        res["DRARE-BASE-72"]["final"]["pursuer_violations"] = 3
         h = R.hsafe(res)
-        assert h["verdict"] == "FAILS" and h["offenders"] == ["DFLAT-BASE-72"]
+        assert h["verdict"] == "FAILS" and h["offenders"] == ["DRARE-BASE-72"]
         assert h["pursuer_violation_steps"] == 3
 
     def test_probe_contact_steps_are_in_the_census(self):
@@ -1033,7 +1046,7 @@ class TestGuards:
         monkeypatch.setattr(R, "OUT", tmp_path)
         assert R._arm_file("SPARSE-PEN-70") == tmp_path / "s18_arm_SPARSE-PEN-70.json"
         assert (
-            R._probe_file("DFLAT-BASE-71") == tmp_path / "s18_probe_DFLAT-BASE-71.json"
+            R._probe_file("DRARE-BASE-71") == tmp_path / "s18_probe_DRARE-BASE-71.json"
         )
         assert R._round_file("png") == tmp_path / "s18_round.png"
         assert R._lambda_file() == tmp_path / "s18_lambda.json"
@@ -1054,11 +1067,11 @@ class TestGuards:
         """Every arm of this round trains and owns its directory, so the
         directory is independent evidence the arm already started."""
         monkeypatch.setattr(R, "OUT", tmp_path)
-        (tmp_path / "ckpts_S18-DFLAT-PEN-71").mkdir()
+        (tmp_path / "ckpts_S18-DRARE-PEN-71").mkdir()
         with pytest.raises(SystemExit, match="already trained"):
-            R.require_arm_not_run("DFLAT-PEN-71")
+            R.require_arm_not_run("DRARE-PEN-71")
         # ... but --gate-only exists precisely to finish such an arm
-        R.require_arm_not_recorded("DFLAT-PEN-71")
+        R.require_arm_not_recorded("DRARE-PEN-71")
 
     def test_gate_only_refuses_a_missing_final_checkpoint(self, tmp_path, monkeypatch):
         monkeypatch.setattr(R, "OUT", tmp_path)
@@ -1308,12 +1321,12 @@ class TestCG4:
     ):
         monkeypatch.setattr(R, "OUT", tmp_path)
         _stage(tmp_path)
-        crashed = _arm("DFLAT-PEN-70", 0.4, 0.3, 0.2)
+        crashed = _arm("DRARE-PEN-70", 0.4, 0.3, 0.2)
         crashed.pop("final")
         crashed["verdict"] = "UNDETERMINED"
-        R._write_json(R._arm_file("DFLAT-PEN-70"), crashed)
+        R._write_json(R._arm_file("DRARE-PEN-70"), crashed)
         with pytest.raises(SystemExit, match="no completed arm record"):
-            R.read_arm("DFLAT-PEN")
+            R.read_arm("DRARE-PEN")
 
     def test_a_missing_final_checkpoint_stops_the_pass_before_anything_renders(
         self, tmp_path, monkeypatch
@@ -1378,9 +1391,9 @@ class TestCG4:
         opponent, or the GIF summarises a different measurement than it names."""
         assert R.GIF_OPPONENT == R.CAPTURE_OPPONENT
         assert R.GIF_OPPONENT in R.GATE_OPPONENTS
-        rec = _arm("DFLAT-BASE-70", 0.4, 0.3, 0.2)
+        rec = _arm("DRARE-BASE-70", 0.4, 0.3, 0.2)
         gate = rec["final"]["gate"][R.GIF_OPPONENT]
-        title = R.gif_title("DFLAT-BASE", rec, 1_880_000)
+        title = R.gif_title("DRARE-BASE", rec, 1_880_000)
         assert f"{gate['capture_rate']:.3f}" in title
         assert f"{gate['pursuer']['deadlock_episode_rate']:.3f}" in title
 
@@ -1392,8 +1405,8 @@ class TestCG4:
 
         monkeypatch.setattr(R, "OUT", tmp_path)
         built, _written = _stub_rendering(monkeypatch)
-        _stage(tmp_path, ["DFLAT-BASE"])
-        R.render_cell("DFLAT-BASE", 1_880_002, "title")
+        _stage(tmp_path, ["DRARE-BASE"])
+        R.render_cell("DRARE-BASE", 1_880_002, "title")
         (kw,) = built
         assert kw["reward_wrapper"] is None  # A1.3
         assert kw["shield_obs"] is R.SHIELD_OBS and kw["escape_obs"] is R.ESCAPE_OBS
@@ -1484,3 +1497,37 @@ class TestHZeroReadsItsTriggersOpponent:
             assert row["base"] == pytest.approx(0.10)
             assert row["pen"] == pytest.approx(0.20)
             assert row["base_pooled"] > row["pen_pooled"]
+
+
+class TestColumnValidity:
+    """Amendment A4: `w_search` lands ~20x above the level D4 warns teaches
+    patrol-not-hunt, so a column whose BASE arm cannot clear the random-search
+    floor trained a patroller and its results are not evidence either way."""
+
+    def test_a_column_below_the_floor_is_uninterpretable(self):
+        res = _full(DVARY_BASE=(0.20, 0.30, 0.20))
+        v = R.column_validity(res)
+        assert v["per_column"]["DVARY"]["verdict"] == "UNINTERPRETABLE"
+        assert v["uninterpretable_columns"] == ["DVARY"]
+        assert v["verdict"] == "UNINTERPRETABLE"
+
+    def test_a_column_above_the_floor_is_valid(self):
+        v = R.column_validity(_full())  # defaults are 0.40 > 0.350
+        assert v["verdict"] == "VALID"
+        assert v["uninterpretable_columns"] == []
+        assert all(c["verdict"] == "VALID" for c in v["per_column"].values())
+
+    def test_the_check_is_stated_for_every_column_not_just_dvary(self):
+        """So it cannot be invoked selectively after the fact."""
+        assert set(R.column_validity(_full())["per_column"]) == set(R.COLUMNS)
+
+    def test_two_of_three_seeds_above_the_floor_is_valid(self):
+        res = _full()
+        res["DVARY-BASE-70"]["final"]["gate"]["GREEDY"]["capture_rate"] = 0.10
+        v = R.column_validity(res)["per_column"]["DVARY"]
+        assert v["n_above_floor"] == 2 and v["verdict"] == "VALID"
+
+    def test_validity_is_carried_into_the_round_summary(self):
+        s = R.summarize(_full())
+        assert s["column_validity"]["verdict"] == "VALID"
+        assert s["bars"]["random_search_floor"] == R.RANDOM_SEARCH_FLOOR

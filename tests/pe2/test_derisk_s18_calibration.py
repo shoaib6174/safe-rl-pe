@@ -259,13 +259,13 @@ class TestColumnValues:
         assert np.var(vals["SPARSE"]) == 0.0
 
     def test_the_visibility_column_is_flat_when_the_evader_is_out_of_sight(self):
-        """The DENSE-FLAT claim, in miniature: with the evader behind the
+        """The DENSE-RARE claim, in miniature: with the evader behind the
         pursuer, no one-step action brings it into the cone, so the term pays
         the same (nothing) for every admissible action."""
         st = self._state(evader_xy=(-3.0, 0.0))
         U = np.array([[0.0, 0.0], [CFG.v_max, 0.0], [0.0, CFG.omega_max]])
         vals = CON.column_values(st, U, CFG, 0.002, 0.005, SearchStalenessTracker(CFG))
-        assert np.var(vals["DFLAT"]) == 0.0
+        assert np.var(vals["DRARE"]) == 0.0
 
     def test_the_visibility_column_varies_when_a_turn_acquires_the_evader(self):
         """...and it is a real measurement, not a constant: put the evader just
@@ -278,8 +278,8 @@ class TestColumnValues:
         turn = np.array([[0.0, 0.0], [0.0, CFG.omega_max]])
         flat = CON.column_values(st, stay, CFG, 1.0, 0.0, SearchStalenessTracker(CFG))
         both = CON.column_values(st, turn, CFG, 1.0, 0.0, SearchStalenessTracker(CFG))
-        assert flat["DFLAT"] == [0.0]
-        assert np.var(both["DFLAT"]) > 0.0
+        assert flat["DRARE"] == [0.0]
+        assert np.var(both["DRARE"]) > 0.0
 
     def test_the_search_column_varies_with_the_heading(self):
         st = self._state()
@@ -306,8 +306,8 @@ def _scored(sparse=0.0, dflat=0.0, dvary=1e-6, n=10, episode_of=lambda i: i):
             "step": 10 * i,
             "method": "exact",
             "n_admissible": 6,
-            "variance": {"SPARSE": sparse, "DFLAT": dflat, "DVARY": dvary},
-            "mean": {"SPARSE": 0.0, "DFLAT": 0.0, "DVARY": 0.0},
+            "variance": {"SPARSE": sparse, "DRARE": dflat, "DVARY": dvary},
+            "mean": {"SPARSE": 0.0, "DRARE": 0.0, "DVARY": 0.0},
         }
         for i in range(n)
     ]
@@ -317,7 +317,7 @@ class TestCG1Verdict:
     def test_the_pre_registered_pattern_passes(self):
         v = CON.cg1_verdict(_scored())
         assert v["verdict"] == "PASS"
-        assert v["per_column"]["DFLAT"]["label"] == "FLAT"
+        assert v["per_column"]["DRARE"]["label"] == "FLAT"
         assert v["n_scored"] == 10 and v["n_episodes_spanned"] == 10
 
     def test_it_counts_the_states_each_column_varies_at(self):
@@ -325,14 +325,14 @@ class TestCG1Verdict:
         the count is what says which of those happened."""
         rows = _scored(dflat=0.0, n=4) + _scored(dflat=1e-6, n=1)
         v = CON.cg1_verdict(rows)
-        assert v["per_column"]["DFLAT"]["n_states_varying"] == 1
+        assert v["per_column"]["DRARE"]["n_states_varying"] == 1
         assert v["per_column"]["DVARY"]["n_states_varying"] == 5
         assert v["per_column"]["SPARSE"]["n_states_varying"] == 0
 
     def test_a_varying_dense_flat_column_is_flagged_not_flat(self):
         v = CON.cg1_verdict(_scored(dflat=1e-6))
         assert v["verdict"] == "FAIL"
-        assert v["per_column"]["DFLAT"]["label"] == "NOT-FLAT"
+        assert v["per_column"]["DRARE"]["label"] == "NOT-FLAT"
         assert v["per_column"]["DVARY"]["pass"] is True
 
     def test_the_flat_tolerance_is_the_brief_s_and_nothing_larger(self):

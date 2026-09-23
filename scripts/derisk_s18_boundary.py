@@ -13,18 +13,25 @@ differ because of WHERE the task reward has gradient, not because of the penalty
 So the independent variable is gradient-on-`I` (the set of actions available
 where the filter intervenes), not reward density, and the design is 2 x 3:
 
-  column   reward variant                    dense?  varies across actions on I?
-  SPARSE   terminal +/-1 and r_acq only      no      no
-  DFLAT    + w_vis (DenseRewardWrapper)      YES     no  (the evader is invisible
-                                                          inside a stalled pocket)
-  DVARY    + w_search (staleness)            YES     YES
+  column   reward variant                    dense?  gradient on I (MEASURED)
+  SPARSE   terminal +/-1 and r_acq only      no      0 / 148 states   (0 %)
+  DRARE    + w_vis (DenseRewardWrapper)      YES     2 / 148 states   (1.4 %)
+  DVARY    + w_search (staleness)            YES     83 / 148 states  (56 %)
+
+Those three fractions are the construct gate's CG1 measurement (amendment A4),
+not a design assumption. The middle column was pre-registered as DENSE-FLAT and
+RENAMED to DENSE-RARE when CG1 showed it is 17x flatter than DVARY but not
+identically flat -- the pre-registered consequence of that failure, taken rather
+than argued away.
 
   row      BASE  intervention_penalty = 0
            PEN   intervention_penalty = lambda
 
-DFLAT is the discriminating cell: it is dense and flat on `I`, so if the variable
-were density it would pattern with DVARY and if it is gradient-on-`I` it patterns
-with SPARSE (H-MECH).
+DRARE is the discriminating cell: it is dense everywhere yet carries gradient on
+`I` at 1.4 % of states, so if the variable were density it would pattern with
+DVARY and if it is gradient-on-`I` it patterns with SPARSE (H-MECH). Because the
+coverage is a measured three-point scale rather than a binary, a MONOTONE
+ordering across the columns is a registered secondary reading (A4).
 
 Three things this round gets right on purpose, each of them a past error:
 
@@ -102,6 +109,13 @@ STALL_PENALTY = 0.0
 RECOVERY = False
 P_GATE = 0.05
 PASS_MIN = 2  # ">= 2/3 seeds", every hypothesis
+# Amendment A4's blocking validity check on the DENSE-VARY column. The
+# calibration lands `w_search` at 6.46e-3, roughly 20x the level D4 warns
+# teaches patrol-not-hunt (>= 3e-4). A1.2 mandates the calibration, so the risk
+# is accepted rather than tuned away -- and checked: a column whose BASE arm
+# cannot beat the random-search floor trained a patroller, and its results are
+# UNINTERPRETABLE rather than evidence about the penalty.
+RANDOM_SEARCH_FLOOR = 0.350  # D109, reproduced by the calibration at 0.350
 # H-ZERO's threshold IS the filter's own immobility threshold, so "the policy
 # asked for no motion" and "the filter calls this stopped" cannot disagree.
 ZERO_MOTION_V_FRAC = STALL_V_FRAC
@@ -120,9 +134,26 @@ CAPTURE_OPPONENT = "GREEDY"  # the primary metric's opponent (section 4)
 # `DenseRewardWrapper` keyword the column's CALIBRATED weight is passed as;
 # `None` is the SPARSE column, which takes no wrapper at all.
 COLUMNS: dict[str, dict] = {
-    "SPARSE": {"weight": None, "dense": False, "varies_on_I": False},
-    "DFLAT": {"weight": "w_vis", "dense": True, "varies_on_I": False},
-    "DVARY": {"weight": "w_search", "dense": True, "varies_on_I": True},
+    "SPARSE": {
+        "weight": None,
+        "dense": False,
+        "varies_on_I": False,
+        "gradient_coverage": 0.0,
+    },
+    # `gradient_coverage` is CG1's measurement (A4), carried here so the arm
+    # table and the paper cannot drift apart; `varies_on_I` is its binary form.
+    "DRARE": {
+        "weight": "w_vis",
+        "dense": True,
+        "varies_on_I": False,
+        "gradient_coverage": 2 / 148,
+    },
+    "DVARY": {
+        "weight": "w_search",
+        "dense": True,
+        "varies_on_I": True,
+        "gradient_coverage": 83 / 148,
+    },
 }
 ROWS: dict[str, bool] = {"BASE": False, "PEN": True}  # penalty off / on
 CELLS: dict[str, dict] = {
@@ -131,7 +162,7 @@ CELLS: dict[str, dict] = {
     for row, pen in ROWS.items()
 }
 CELL_ORDER: tuple[str, ...] = tuple(CELLS)
-# `DFLAT-BASE-70`.split("-") happens to recover the parts, but nothing may rely
+# `DRARE-BASE-70`.split("-") happens to recover the parts, but nothing may rely
 # on that: the cell and the seed are STORED and every reader goes through the
 # table (S17's convention, after `RECF-BASE-60` broke the parsing route).
 ARMS: dict[str, dict] = {
@@ -1025,13 +1056,14 @@ def h_cross(results: dict) -> dict:
 
 
 def h_mech(results: dict) -> dict:
-    """H-MECH (the discriminating test). DENSE-FLAT patterns with SPARSE, not
+    """H-MECH (the discriminating test). DENSE-RARE patterns with SPARSE, not
     with DENSE-VARY: the penalty lowers capture there too, on >= 2/3 seeds.
 
-    This is what separates gradient-on-`I` from density: DFLAT is dense
-    everywhere and flat on the intervened set, so density predicts it behaves
-    like DVARY and Hypothesis B predicts it behaves like SPARSE."""
-    eff = penalty_effect(results, "DFLAT")
+    This is what separates gradient-on-`I` from density: DRARE is dense
+    everywhere yet carries gradient on only 1.4 % of intervened states (CG1,
+    amendment A4), so density predicts it behaves like DVARY and Hypothesis B
+    predicts it behaves like SPARSE."""
+    eff = penalty_effect(results, "DRARE")
     patterns_with = {
         "LOWERS": "SPARSE",
         "RAISES": "DVARY",
@@ -1046,7 +1078,7 @@ def h_mech(results: dict) -> dict:
     return {
         "verdict": verdict,
         "patterns_with": patterns_with,
-        "DFLAT": eff,
+        "DRARE": eff,
         "observed": _effect_sentence(eff),
     }
 
@@ -1133,6 +1165,43 @@ def h_zero(results: dict) -> dict:
     }
 
 
+def column_validity(results: dict) -> dict:
+    """Amendment A4's blocking check, registered BEFORE any capture number.
+
+    If a column's BASE arm cannot beat the random-search floor on >= 2/3 seeds,
+    that column's reward trained a patroller rather than a hunter and every
+    result from it is reported UNINTERPRETABLE -- for or against H-CROSS alike.
+    Stated for all three columns, not only DVARY, so it cannot be invoked
+    selectively after the fact."""
+    per_column: dict = {}
+    for column in COLUMNS:
+        per_seed = {
+            s: capture_rate(results, f"{column}-BASE-{s}") for s in SEEDS
+        }
+        complete = all(v is not None for v in per_seed.values())
+        n_above = sum(1 for v in per_seed.values() if v is not None and v >= RANDOM_SEARCH_FLOOR)
+        per_column[column] = {
+            "verdict": (
+                "INCOMPLETE"
+                if not complete
+                else "VALID"
+                if n_above >= PASS_MIN
+                else "UNINTERPRETABLE"
+            ),
+            "floor": RANDOM_SEARCH_FLOOR,
+            "n_above_floor": n_above,
+            "per_seed": per_seed,
+        }
+    bad = [c for c, v in per_column.items() if v["verdict"] == "UNINTERPRETABLE"]
+    return {
+        "verdict": "INCOMPLETE"
+        if any(v["verdict"] == "INCOMPLETE" for v in per_column.values())
+        else ("VALID" if not bad else "UNINTERPRETABLE"),
+        "uninterpretable_columns": bad,
+        "per_column": per_column,
+    }
+
+
 def hsafe(results: dict) -> dict:
     """H-SAFE (standing): zero pursuer contact steps across all 18 arms —
     training, probes and gate alike."""
@@ -1188,7 +1257,7 @@ def direction(h: dict) -> str:
         )
     if h["mech"] == "FAIL":
         return (
-            "H-CROSS holds but H-MECH FAILS: DENSE-FLAT behaves like DENSE-VARY, so "
+            "H-CROSS holds but H-MECH FAILS: DENSE-RARE behaves like DENSE-VARY, so "
             "the variable is reward DENSITY after all, not gradient on the intervened "
             "set. The interaction is real but the S20 proposition is wrong as drafted "
             "and gets rewritten to match. Observed: " + h["mech_observed"]
@@ -1203,7 +1272,7 @@ def direction(h: dict) -> str:
     return (
         "The boundary condition HOLDS: penalising filter intervention helps where the "
         "task reward varies across the actions available on the intervened set and "
-        "hurts where it does not — DENSE-FLAT patterns with SPARSE, which separates "
+        "hurts where it does not — DENSE-RARE patterns with SPARSE, which separates "
         "gradient-on-I from density"
         + (
             ", and the zero-motion request fraction rises exactly where capture falls."
@@ -1244,10 +1313,14 @@ def summarize(results: dict, start: dict | None = None) -> dict:
                 for o in gate
             },
         }
+    validity = column_validity(results)
     return {
         "spec": SPEC,
         "hsafe": hs,
         "hypotheses": {"H-CROSS": cross, "H-MECH": mech, "H-ZERO": zero},
+        # A4: a column whose BASE arm cannot clear the random-search floor
+        # trained a patroller; its results are UNINTERPRETABLE, not evidence.
+        "column_validity": validity,
         "effects": {c: penalty_effect(results, c) for c in COLUMNS},
         "arms": table,
         "cells": {c: dict(CELLS[c]) for c in CELL_ORDER},
@@ -1262,6 +1335,7 @@ def summarize(results: dict, start: dict | None = None) -> dict:
             "p": P_GATE,
             "pass_min": PASS_MIN,
             "zero_motion_v_frac": ZERO_MOTION_V_FRAC,
+            "random_search_floor": RANDOM_SEARCH_FLOOR,
             "gamma": GAMMA,
             "total": TOTAL,
         },
@@ -1281,7 +1355,7 @@ def summarize(results: dict, start: dict | None = None) -> dict:
     }
 
 
-COLUMN_COLOUR = {"SPARSE": "tab:blue", "DFLAT": "tab:orange", "DVARY": "tab:green"}
+COLUMN_COLOUR = {"SPARSE": "tab:blue", "DRARE": "tab:orange", "DVARY": "tab:green"}
 
 
 def write_figure(results: dict, summary: dict, path) -> None:

@@ -191,3 +191,74 @@ and it is implemented exactly so. The pooled test is reported and plays no part 
 are rendered against `GREEDY`, the primary metric's opponent, and each caption quotes that opponent's own
 measured capture and deadlock rates rather than a pooled number, so the episode and the caption describe the
 same measurement. `HUG` episodes are not rendered.
+
+---
+
+## Amendment A4 (2026-09-23) — ADJUDICATION OF THE CONSTRUCT GATE
+
+**The construct gate ran and FAILED both blocking checks. No capture rate has been looked at.** This is the
+gate doing its job, and each failure is adjudicated here before any arm trains.
+
+### Measured (stream 1 880 000+, 150 sampled intervened states, 148 scored)
+
+| column | mean reward variance across admissible actions on `I` | states with gradient |
+|---|---|---|
+| SPARSE | 0.0 | **0 / 148 (0 %)** |
+| DENSE-FLAT | 1.097e-08 | **2 / 148 (1.4 %)** |
+| DENSE-VARY | 1.871e-07 | **83 / 148 (56 %)** |
+
+Calibration (stream 1 860 000+, 200 episodes, `RandomSearch` under the shield): `lambda` = 2.99952e-3,
+`w_vis` = 2.54842e-3, `w_search` = 6.46341e-3; measured means 333.386 / 98.1 / 38.679; capture 0.350,
+matching the D109 random-search floor to three decimals; 0 violations.
+
+### CG1 FAILED — the column is renamed, exactly as pre-registered
+
+DENSE-FLAT is 17x flatter than DENSE-VARY and carries gradient at 1.4 % of intervened states against 56 %,
+but it is **not identically flat**, and section 6's rule is binary. **The bar is not moved.** The
+pre-registered consequence is a rename, and the rename is taken:
+
+**`DENSE-FLAT` becomes `DENSE-RARE` (`DRARE`)** — dense everywhere, gradient on `I` at 1.4 % of states.
+H-MECH is unchanged in structure: DENSE-RARE must pattern with SPARSE, not with DENSE-VARY.
+
+**Added now, before any capture number exists:** gradient coverage is a measured three-point scale
+(0 %, 1.4 %, 56 %), not a binary. A **monotone ordering** of the penalty's effect across the three columns is
+therefore a legitimate additional reading of the same data, and is registered here as a SECONDARY reading.
+H-CROSS and H-MECH remain primary and are unchanged.
+
+### CG2 FAILED — and the bar was impossible by construction. My error.
+
+A never-moving policy captures **2/50 = 0.040**, against a pre-registered requirement of exactly 0.
+
+**I am changing a bar after seeing a number, and saying so plainly.** The justification is that the bar was
+not merely unmet but *unachievable*: in `SearchMDP` the fixed intercept law plays whenever the learner has
+nothing to act on, so a never-moving **learner** cannot drive the episode's capture rate to zero — the law
+wins those episodes, not the policy. A criterion of exactly 0 could never have been satisfied by any policy
+in this environment, which makes it a specification error rather than a result.
+
+**Corrected criterion, with the measured floor disclosed:** inaction's capture must lie far below the range
+under test. Measured **0.040**, against the random-search floor **0.350** and an expected treatment range of
+roughly 0.4–0.7. It does. **CG2 passes as corrected, and the 0.040 floor is reported in the paper**: a cell
+where the penalty destroys the task bottoms out near 0.04, not 0, and no cell's capture may be read as
+"zero" that is not below that.
+
+Also recorded from CG2, report-only: deadlock 0.060, immobile-step rate 0.956, intervention 0.056, 0
+violations. The D129 trap is visible and avoided — 96 % immobile with almost no *deadlock*, because `stalled`
+requires the nominal to want to move.
+
+### CG3 is informative, not blocking
+
+`signal_nondegeneracy` returns statistics and no verdict, so it cannot gate; the implementer correctly
+refused to substitute `nondegeneracy_report`, which carries different criteria than section 6 names. The
+calibration already establishes both dense terms are non-zero. CG3 is recorded, not gated.
+
+### New blocking validity check on DENSE-VARY, registered before any capture number
+
+`w_search` = 6.46e-3 is roughly **20x the level D4 warns teaches patrol-not-hunt** (>= 3e-4). A1.2's
+calibration mandates it, so the risk is accepted rather than tuned away — but it is checked:
+
+> **If `DVARY-BASE` capture falls below the random-search floor of 0.350 on >= 2/3 seeds, the DENSE-VARY
+> column trained a patroller rather than a hunter, and every DENSE-VARY result is reported as
+> UNINTERPRETABLE rather than read as evidence for or against H-CROSS.**
+
+This is a check on the column, not on the hypothesis, and it is stated now so it cannot be invoked
+selectively later.
