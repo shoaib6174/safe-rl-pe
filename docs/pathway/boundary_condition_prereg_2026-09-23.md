@@ -144,3 +144,22 @@ measured per-episode means beside them. **Any arm that cannot read that file ref
 rewards and reports outcomes, so the wrapper provably cannot change an episode (asserted by
 `TestRewardWrapperHook::test_reward_shaping_cannot_change_the_trajectory`), but the gate constructs its
 `SearchMDP` with `reward_wrapper=None` regardless, so the property does not rest on that argument alone.
+
+---
+
+## Amendment A2 (2026-09-23, before any arm of this round exists)
+
+**Section 4's opponent list contradicted itself, and the contradiction is mine.** It named
+`StructuredEvaderPolicy` as the robustness opponent in one clause and said "the learned attacker family is
+deliberately absent" in the next. `StructuredEvaderPolicy` takes a learned model as its first constructor
+argument, so as written the gate would have required exactly the learned attacker the same sentence excluded.
+
+The implementer flagged it and, forced to choose, read `STRUCT` as the frozen ATK4-45 checkpoint of the
+S16/S17 line. That reading is defensible but it is not what this round should measure: S18 is about reward
+structure, and importing a learned adversary makes the gate depend on a policy trained under an entirely
+different objective.
+
+**Resolution: the robustness opponent is `ObstacleHuggingEvader` (`HUG`), scripted and full-state** — the
+same `HUG7` that has served as a gate opponent since S17, with no learned component anywhere in the round.
+`GATE_OPPONENTS = ("GREEDY", "HUG")`; `GREEDY` remains the primary metric's opponent. No learned attacker is
+trained, selected or loaded at any point in S18.

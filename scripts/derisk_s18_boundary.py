@@ -73,7 +73,7 @@ from pe2.derisk import paired_indicator_test
 from pe2.eval import wilson_ci, win_count
 from pe2.metrics import summarize_shield
 from pe2.obs import obs_dim
-from pe2.scripted import GreedyEvader
+from pe2.scripted import GreedyEvader, ObstacleHuggingEvader
 from pe2.shield import STALL_V_FRAC
 from pe2.structured import HOLD, SearchMDP
 
@@ -105,17 +105,15 @@ PASS_MIN = 2  # ">= 2/3 seeds", every hypothesis
 # asked for no motion" and "the filter calls this stopped" cannot disagree.
 ZERO_MOTION_V_FRAC = STALL_V_FRAC
 
-GATE_OPPONENTS = ("GREEDY", "STRUCT")
+GATE_OPPONENTS = ("GREEDY", "HUG")
 CAPTURE_OPPONENT = "GREEDY"  # the primary metric's opponent (section 4)
-EVADER_HOLD = 10  # the structured evader's own hold, as in S6/S9/S15/S16/S17
-# READING (stated, not silently chosen): section 4 names `StructuredEvaderPolicy`
-# as the robustness opponent but does not name its checkpoint, and it also says
-# "the learned attacker family is deliberately absent". The reading implemented
-# here is that "the family" means the round-specific attacker SWEEP (the ATK-D1xx
-# / CTL-D2xx cohorts of S7/S14) — no attacker is trained or selected for S18 —
-# and that `STRUCT` is the single fixed structured evader the S16/S17 line
-# already gated against, ATK4-45. It is frozen, public and unchanged from S17.
-STRUCT_CKPT = OUT / "ckpts_ATK4-45" / "ATK4-45_10000000.zip"
+# AMENDMENT A2. Section 4 originally named `StructuredEvaderPolicy` as the
+# robustness opponent while also saying "the learned attacker family is
+# deliberately absent" -- but that class takes a LEARNED MODEL as its first
+# argument, so the two clauses could not both hold. Resolved in the spec before
+# any arm ran: the robustness opponent is the SCRIPTED full-state
+# `ObstacleHuggingEvader` (S17's HUG7). No learned attacker is trained,
+# selected or loaded anywhere in S18.
 
 # Spec section 2's table, column by column. `weight` names the
 # `DenseRewardWrapper` keyword the column's CALIBRATED weight is passed as;
@@ -337,12 +335,8 @@ def _model(path, device: str):
 def gate_opponent_factory(name: str, device: str):
     if name == "GREEDY":
         return GreedyEvader
-    if name == "STRUCT":
-        from pe2.evade import D_POS, StructuredEvaderPolicy
-
-        cfg = EnvConfig()
-        model = _model(require_struct_ckpt(), device)
-        return lambda: StructuredEvaderPolicy(model, cfg, hold=EVADER_HOLD, d_pos=D_POS)
+    if name == "HUG":
+        return ObstacleHuggingEvader
     raise ValueError(f"unknown gate opponent {name!r}; expected {GATE_OPPONENTS}")
 
 
@@ -556,16 +550,6 @@ def require_final_ckpt(arm: str) -> pathlib.Path:
     if not ckpt.exists():
         raise SystemExit(f"{arm} has no final checkpoint to gate: {ckpt} is missing.")
     return ckpt
-
-
-def require_struct_ckpt() -> pathlib.Path:
-    if not STRUCT_CKPT.exists():
-        raise SystemExit(
-            f"the STRUCT gate opponent needs {STRUCT_CKPT}, which is missing. "
-            "Section 4's robustness opponent is a frozen structured evader; do "
-            "NOT substitute another and do NOT gate without it."
-        )
-    return STRUCT_CKPT
 
 
 def _check_width(arm: str, model) -> None:
@@ -1252,7 +1236,6 @@ def summarize(results: dict, start: dict | None = None) -> dict:
             "n": GATE_N,
             "opponents": list(GATE_OPPONENTS),
             "capture_opponent": CAPTURE_OPPONENT,
-            "struct_ckpt": str(STRUCT_CKPT),
             "reward_wrapper": None,  # amendment A1.3
         },
         "bars": {

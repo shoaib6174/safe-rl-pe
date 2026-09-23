@@ -113,7 +113,7 @@ def _arm(name, capture, deadlock, zero, intervention=1.0, viol=0):
             "gate": {
                 # the robustness opponent is harder; the primary metric is GREEDY
                 "GREEDY": _entry(capture, deadlock, zero, intervention),
-                "STRUCT": _entry(capture / 2, deadlock, zero, intervention),
+                "HUG": _entry(capture / 2, deadlock, zero, intervention),
             },
         },
     }
@@ -181,7 +181,7 @@ class TestProtocol:
         assert (R.R_ACQ, R.SHIELD_OBS, R.ESCAPE_OBS) == (0.0, True, True)
         assert R.HOLD == 10
         assert (R.P_GATE, R.PASS_MIN) == (0.05, 2)
-        assert R.GATE_OPPONENTS == ("GREEDY", "STRUCT")
+        assert R.GATE_OPPONENTS == ("GREEDY", "HUG")
         assert R.CAPTURE_OPPONENT == "GREEDY"
         assert R.ARTEFACT_PREFIX == "s18"
         assert R.SPEC.endswith("boundary_condition_prereg_2026-09-23.md")
@@ -729,11 +729,11 @@ class TestHCross:
         assert R.h_cross(res)["sign_holds"] is False
 
     def test_it_reads_the_primary_opponent_only(self):
-        """Capture vs GreedyEvader is the primary metric; STRUCT is
+        """Capture vs GreedyEvader is the primary metric; HUG is
         robustness and cannot decide the hypothesis."""
         res = _crossover()
         for s in R.SEEDS:
-            res[f"SPARSE-PEN-{s}"]["final"]["gate"]["STRUCT"] = _entry(0.99, 0.3, 0.5)
+            res[f"SPARSE-PEN-{s}"]["final"]["gate"]["HUG"] = _entry(0.99, 0.3, 0.5)
         assert R.h_cross(res)["verdict"] == "PASS"
 
     def test_incomplete(self):
@@ -929,7 +929,7 @@ class TestReaders:
             "n_decisions": 100,
             "fraction": 0.1,
         }
-        gate["STRUCT"]["zero_motion"] = {
+        gate["HUG"]["zero_motion"] = {
             "n_zero_motion": 0,
             "n_decisions": 900,
             "fraction": 0.0,
@@ -941,8 +941,8 @@ class TestReaders:
         gate = res["SPARSE-PEN-70"]["final"]["gate"]
         gate["GREEDY"]["pursuer"]["deadlock_episode_rate"] = 0.10
         gate["GREEDY"]["n_episodes"] = 100
-        gate["STRUCT"]["pursuer"]["deadlock_episode_rate"] = 0.50
-        gate["STRUCT"]["n_episodes"] = 300
+        gate["HUG"]["pursuer"]["deadlock_episode_rate"] = 0.50
+        gate["HUG"]["n_episodes"] = 300
         assert R.deadlock_rate(res, "SPARSE-PEN-70") == pytest.approx(0.40)
 
     def test_the_intervention_mean_is_episode_weighted(self):
@@ -953,7 +953,7 @@ class TestReaders:
             "n_episodes": 100,
             "per_episode_mean": 1.0,
         }
-        gate["STRUCT"]["intervention"] = {
+        gate["HUG"]["intervention"] = {
             "total": 900.0,
             "n_episodes": 300,
             "per_episode_mean": 3.0,
@@ -962,7 +962,7 @@ class TestReaders:
 
     def test_a_missing_opponent_makes_a_pooled_metric_none(self):
         res = _crossover()
-        del res["SPARSE-PEN-70"]["final"]["gate"]["STRUCT"]
+        del res["SPARSE-PEN-70"]["final"]["gate"]["HUG"]
         assert R.zero_motion_fraction(res, "SPARSE-PEN-70") is None
         assert R.deadlock_rate(res, "SPARSE-PEN-70") is None
 
@@ -989,7 +989,7 @@ class TestSummary:
         s = R.summarize(_crossover())
         assert s["gate"]["reward_wrapper"] is None  # amendment A1.3
         assert s["gate"]["seed0"] == 1_900_000 and s["gate"]["n"] == 500
-        assert s["gate"]["opponents"] == ["GREEDY", "STRUCT"]
+        assert s["gate"]["opponents"] == ["GREEDY", "HUG"]
 
     def test_a_refuted_round_summarises_as_a_refutation(self):
         s = R.summarize(_full())
@@ -1069,18 +1069,26 @@ class TestGuards:
         (d / f"DVARY-BASE-70_{R.TOTAL}.zip").write_text("x")
         assert R.require_final_ckpt("DVARY-BASE-70").name.endswith("_5000000.zip")
 
-    def test_the_struct_opponent_refuses_a_missing_checkpoint(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setattr(R, "STRUCT_CKPT", tmp_path / "nope.zip")
-        with pytest.raises(SystemExit, match="STRUCT gate opponent"):
-            R.require_struct_ckpt()
-        with pytest.raises(SystemExit, match="STRUCT gate opponent"):
-            R.gate_opponent_factory("STRUCT", "cpu")
+    def test_no_gate_opponent_loads_a_learned_model(self):
+        """Amendment A2: both gate opponents are scripted. A learned attacker
+        anywhere in this round would make the gate depend on a policy trained
+        under a different objective than the one under test."""
+        from pe2.scripted import GreedyEvader, ObstacleHuggingEvader
+
+        assert R.GATE_OPPONENTS == ("GREEDY", "HUG")
+        assert R.gate_opponent_factory("GREEDY", "cpu") is GreedyEvader
+        assert R.gate_opponent_factory("HUG", "cpu") is ObstacleHuggingEvader
+        assert not hasattr(R, "STRUCT_CKPT")
+        # the class may be NAMED in the amendment comment; what must not exist
+        # is an import or an instantiation of it, or any checkpoint path
+        src = pathlib.Path("scripts/derisk_s18_boundary.py").read_text()
+        assert "from pe2.evade import" not in src
+        assert "StructuredEvaderPolicy(" not in src
+        assert "ATK4-45" not in src
 
     def test_an_unknown_gate_opponent_is_an_error(self):
         with pytest.raises(ValueError, match="unknown gate opponent"):
-            R.gate_opponent_factory("HUG7", "cpu")
+            R.gate_opponent_factory("ATK4-45", "cpu")
 
     def test_skip_existing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(R, "OUT", tmp_path)
