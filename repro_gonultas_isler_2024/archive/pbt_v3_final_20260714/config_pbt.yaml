@@ -1,0 +1,85 @@
+# Population-Based Training (PBT) for Competitive Self-Play
+# Maintains a population of role-conditioned agents that play each other.
+# Weakest agent is periodically replaced by a mutated copy of the strongest.
+
+symmetric: true
+shared_policy: true
+
+arena_size: 16.0
+max_steps: 400
+capture_radius: 0.15
+sim_dt: 0.1
+
+agent:
+  v_max: 1.5
+  v_min: -1.5
+  accel_max: 9.81
+  accel_min: -9.81
+  fov_angle: 2.094
+  fov_range: 6.0
+
+reward:
+  lambda_capture: 1000
+  lambda_time: 1
+  lambda_distance: 1
+
+use_belief: false
+use_amp: true
+use_compile: false
+
+maddpg:
+  episodes: 20000
+  parallel_envs: 4
+  replay_buffer_size: 500000
+  batch_size: 1024
+
+  actor_lr: 0.0005
+  critic_lr: 0.0005
+  hidden_dim: 128
+
+  gamma: 0.99
+  tau: 0.005
+  exploration_sigma: 0.15
+  # No EMA in PBT (population diversity provides natural exploration)
+  ema_tau: 0.0
+
+  frame_stack: 2
+  frame_skip: 2
+  update_freq: 1
+
+  w_vis: 0.1
+
+bimdn:
+  history_length: 200
+  downsample_factor: 10
+  lstm_hidden: 128
+  feature_dim: 32
+  num_components: 3
+  belief_buffer_size: 25000
+  belief_warmup: 10000
+  belief_update_freq: 10
+  belief_batch_size: 256
+  belief_lr: 0.002
+
+curriculum:
+  t_end_ratio: 0.0
+  fov_start: 2.094
+  fov_end: 2.094
+  evader_vmax_start: 1.5
+  evader_vmax_end: 1.5
+
+eval:
+  checkpoint_freq: 250
+  eval_episodes: 100
+
+# PBT-specific hyperparameters
+pbt:
+  population_size: 5          # Number of agents in population
+  replacement_freq: 500       # Evaluate + replace every N episodes
+  tournament_games: 10        # Games per matchup in tournament
+  mutation_std: 0.01          # Gaussian noise std for weight mutation
+
+log_dir: "./runs_pbt"
+output_dir: "./results_pbt"
+
+seed: 0

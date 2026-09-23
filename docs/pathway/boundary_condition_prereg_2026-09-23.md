@@ -107,3 +107,40 @@ exists, and each is appended here with its timestamp.
 `s18_round.{json,png}`, checkpoints under `results/derisk/ckpts_S18-{CELL}-{SEED}/`, GIFs under
 `results/derisk/s18_gifs/`. Launched from a frozen worktree at this commit with `PYTHONPATH` pointed at it.
 Estimated wall time ~30 h for 18 arms at the usual concurrency.
+
+---
+
+## Amendment A1 (2026-09-23, before any arm of this round exists)
+
+Two defects in section 3/4, both found while implementing and both fixed before any number exists.
+
+**A1.1 — the calibration stream collided with the gate stream.** Section 3 put the `lambda` calibration on
+stream 1 900 000, which section 4 reserves for the gate. Calibrating there would consume gate episodes and
+make the gate partly in-sample. Streams are now disjoint and stated once:
+
+| purpose | stream |
+|---|---|
+| calibration (section 3) | **1 860 000+** |
+| construct gate (section 6) | **1 880 000+** |
+| training probes | **1 950 000+** |
+| **the gate** (section 4) | **1 900 000+** |
+
+**A1.2 — the two dense columns were not comparable in scale.** DENSE-FLAT (`w_vis`) and DENSE-VARY
+(`w_search`) were to use their historical defaults (0.1 and 1e-4, D24/D4). Those differ by orders of
+magnitude in expected per-episode return, so a difference between the columns would confound
+gradient-on-`I` with reward scale, and the round's whole point is that one variable differs.
+
+**Both dense weights are therefore calibrated, by the same procedure as `lambda`**, so that the expected
+per-episode dense return of the reference policy is **0.25** in each column — a quarter of the terminal
+reward magnitude, identical across DENSE-FLAT and DENSE-VARY. The columns then differ in *where* the reward
+has gradient and in nothing else.
+
+**Reference policy for all three calibrations:** `RandomSearch`, under the shield, at the round's
+`EnvConfig()` — the behaviour class of the untrained policy, and the only reference available before any arm
+is trained. 200 episodes. Written to `results/derisk/s18_lambda.json` as `{lambda, w_vis, w_search}` with the
+measured per-episode means beside them. **Any arm that cannot read that file refuses to run.**
+
+**A1.3 — evaluation is unwrapped.** The reward wrapper is training-only. `play_episode` already discards
+rewards and reports outcomes, so the wrapper provably cannot change an episode (asserted by
+`TestRewardWrapperHook::test_reward_shaping_cannot_change_the_trajectory`), but the gate constructs its
+`SearchMDP` with `reward_wrapper=None` regardless, so the property does not rest on that argument alone.

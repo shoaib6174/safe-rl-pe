@@ -33,7 +33,9 @@ external/
 models/
 outputs/
 runs/
+runs_pbt/
 results/
+results_pbt/
 checkpoints/
 
 # Visualization outputs

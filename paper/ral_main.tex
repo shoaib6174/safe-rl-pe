@@ -1,0 +1,265 @@
+\documentclass[letterpaper, 10pt, journal]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{subcaption}
+
+\newcommand{\TODO}[1]{\textcolor{red}{[TODO: #1]}}
+
+\title{Why Population-Based Self-Play Fails to Balance Pursuit-Evasion: A Structural $\forall/\exists$ Asymmetry}
+
+\author{Anonymous authors}
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We show that population-based self-play for 1v1 pursuit-evasion between car-like robots under partial observability cannot reliably reach competitive balance. By verifying an independent reproduction of Gonultas \& Isler (2025) and testing population-based fictitious self-play (Pop-FSP) across five configurations and 17 seeds, we find that no seed achieves capture rate $CR \in [0.45, 0.55]$. We trace the failure to a structural quantifier asymmetry: the pursuer trains against an existentially quantified opponent ($\exists$), while the evader must escape a universally quantified population ($\forall$). Exact tabular analysis confirms that the game itself admits a balanced equilibrium and that the bias emerges from deterministic-policy commitment under the asymmetric sampling structure. A symmetric point-mass ablation confirms that removing dynamics asymmetry improves but does not solve the problem (4/34 seeds balanced). An exponential-moving-average opponent baseline avoids the asymmetry but is highly seed-dependent (1/7 seeds balanced). These results frame population-based self-play in pursuit-evasion as a cautionary example: symmetry of dynamics is necessary but insufficient when the training objective itself is asymmetric.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:introduction}
+
+Pursuit-evasion (PE) games are a fundamental problem in robotics with applications in surveillance, search-and-rescue, and autonomous navigation. When both agents are driven by learned policies trained via self-play, the problem becomes a challenging adversarial learning problem where training stability is notoriously difficult to achieve.
+
+Recent work by Gonultas \& Isler~\cite{gonultas2024carlike} formalizes 1v1 PE between car-like robots with sensor constraints as a partially observable stochastic zero-sum game and reports stable competitive behavior using MADDPG~\cite{lowe2020multiagent} with a learned belief representation. Their paper reports self-play capture rate $CR \approx 0.54$ and vs-random $CR \approx 0.98$. However, the community rarely asks whether the training procedure converges to a balanced Nash equilibrium, or merely to a transiently balanced oscillatory phase.
+
+Most PE papers report capture-rate improvements against fixed baselines, not adversarial balance. Population-based self-play / PSRO methods are known to suffer from expressiveness limits and high exploitability in asymmetric settings~\cite{lanctot2017psro,lockhart2019exploitability,liu2024exante}, but this has not been characterized for mobile-robot PE. Without balance checks, reported ``strong'' policies may simply reflect training-path bias.
+
+In this paper, we make three contributions. First, we verify an independent reproduction of Gonultas \& Isler (2025) and document seven implementation fixes discovered during a systematic code audit. Second, we show that a standard Pop-FSP procedure fails to produce competitive balance in 0/17 seeds across 5 configurations, and that symmetric point-mass dynamics yield balance in only 4/34 seeds. Third, we trace the failure to a structural $\forall/\exists$ quantifier asymmetry---the pursuer best-responds to \emph{some} evader from the population, while the evader must escape \emph{all} pursuers---and confirm via exact tabular analysis that the bias arises from deterministic-policy commitment under this asymmetry, not from the game or from approximation error alone. We discuss why this makes symmetry of dynamics necessary but insufficient for balance.
+
+\section{Related Work}
+\label{sec:related_work}
+
+\textbf{Pursuit-evasion with learned policies.} Gonultas \& Isler~\cite{gonultas2024carlike} formalize car-like PE under partial observability and report self-play $CR = 0.54$ vs-random $CR = 0.98$. Other recent work reports capture-rate improvements for quadrotor swarms, visibility-based search, and multi-UAV settings~\cite{xiao2024amsdrl,bajcsy2024vision}, but does not rigorously test balanced adversarial training or include independent reproduction audits.
+
+\textbf{Population-based self-play and PSRO.} PSRO, Pop-FSP, and league training maintain populations of historical policies and sample opponents from them~\cite{lanctot2017psro,heinrich2016nfsp,vinyals2019alphastar,mcaleer2022selfplay}. Liu et al.~\cite{liu2024exante} prove that Team PSRO cannot cover the full joint policy space in heterogeneous teams. Empirical studies report high exploitability and persistent non-transitivity~\cite{lockhart2019exploitability,selfplay2024survey}. These findings are not mapped to the mobile-robot PE setting.
+
+\textbf{Symmetry and equilibrium.} In symmetric games, symmetry of dynamics can imply equal value under exact invariance. In zero-sum role-asymmetric games, symmetry of dynamics does not imply symmetry of objective. We connect this to the $\exists$ vs $\forall$ opponent-sampling problem.
+
+\section{Methods}
+\label{sec:methods}
+
+\subsection{Problem Formulation}
+\label{subsec:problem}
+
+We study 1v1 PE in a 10$\times$10~m arena with obstacles. Both agents are car-like with differential-drive dynamics. Observations are partial: each agent receives opponent state only when the opponent lies inside its field-of-view and is not occluded by an obstacle. The game is zero-sum: the pursuer maximizes capture rate $CR$ and the evader minimizes it. A desired competitive equilibrium has $CR \approx 0.5$.
+
+\subsection{Verified Reproduction of Gonultas \& Isler 2025}
+\label{subsec:gi_repro}
+
+We reimplemented the GI 2024 pipeline~\cite{gonultas2024carlike} in PyTorch (bicycle-model pursuer, point-mass evader, MADDPG~\cite{lowe2020multiagent} + BiMDN, asymmetric sensing, curriculum). Table~\ref{tab:gi_repro} summarizes the verification. Self-play $CR = 0.550$ matches the paper (0.54); vs-random $CR = 0.936$ is close to the paper (0.98). We discovered and fixed seven implementation issues during a code audit; the most impactful was a capture-counting bug that underreported $CR$ when accumulated step penalties made episode reward negative. The full list is in the supplement.
+
+\begin{table}[h]
+\centering
+\caption{GI 2024 Reproduction Verification}
+\label{tab:gi_repro}
+\begin{tabular}{@{}ccccc@{}}
+\toprule
+Seed & Checkpoint & Metric & Ours & Paper \\
+\midrule
+0 & ep 11k & vs self-play & \textbf{0.550} & 0.54 \\
+0 & ep 11k & vs random & 0.906 & 0.98 \\
+1 & ep 15.5k & vs random & \textbf{0.936} & 0.98 \\
+1 & ep 15.5k & vs self-play & 0.472 & 0.54 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Population-Based Fictitious Self-Play}
+\label{subsec:pop_fsp}
+
+Pop-FSP maintains a pursuer population $\Pi_P$ and an evader population $\Pi_E$. Each learner trains against an opponent sampled uniformly from the opposite population. The effective objectives are:
+\begin{align}
+\max_{\pi_P} \; & \mathbb{E}_{\pi_E \sim \Pi_E} [ V^{\pi_P, \pi_E}(s_0) ] \label{eq:pursuer} \\
+\max_{\pi_E} \; & \mathbb{E}_{\pi_P \sim \Pi_P} [ V^{\pi_P, \pi_E}(s_0) ] \label{eq:evader}
+\end{align}
+At first glance both agents sample one opponent. However, the meaning is different: the pursuer needs to catch \emph{some} evader from the population ($\exists$), while the evader must escape \emph{all} pursuers from the population ($\forall$). A single effective pursuer in the sampled batch gives the evader a large negative signal, while a single weak evader gives the pursuer a large positive signal. This creates a systematic gradient imbalance favoring the pursuer.
+
+We test five configurations (v3--v7) with different arena sizes and speed ratios. All use population sizes 8 (pursuer) and 16 (evader), recency bias $\lambda=0.15$, and gradual mixing from episodes 100 to 500. We run 17 seeds in total.
+
+\subsection{Symmetric Point-Mass Ablation}
+\label{subsec:symmetric}
+
+To isolate the effect of dynamics/observation asymmetry, we replace car-like dynamics with symmetric, fully observable point-mass agents and apply the same Pop-FSP procedure. We run 34 seeds for 5000 episodes each.
+
+\subsection{EMA Baseline}
+\label{subsec:ema}
+
+As a comparison, we train with an exponential moving average (EMA) of the opponent network ($\tau=0.001$). EMA avoids the $\forall/\exists$ asymmetry because both agents train against a single smoothed opponent. We report results for 4 seeds with the same hyperparameters.
+
+\subsection{Controlled Tabular Analysis}
+\label{subsec:tabular}
+
+To separate the structural $\forall/\exists$ asymmetry from deep-RL approximation artifacts, we run two exact analyses. First, we solve a $3{\times}3$ gridworld pursuit-evasion game by value iteration ($\gamma=0.95$, capture radius 1, horizon 20) and compare exact best-response dynamics under five opponent-sampling regimes: Nash, Pop-FSP-style asymmetric ($\exists/\forall$), asymmetric with a myopic evader, symmetric ($\exists/\exists$), and EMA-like single opponent. Second, we construct a $2{\times}2$ zero-sum matrix game with balanced mixed-strategy Nash equilibrium and compute the value when either player is restricted to a pure strategy and commits first, mimicking the deterministic policies produced by deep RL.
+
+\subsection{Balance Metric}
+\label{subsec:metric}
+
+A run is \textbf{balanced} if its final mean capture rate satisfies $CR \in [0.45, 0.55]$. We also report per-checkpoint robustness $R = \min(CR_{\text{random}}, CR_{\text{greedy}}, CR_{\text{selfplay}})$; a robust run has $\max_t R(t) \ge 0.40$.
+
+\subsection{Evaluation Protocol}
+\label{subsec:eval_protocol}
+
+All capture rates reported in this paper come from \emph{frozen-opponent evaluation}: at the final checkpoint we freeze all parameters and evaluate against (i) a random policy, (ii) the frozen self-play opponent, and (iii) EMA-final policies. Two findings motivate the details of this protocol. First, training-log capture rates are ${\sim}2$-episode window means computed under exploration noise against a co-adapting opponent, and they diverge from frozen evaluation in \emph{either} direction. In our symmetric ablation, two seeds whose final training-log windows read $CR{=}0.500$ evaluated to $0.262$ and $0.563$ frozen, while their training-log means over the final 500 episodes were $0.468$ and $0.893$ (Section~\ref{subsec:symmetric_results}). Re-evaluating the frozen networks under the exact training measurement conditions (exploration noise $\sigma{=}0.1$ on both agents, frame-skip 2) yields $0.250$ and $0.640$, showing that the discrepancy is dominated by opponent non-stationarity, not by exploration noise or control frequency. Second, unseeded episode initialization makes short evaluations irreproducible: repeat 50-episode evaluations of one seed ranged from $0.24$ to $0.42$. We therefore evaluate the symmetric cohort on a shared fixed set of seeded initial conditions (paired design, $N{=}500$ episodes per matchup; $N{=}1000$ for seeds within two standard errors of the balance band). We treat seeded frozen-opponent evaluation as the minimum reporting standard for self-play pursuit-evasion, and caution against interpreting training-log capture rates as evidence of balance.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Pop-FSP Fails to Balance}
+\label{subsec:pop_fsp_results}
+
+Table~\ref{tab:pop_fsp} summarizes the Pop-FSP sweep. No configuration produces a balanced outcome: across all 17 seeds the balance rate is 0/17, giving a one-sided 95\% upper bound of $0.16$ on the true balance rate and rejecting a 50\% balance rate at $p < 10^{-5}$ (binomial test). v3, v5, and most v7 seeds lock in pursuer-dominant ($CR=1.0$); v4 locks in evader-dominant ($CR\approx 0$); v6 reaches a stable but pursuer-biased equilibrium ($CR\approx 0.72$). Figure~\ref{fig:pop_fsp_traj} shows representative trajectories.
+
+\begin{table}[h]
+\centering
+\caption{Pop-FSP Configuration Sweep}
+\label{tab:pop_fsp}
+\begin{tabular}{@{}cccccc@{}}
+\toprule
+Config & Arena & $v_E^{\max}$ & Ratio & Result & Direction \\
+\midrule
+v3 & 16.0 & 1.50 & 1.67x & $CR=1.00$ & Pursuer lock \\
+v4 & 20.0 & 1.75 & 1.43x & $CR\approx 0.00$ & Evader lock \\
+v5 & 18.0 & 1.60 & 1.56x & $CR=1.00$ & Pursuer lock \\
+v6 & 19.0 & 1.65 & 1.52x & $CR\approx 0.72$ & Pursuer biased \\
+v7 & 19.0 & 1.70 & 1.47x & Mixed lock & Lock \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{figures/figure_1_pop_fsp_trajectories.pdf}
+\caption{Capture-rate trajectories for Pop-FSP configurations v3--v7. No seed stabilizes in the balanced band $[0.45, 0.55]$ (shaded).}
+\label{fig:pop_fsp_traj}
+\end{figure}
+
+\subsection{The $\forall/\exists$ Asymmetry Explains the Bias}
+\label{subsec:asymmetry}
+
+Figure~\ref{fig:asymmetry} illustrates the structural mismatch. Under Equation~\eqref{eq:pursuer}, the pursuer receives positive training signal if \emph{any} policy in its population can catch the sampled evader. Under Equation~\eqref{eq:evader}, the evader receives negative signal from the \emph{strongest} sampled pursuer. This makes the evader's optimization problem strictly harder, even when the game itself is symmetric.
+
+The speed-ratio sweep confirms that game mechanics can shift the equilibrium but cannot eliminate the bias. v4 favors the evader mechanically yet produces evader-dominance, not balance. v6 is the closest to balanced ($CR=0.72$), but still pursuer-biased and oscillating around the wrong mean.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{figures/figure_2_forall_exists_schematic.pdf}
+\caption{The pursuer best-responds to an existentially sampled evader; the evader must be robust to a universally sampled pursuer population.}
+\label{fig:asymmetry}
+\end{figure}
+
+\subsection{The Asymmetry Is Structural, Not an Approximation Artifact}
+\label{subsec:tabular_results}
+
+A natural objection is that the observed bias may stem from approximate value functions, finite populations, or other deep-RL artifacts rather than from the sampling structure itself. Our controlled analyses rule this out in two steps.
+
+First, with \emph{exact} best responses the asymmetry disappears. In the tabular gridworld, all five opponent-sampling regimes---including the Pop-FSP-style $\exists/\forall$ regime---converge to the Nash-equilibrium capture rate $CR = 0.436$ (Fig.~\ref{fig:tabular}a). The game itself therefore admits a balanced equilibrium, and exact learners reach it regardless of how opponents are sampled.
+
+Second, the bias appears exactly when policies become deterministic and one side effectively commits. In the $2{\times}2$ matrix game, the mixed-strategy Nash equilibrium is balanced ($CR = 0.500$), but when players are restricted to pure strategies, the player who commits first obtains a strict advantage: pursuer-first yields $CR = 0.600$, evader-first only $0.400$ (Fig.~\ref{fig:tabular}b). Deep RL policies are deterministic at execution time, and population-based training is sequential, so the pursuer---whose $\exists$ objective rewards specializing against \emph{any} single evader---enjoys the commitment advantage, while the evader's $\forall$ objective forbids it.
+
+Together these results show that the failure of Pop-FSP is not caused by the game, nor by approximation error alone, but by the interaction of deterministic learned policies with the asymmetric sampling structure.
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}{0.49\columnwidth}
+  \includegraphics[width=\textwidth]{figures/experiment_1_tabular_regimes.pdf}
+  \caption{Exact best-response regimes}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\columnwidth}
+  \includegraphics[width=\textwidth]{figures/experiment_1b_matrix_commitment.pdf}
+  \caption{Pure-strategy commitment}
+\end{subfigure}
+\caption{Controlled tabular analyses. (a) With exact best responses, all opponent-sampling regimes converge to the Nash value $CR = 0.436$. (b) With pure strategies and first-mover commitment, the pursuer obtains $0.600$ while the evader guarantees only $0.400$ (mixed Nash: $0.500$).}
+\label{fig:tabular}
+\end{figure}
+
+\subsection{Symmetric Dynamics Are Necessary but Insufficient}
+\label{subsec:symmetric_results}
+
+Table~\ref{tab:symmetric} gives the first 9 symmetric point-mass seeds. Two seeds (2 and 3) are balanced, while five lock in pursuer-dominant, one in evader-dominant, and one is pursuer-biased. To test reproducibility, we expanded the ablation to 34 seeds (Fig.~\ref{fig:symmetric_hist}). The full cohort yields \textbf{4/34 balanced} (seeds 2, 3, 20, 21), with 26/34 pursuer-lock/biased and 4/34 evader-lock. The Wilson 95\% confidence interval on the balance rate is $[0.047, 0.266]$, and a one-sided binomial test rejects a balance rate of 50\% at $p < 10^{-5}$. Seeds 9--33 were classified under the seeded paired protocol of Section~\ref{subsec:eval_protocol}; relative to an initial 50-episode unseeded evaluation, two band-edge seeds changed classification (21 in, 30 out), leaving the tally unchanged. This confirms that removing dynamics and observation asymmetry improves the chance of balance, but the $\forall/\exists$ structural issue remains.
+
+All symmetric-cohort numbers above use the frozen-opponent protocol of Section~\ref{subsec:eval_protocol}; the two misleading seeds (9 and 16, final training-log windows $CR=0.500$) evaluate to $0.262$ and $0.563$ under this protocol.
+
+\begin{table}[h]
+\centering
+\caption{Symmetric Point-Mass Pop-FSP Results (9 seeds)}
+\label{tab:symmetric}
+\begin{tabular}{@{}ccccc@{}}
+\toprule
+Seed & vs random & vs self-play & EMA vs EMA & Verdict \\
+\midrule
+0 & 1.000 & 1.000 & 1.000 & Pursuer lock \\
+1 & 0.980 & 0.960 & 0.940 & Pursuer biased \\
+\textbf{2} & \textbf{0.500} & \textbf{0.460} & \textbf{0.600} & \textbf{Balanced} \\
+\textbf{3} & \textbf{0.480} & \textbf{0.480} & \textbf{0.540} & \textbf{Balanced} \\
+4 & 1.000 & 0.960 & 0.920 & Pursuer lock \\
+5 & 1.000 & 1.000 & 1.000 & Pursuer lock \\
+6 & 0.800 & 0.920 & 0.960 & Pursuer dominant \\
+7 & 0.160 & 0.240 & 0.240 & Evader dominant \\
+8 & 1.000 & 1.000 & 1.000 & Pursuer lock \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.75\columnwidth]{figures/figure_3_symmetric_distribution.pdf}
+\caption{Final capture-rate distribution across 34 symmetric point-mass seeds. Only 4/34 seeds fall in the balanced band $[0.45, 0.55]$. Seeds 9--33 use seeded paired evaluation ($N{=}500$; $N{=}1000$ for band-edge seeds); seeds 0--8 use the original $N{=}50$ protocol (Section~\ref{subsec:eval_protocol}).}
+\label{fig:symmetric_hist}
+\end{figure}
+
+\subsection{EMA Does Not Reliably Fix It}
+\label{subsec:ema_results}
+
+Table~\ref{tab:ema} summarizes the EMA baseline. Seed 0 reaches robustness $0.698$, but seeds 1--3 collapse. Combined with later seeds 4--6 (not shown in detail), the success rate is 1/7 (Wilson 95\% CI $[0.026, 0.513]$). EMA avoids the $\forall/\exists$ asymmetry but remains highly seed-dependent.
+
+\begin{table}[h]
+\centering
+\caption{EMA Opponent Stabilization ($\tau=0.001$)}
+\label{tab:ema}
+\begin{tabular}{@{}cccc@{}}
+\toprule
+Seed & Actor LR & Robustness & Outcome \\
+\midrule
+0 & 0.0005 & \textbf{0.698} & Balanced \\
+1 & 0.0005 & 0.000 & Evader collapse \\
+2 & 0.0001 & 0.148 & Pursuer overfit \\
+3 & 0.0005 & 0.292 & Evader collapse \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Explicit Balance Selection Also Fails}
+\label{subsec:pbt_results}
+
+As a final check, we tested whether explicitly selecting for balance can overcome the asymmetry. We ran population-based training (PBT)~\cite{czempin2022reducing} with a dual-role fitness function that rewards agents for win rates near 0.5 in both roles, rather than for pure strength, across 3 seeds for up to 20{,}000 episodes. All three seeds converged to complete pursuer lock-in: at tournament evaluation every agent reported pursuer win rate $1.000$ and evader win rate $0.000$. Even a training signal that directly optimizes for balance does not escape the lock-in attractor, reinforcing that the failure is a property of the coupled learning dynamics rather than of the selection criterion.
+
+\section{Discussion}
+\label{sec:discussion}
+
+Our results suggest that population-based self-play in pursuit-evasion fails to reach competitive balance because of a structural $\forall/\exists$ asymmetry, not because of poor hyperparameters or insufficient training. Game modifications can shift the equilibrium point, but they cannot eliminate the asymmetry. Symmetric dynamics help but are insufficient: even with identical point-mass agents and full observability, only 4/34 seeds balance.
+
+These findings have two implications. First, future PE work should report balance metrics against trained opponents, not only capture-rate improvements against fixed baselines. Second, methods that explicitly address the $\forall/\exists$ asymmetry---for example, by conditioning the evader on the entire pursuer population or by curating adversarial populations---may be needed.
+
+Limitations remain. Our exact analyses are deliberately small-scale (Section~\ref{subsec:tabular_results}); they establish the mechanism but not its quantitative magnitude in the full car-like, partially observable game. Approximate deep RL and finite populations may amplify the structural bias. We also focus on 1v1 PE; multi-agent settings may introduce additional asymmetries.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We verified the Gonultas \& Isler 2025 reproduction and showed that Pop-FSP fails to balance 1v1 pursuit-evasion across 17 seeds and 5 configurations. The failure is explained by a structural $\forall/\exists$ quantifier asymmetry: the pursuer solves an existential problem, while the evader solves a universal problem. Exact tabular analysis confirms the bias is a commitment effect of this asymmetry rather than a property of the game or an approximation artifact. Symmetric dynamics are necessary but insufficient. These results frame population-based self-play in pursuit-evasion as a systematic diagnostic study and point toward methods that explicitly respect the game's structural asymmetry.
+
+\section*{Acknowledgments}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

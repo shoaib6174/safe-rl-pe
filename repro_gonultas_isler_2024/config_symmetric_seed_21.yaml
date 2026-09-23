@@ -1,0 +1,86 @@
+# Symmetric Point-Mass Pursuit-Evasion
+# Both agents use identical point-mass dynamics with equal speeds and symmetric FOV
+symmetric: true
+
+arena_size: 16.0
+max_steps: 400
+capture_radius: 0.15
+sim_dt: 0.1
+
+# Shared agent parameters (point-mass, symmetric)
+agent:
+  v_max: 1.5
+  v_min: -1.5
+  accel_max: 9.81
+  accel_min: -9.81
+  fov_angle: 2.094
+  fov_range: 6.0
+
+# Reward
+reward:
+  lambda_capture: 1000
+  lambda_time: 1
+  lambda_distance: 1
+
+# Global toggles
+use_belief: false
+use_amp: true
+use_compile: false
+
+# MADDPG — Symmetric Self-Play with EMA
+maddpg:
+  episodes: 5000
+  parallel_envs: 2
+  replay_buffer_size: 100000
+  batch_size: 1024
+
+  # Symmetric learning rates (same for both agents)
+  actor_lr: 0.0005
+  critic_lr: 0.0005
+  hidden_dim: 128
+
+  gamma: 0.99
+  tau: 0.005
+  exploration_sigma: 0.1
+  ema_tau: 0.001
+
+  # Frame stacking
+  frame_stack: 2
+  frame_skip: 2
+  update_freq: 1
+
+  # vis_reward for pursuer LOS maintenance
+  w_vis: 0.1
+
+# BiMDN (disabled for symmetric experiments)
+bimdn:
+  history_length: 200
+  downsample_factor: 10
+  lstm_hidden: 128
+  feature_dim: 32
+  num_components: 3
+  belief_buffer_size: 25000
+  belief_warmup: 10000
+  belief_update_freq: 10
+  belief_batch_size: 256
+  belief_lr: 0.002
+
+# Curriculum (disabled for symmetric — both agents start at full capability)
+curriculum:
+  t_end_ratio: 0.0
+  fov_start: 2.094
+  fov_end: 2.094
+  evader_vmax_start: 1.5
+  evader_vmax_end: 1.5
+
+# Evaluation
+eval:
+  checkpoint_freq: 250
+  eval_episodes: 100
+
+# Logging
+log_dir: "./runs_symmetric"
+output_dir: "./results_symmetric"
+
+# Seed (overridden by launch script)
+seed: 21

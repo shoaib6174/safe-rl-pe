@@ -1,0 +1,66 @@
+{
+  "seed_9": {
+    "trainlog_windows_total": 2493,
+    "trainlog_mean_all": 0.35098315282791814,
+    "trainlog_mean_last500ep": 0.468,
+    "trainlog_std_last500ep": 0.42068515543099455,
+    "trainlog_frac_balanced_windows_last500ep": 0.288,
+    "trainlog_final_value": 0.5,
+    "A_det_skip1": {
+      "capture_rate": 0.23,
+      "mean_length": 352.4066666666667
+    },
+    "B_det_skip2": {
+      "capture_rate": 0.2966666666666667,
+      "mean_length": 328.8066666666667
+    },
+    "C_noisy_skip1": {
+      "capture_rate": 0.33666666666666667,
+      "mean_length": 331.81666666666666
+    },
+    "D_noisy_skip2": {
+      "capture_rate": 0.25,
+      "mean_length": 342.61
+    },
+    "E1_pfinal_vs_e4750": {
+      "capture_rate": 0.3333333333333333,
+      "mean_length": 307.14666666666665
+    },
+    "E2_p4750_vs_efinal": {
+      "capture_rate": 0.26,
+      "mean_length": 347.84
+    }
+  },
+  "seed_16": {
+    "trainlog_windows_total": 2486,
+    "trainlog_mean_all": 0.9263881737731297,
+    "trainlog_mean_last500ep": 0.892668,
+    "trainlog_std_last500ep": 0.2278670616302409,
+    "trainlog_frac_balanced_windows_last500ep": 0.172,
+    "trainlog_final_value": 0.5,
+    "A_det_skip1": {
+      "capture_rate": 0.5033333333333333,
+      "mean_length": 301.0833333333333
+    },
+    "B_det_skip2": {
+      "capture_rate": 0.6633333333333333,
+      "mean_length": 265.0133333333333
+    },
+    "C_noisy_skip1": {
+      "capture_rate": 0.5233333333333333,
+      "mean_length": 310.52
+    },
+    "D_noisy_skip2": {
+      "capture_rate": 0.64,
+      "mean_length": 271.95
+    },
+    "E1_pfinal_vs_e4750": {
+      "capture_rate": 0.7566666666666667,
+      "mean_length": 213.38333333333333
+    },
+    "E2_p4750_vs_efinal": {
+      "capture_rate": 0.5266666666666666,
+      "mean_length": 276.19
+    }
+  }
+}

@@ -1,0 +1,147 @@
+{
+  "9": {
+    "capture_rate": 0.262,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "10": {
+    "capture_rate": 0.866,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "11": {
+    "capture_rate": 1.0,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "12": {
+    "capture_rate": 0.571,
+    "n_episodes": 1000,
+    "protocol": "seeded_paired_init700000+800000",
+    "set_values": [
+      0.548,
+      0.594
+    ]
+  },
+  "13": {
+    "capture_rate": 0.966,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "14": {
+    "capture_rate": 0.992,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "15": {
+    "capture_rate": 0.204,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "16": {
+    "capture_rate": 0.563,
+    "n_episodes": 1000,
+    "protocol": "seeded_paired_init700000+800000",
+    "set_values": [
+      0.574,
+      0.552
+    ]
+  },
+  "17": {
+    "capture_rate": 0.99,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "18": {
+    "capture_rate": 0.846,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "19": {
+    "capture_rate": 1.0,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "20": {
+    "capture_rate": 0.536,
+    "n_episodes": 1000,
+    "protocol": "seeded_paired_init700000+800000",
+    "set_values": [
+      0.546,
+      0.526
+    ]
+  },
+  "21": {
+    "capture_rate": 0.527,
+    "n_episodes": 1000,
+    "protocol": "seeded_paired_init700000+800000",
+    "set_values": [
+      0.532,
+      0.522
+    ]
+  },
+  "22": {
+    "capture_rate": 0.954,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "23": {
+    "capture_rate": 0.962,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "24": {
+    "capture_rate": 0.922,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "25": {
+    "capture_rate": 1.0,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "26": {
+    "capture_rate": 0.912,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "27": {
+    "capture_rate": 0.804,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "28": {
+    "capture_rate": 0.918,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "29": {
+    "capture_rate": 0.926,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "30": {
+    "capture_rate": 0.425,
+    "n_episodes": 1000,
+    "protocol": "seeded_paired_init700000+800000",
+    "set_values": [
+      0.438,
+      0.412
+    ]
+  },
+  "31": {
+    "capture_rate": 0.9,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "32": {
+    "capture_rate": 0.928,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  },
+  "33": {
+    "capture_rate": 0.924,
+    "n_episodes": 500,
+    "protocol": "seeded_paired_init700000"
+  }
+}

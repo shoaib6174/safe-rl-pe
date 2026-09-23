@@ -946,3 +946,192 @@ class TestLearnerObsRoutesAgree:
         assert len(mdp_rows) >= 200
         for a, b in zip(mdp_rows, pol_rows, strict=True):
             assert a.shape == (13,) and np.array_equal(a, b)
+
+
+class TestInterventionPenalty:
+    """S18 (boundary_condition_prereg_2026-09-23.md section 3). The penalty of
+    arXiv:2410.11671 -- proportional to the MAGNITUDE of the filter's correction
+    on every shielded step -- as distinct from D129's stall penalty, which counts
+    stalled steps. The contradiction the round tests is only theirs if the
+    penalty is theirs."""
+
+    class _Wall:  # drive straight at the nearest wall: the shield must correct
+        def predict(self, obs, deterministic=True):
+            return np.array([1.0, 0.0], dtype=np.float32), None
+
+    def test_subtracts_per_unit_of_filter_correction(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import R_ACQ, SearchMDP
+
+        m = SearchMDP(
+            CFG, GreedyEvader, hold=10, shield=CBFShield(CFG), intervention_penalty=1e-2
+        )
+        obs, _ = m.reset(seed=900_983)
+        total_mag, total_penalty, done = 0.0, 0.0, False
+        while not done:
+            obs, r, term, trunc, info = m.step(self._Wall().predict(obs)[0])
+            done = term or trunc
+            assert info["intervention_magnitude"] == m.span_intervention
+            total_mag += info["intervention_magnitude"]
+            total_penalty += r - info["raw_reward"] - R_ACQ * info["onsets"]
+        assert total_mag > 0.0
+        assert total_penalty == pytest.approx(-1e-2 * total_mag)
+
+    def test_magnitude_is_the_normalised_action_delta_of_one_step(self):
+        """Normalised action units, not rad/s: omega_max = 2.84 would otherwise
+        swamp v_max = 1.0 and the penalty would be almost purely about turning."""
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader, hold=10, shield=CBFShield(CFG))
+        m.reset(seed=900_983)
+        a = np.array([1.0, 0.0], dtype=np.float32)
+        # the shield is deterministic in (nominal, pose, obstacles), so filter
+        # the same command at the pre-step pose to get the expected correction
+        pose = m.inner.env.pursuer_pose.copy()
+        v_nom = (float(a[0]) + 1.0) / 2.0 * CFG.v_max
+        w_nom = float(a[1]) * CFG.omega_max
+        (v, w), _ = m.shield.filter(
+            (v_nom, w_nom), pose, m.inner.env.obstacles, v_max=CFG.v_max
+        )
+        expected = float(
+            np.linalg.norm(
+                np.array(
+                    [
+                        2.0 * v / CFG.v_max - 1.0 - float(a[0]),
+                        w / CFG.omega_max - float(a[1]),
+                    ]
+                )
+            )
+        )
+        assert expected > 0.0, "the wall command must actually be corrected here"
+
+        m.span_intervention = 0.0
+        m._step_inner(a, "search")
+        assert m.span_intervention == pytest.approx(expected)
+
+    def test_no_shield_means_no_intervention_and_no_penalty(self):
+        from pe2.structured import R_ACQ, SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader, hold=10, intervention_penalty=1e-2)
+        obs, _ = m.reset(seed=900_983)
+        for _ in range(5):
+            obs, r, term, trunc, info = m.step(self._Wall().predict(obs)[0])
+            assert info["intervention_magnitude"] == 0.0
+            assert r == pytest.approx(info["raw_reward"] + R_ACQ * info["onsets"])
+            if term or trunc:
+                break
+
+    def test_noop_shield_intervenes_by_exactly_zero(self):
+        from pe2.shield import NoOpShield
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(
+            CFG, GreedyEvader, hold=10, shield=NoOpShield(CFG), intervention_penalty=1.0
+        )
+        obs, _ = m.reset(seed=900_983)
+        for _ in range(5):
+            obs, r, term, trunc, info = m.step(self._Wall().predict(obs)[0])
+            assert info["intervention_magnitude"] == pytest.approx(0.0, abs=1e-6)
+            if term or trunc:
+                break
+
+    def test_zero_reward_arm_zeroes_the_penalty_too(self):
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(
+            CFG,
+            GreedyEvader,
+            hold=10,
+            shield=CBFShield(CFG),
+            intervention_penalty=1e-2,
+            zero_reward=True,
+        )
+        obs, _ = m.reset(seed=900_983)
+        for _ in range(5):
+            obs, r, term, trunc, info = m.step(self._Wall().predict(obs)[0])
+            assert r == 0.0
+            if term or trunc:
+                break
+
+    def test_default_is_off_and_leaves_the_reward_untouched(self):
+        """Regression: every prior round ran with this parameter absent."""
+        from pe2.shield import CBFShield
+        from pe2.structured import R_ACQ, SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader, hold=10, shield=CBFShield(CFG))
+        assert m.intervention_penalty == 0.0
+        obs, _ = m.reset(seed=900_983)
+        for _ in range(5):
+            obs, r, term, trunc, info = m.step(self._Wall().predict(obs)[0])
+            assert r == pytest.approx(info["raw_reward"] + R_ACQ * info["onsets"])
+            if term or trunc:
+                break
+
+
+class TestRewardWrapperHook:
+    """S18 (boundary_condition_prereg_2026-09-23.md section 2). The three reward
+    columns are a training-only wrapper on the inner env. The hook must not
+    disturb the true-pose accesses `_step_inner` and `play_episode` depend on,
+    and must not change a single step of the trajectory."""
+
+    @staticmethod
+    def _dense(w_vis=0.0, w_search=0.0):
+        from pe2.rewards import DenseRewardWrapper
+
+        return lambda e: DenseRewardWrapper(e, w_vis=w_vis, w_search=w_search)
+
+    def test_default_is_the_bare_inner_env(self):
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(CFG, GreedyEvader, hold=10)
+        assert m._driver is m.inner
+
+    def test_wrapped_reward_adds_the_dense_term_and_reports_it(self):
+        from pe2.structured import R_ACQ, SearchMDP
+
+        m = SearchMDP(
+            CFG, GreedyEvader, hold=10, reward_wrapper=self._dense(w_vis=0.1)
+        )
+        obs, _ = m.reset(seed=900_983)
+        obs, r, term, trunc, info = m.step(np.array([1.0, 0.0], dtype=np.float32))
+        assert "dense_reward" in info and "dense_terms" in info
+        # raw_reward is the SUM over the span, dense included; the shaped reward
+        # only adds r_acq, so the two differ by exactly that
+        assert r == pytest.approx(info["raw_reward"] + R_ACQ * info["onsets"])
+
+    def test_true_pose_access_survives_the_wrapper(self):
+        """`inner.env` must stay the simulator: a gym.Wrapper's own `.env` is
+        the SingleAgentWrapper, and reading the pose through it would silently
+        return the wrong object."""
+        from pe2.structured import SearchMDP
+
+        m = SearchMDP(
+            CFG, GreedyEvader, hold=10, reward_wrapper=self._dense(w_search=1e-4)
+        )
+        m.reset(seed=900_983)
+        assert m.inner.env.pursuer_pose.shape == (3,)
+        assert m._driver is not m.inner
+
+    def test_reward_shaping_cannot_change_the_trajectory(self):
+        """The load-bearing property: evaluation is on true outcomes, so a
+        reward column must produce a bit-identical episode to SPARSE."""
+        from pe2.shield import CBFShield
+        from pe2.structured import SearchMDP
+
+        logs = []
+        for wrapper in (
+            None,
+            self._dense(w_vis=0.1),
+            self._dense(w_search=1e-4),
+        ):
+            m = SearchMDP(
+                CFG,
+                GreedyEvader,
+                hold=10,
+                shield=CBFShield(CFG),
+                reward_wrapper=wrapper,
+            )
+            logs.append(m.play_episode(RandomSearch(1).predict, 900_989))
+        assert logs[0] == logs[1] == logs[2]

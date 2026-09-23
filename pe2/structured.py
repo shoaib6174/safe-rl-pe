@@ -146,6 +146,8 @@ class SearchMDP(gym.Env):
         shield_obs: bool = False,
         stall_penalty: float = 0.0,
         escape_obs: bool = False,
+        intervention_penalty: float = 0.0,
+        reward_wrapper: Callable | None = None,
     ):
         super().__init__()
         self.cfg = cfg
@@ -153,6 +155,14 @@ class SearchMDP(gym.Env):
         self.r_acq = float(r_acq)
         self.zero_reward = bool(zero_reward)
         self.inner = SingleAgentWrapper(cfg, "pursuer", opponent_factory, seed0=seed0)
+        # S18: the reward variant (boundary_condition_prereg_2026-09-23.md
+        # section 2) is a TRAINING-ONLY wrapper around the inner env --
+        # `DenseRewardWrapper` for the DFLAT/DVARY columns, absent for SPARSE.
+        # `self.inner` stays the bare SingleAgentWrapper because `_step_inner`
+        # and `play_episode` read `self.inner.env` for the true pose; only the
+        # stepping path goes through the wrapper, so a wrapper's `.env` never
+        # shadows the simulator.
+        self._driver = self.inner if reward_wrapper is None else reward_wrapper(self.inner)
         self.law = InterceptLaw(cfg)
         self.observation_space = self.inner.observation_space
         self.action_space = self.inner.action_space
@@ -194,6 +204,14 @@ class SearchMDP(gym.Env):
         self.escape_obs = bool(escape_obs)
         self.stall_penalty = float(stall_penalty)
         self.span_stalled = 0
+        # S18 (boundary_condition_prereg_2026-09-23.md section 3): the
+        # intervention-magnitude penalty of arXiv:2410.11671 -- w per unit of
+        # ||a_nominal - a_safe||_2, every shielded step, measured in NORMALISED
+        # action units so that v (v_max = 1.0) and omega (omega_max = 2.84) weigh
+        # the same. D129's `stall_penalty` is a different quantity (stalled steps)
+        # and is left untouched; the two are independent and may both be zero.
+        self.intervention_penalty = float(intervention_penalty)
+        self.span_intervention = 0.0
         extra = 3 * self.shield_obs + 2 * self.escape_obs
         if extra:
             self.observation_space = spaces.Box(
@@ -202,7 +220,7 @@ class SearchMDP(gym.Env):
 
     # -- internals -------------------------------------------------------
     def _begin(self, seed: int | None) -> np.ndarray:
-        obs, _ = self.inner.reset(seed=seed)
+        obs, _ = self._driver.reset(seed=seed)
         self.law.reset()
         self._visible = bool(obs[6] > 0.5)
         self._los_breaks = 0
@@ -210,6 +228,7 @@ class SearchMDP(gym.Env):
         self.episode_violations = 0
         self._last_sinfo = None
         self.span_stalled = 0
+        self.span_intervention = 0.0
         self.shield_metrics = ShieldMetrics() if self.shield is not None else None
         return obs
 
@@ -231,11 +250,13 @@ class SearchMDP(gym.Env):
                 env.obstacles,
                 v_max=cfg.v_max,
             )
+            a_nominal = a
             a = np.array(
                 [2.0 * v / cfg.v_max - 1.0, w / cfg.omega_max], dtype=np.float32
             )
+            self.span_intervention += float(np.linalg.norm(a - a_nominal))
         self._last_sinfo = sinfo
-        obs, r, term, trunc, info = self.inner.step(a)
+        obs, r, term, trunc, info = self._driver.step(a)
         self.env_steps += 1
         contact = bool(info["pursuer_wall_contact"] or info["pursuer_obstacle_contact"])
         self.violations_total += int(contact)
@@ -267,7 +288,12 @@ class SearchMDP(gym.Env):
     def _shaped(self, reward: float, onsets: int) -> float:
         if self.zero_reward:
             return 0.0
-        return reward + self.r_acq * onsets - self.stall_penalty * self.span_stalled
+        return (
+            reward
+            + self.r_acq * onsets
+            - self.stall_penalty * self.span_stalled
+            - self.intervention_penalty * self.span_intervention
+        )
 
     def shield_features(self) -> np.ndarray:
         """[intervention, min_clearance clipped to [-0.5, 2], stall_run /
@@ -317,6 +343,7 @@ class SearchMDP(gym.Env):
 
     def step(self, action):
         self.span_stalled = 0
+        self.span_intervention = 0.0
         a = np.asarray(action, dtype=np.float32)
         reward, onsets, term, trunc = 0.0, 0, False, False
         obs = None
@@ -336,6 +363,7 @@ class SearchMDP(gym.Env):
             onsets=onsets,
             raw_reward=reward,
             stalled_steps=self.span_stalled,
+            intervention_magnitude=self.span_intervention,
         )
         return self._learner_obs(obs), self._shaped(reward, onsets), term, trunc, info
 

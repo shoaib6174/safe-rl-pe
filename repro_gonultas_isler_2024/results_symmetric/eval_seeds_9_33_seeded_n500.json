@@ -1,0 +1,152 @@
+{
+  "9": {
+    "capture_rate": 0.262,
+    "mean_length": 338.52,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "10": {
+    "capture_rate": 0.866,
+    "mean_length": 197.646,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "11": {
+    "capture_rate": 1.0,
+    "mean_length": 74.738,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "12": {
+    "capture_rate": 0.548,
+    "mean_length": 239.97,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "13": {
+    "capture_rate": 0.966,
+    "mean_length": 125.098,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "14": {
+    "capture_rate": 0.992,
+    "mean_length": 145.244,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "15": {
+    "capture_rate": 0.204,
+    "mean_length": 343.452,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "16": {
+    "capture_rate": 0.574,
+    "mean_length": 291.258,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "17": {
+    "capture_rate": 0.99,
+    "mean_length": 118.316,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "18": {
+    "capture_rate": 0.846,
+    "mean_length": 170.59,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "19": {
+    "capture_rate": 1.0,
+    "mean_length": 71.81,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "20": {
+    "capture_rate": 0.546,
+    "mean_length": 251.42,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "21": {
+    "capture_rate": 0.532,
+    "mean_length": 275.744,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "22": {
+    "capture_rate": 0.954,
+    "mean_length": 157.562,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "23": {
+    "capture_rate": 0.962,
+    "mean_length": 137.43,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "24": {
+    "capture_rate": 0.922,
+    "mean_length": 171.426,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "25": {
+    "capture_rate": 1.0,
+    "mean_length": 75.142,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "26": {
+    "capture_rate": 0.912,
+    "mean_length": 169.106,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "27": {
+    "capture_rate": 0.804,
+    "mean_length": 164.84,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "28": {
+    "capture_rate": 0.918,
+    "mean_length": 190.734,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "29": {
+    "capture_rate": 0.926,
+    "mean_length": 133.076,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "30": {
+    "capture_rate": 0.438,
+    "mean_length": 265.458,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "31": {
+    "capture_rate": 0.9,
+    "mean_length": 138.454,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "32": {
+    "capture_rate": 0.928,
+    "mean_length": 118.33,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  },
+  "33": {
+    "capture_rate": 0.924,
+    "mean_length": 155.132,
+    "n_episodes": 500,
+    "init_seed_base": 700000
+  }
+}

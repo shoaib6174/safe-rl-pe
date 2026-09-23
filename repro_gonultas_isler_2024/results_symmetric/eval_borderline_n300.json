@@ -1,0 +1,102 @@
+{
+  "12": {
+    "pursuer_vs_selfplay": {
+      "capture_rate": 0.5866666666666667,
+      "mean_length": 230.57,
+      "std_length": 147.81848700348684,
+      "mean_reward": -1989.607322630505
+    },
+    "pursuer_vs_random": {
+      "capture_rate": 0.49,
+      "mean_length": 266.93666666666667,
+      "std_length": 147.0082741057644,
+      "mean_reward": -2167.571223982553
+    },
+    "pursuer_vs_greedy": {
+      "capture_rate": 0.9633333333333334,
+      "mean_length": 102.79,
+      "std_length": 64.42395439586117,
+      "mean_reward": 142.78715072304024
+    }
+  },
+  "16": {
+    "pursuer_vs_selfplay": {
+      "capture_rate": 0.5633333333333334,
+      "mean_length": 288.81333333333333,
+      "std_length": 121.66192977080199,
+      "mean_reward": -3012.948355316581
+    },
+    "pursuer_vs_random": {
+      "capture_rate": 0.5,
+      "mean_length": 277.83666666666664,
+      "std_length": 140.74043480424837,
+      "mean_reward": -2373.1237876589503
+    },
+    "pursuer_vs_greedy": {
+      "capture_rate": 0.53,
+      "mean_length": 238.83666666666667,
+      "std_length": 154.2645670773284,
+      "mean_reward": -3269.2333789990143
+    }
+  },
+  "20": {
+    "pursuer_vs_selfplay": {
+      "capture_rate": 0.5733333333333334,
+      "mean_length": 241.84666666666666,
+      "std_length": 151.99860686496072,
+      "mean_reward": -2891.2178999113034
+    },
+    "pursuer_vs_random": {
+      "capture_rate": 0.37333333333333335,
+      "mean_length": 308.66333333333336,
+      "std_length": 132.4222664643509,
+      "mean_reward": -3472.119621246259
+    },
+    "pursuer_vs_greedy": {
+      "capture_rate": 0.7966666666666666,
+      "mean_length": 148.78,
+      "std_length": 129.4129498929686,
+      "mean_reward": -626.0850708716716
+    }
+  },
+  "21": {
+    "pursuer_vs_selfplay": {
+      "capture_rate": 0.5866666666666667,
+      "mean_length": 258.24,
+      "std_length": 136.50038730103785,
+      "mean_reward": -1412.7574530201387
+    },
+    "pursuer_vs_random": {
+      "capture_rate": 0.6833333333333333,
+      "mean_length": 219.84666666666666,
+      "std_length": 143.64830833980918,
+      "mean_reward": -1168.1026590562476
+    },
+    "pursuer_vs_greedy": {
+      "capture_rate": 0.9766666666666667,
+      "mean_length": 118.66,
+      "std_length": 59.87306907116087,
+      "mean_reward": 121.32001049156975
+    }
+  },
+  "30": {
+    "pursuer_vs_selfplay": {
+      "capture_rate": 0.39666666666666667,
+      "mean_length": 275.97333333333336,
+      "std_length": 153.76494818029525,
+      "mean_reward": -3500.7542032883566
+    },
+    "pursuer_vs_random": {
+      "capture_rate": 0.5133333333333333,
+      "mean_length": 252.36333333333334,
+      "std_length": 153.69610054331963,
+      "mean_reward": -2156.033463797649
+    },
+    "pursuer_vs_greedy": {
+      "capture_rate": 1.0,
+      "mean_length": 96.94666666666667,
+      "std_length": 29.74710891647941,
+      "mean_reward": 421.9004509877169
+    }
+  }
+}
