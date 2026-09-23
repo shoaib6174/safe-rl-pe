@@ -55,6 +55,7 @@ Usage:
   ./venv/bin/python scripts/derisk_s18_boundary.py --arms SPARSE-PEN-70  (one/process)
   ./venv/bin/python scripts/derisk_s18_boundary.py --arms                (all not yet run)
   ./venv/bin/python scripts/derisk_s18_boundary.py --arms DVARY-PEN-71 --gate-only
+  ./venv/bin/python scripts/derisk_s18_boundary.py --gifs       (CG4, before the table)
   ./venv/bin/python scripts/derisk_s18_boundary.py --summarize
 """
 
@@ -1356,6 +1357,251 @@ def write_figure(results: dict, summary: dict, path) -> None:
     plt.close(fig)
 
 
+# ----------------------------------------------------------------------------
+# CG4 — the behavioural gate (spec section 6)
+# ----------------------------------------------------------------------------
+# "Render 3 unselected episodes per cell and watch them, before reading the
+# table." This is the retrospective's rule (docs/retrospective_2026-09-23.md
+# section 4) made mandatory: nothing gets interpreted before its construct is
+# validated, and the validation is BEHAVIOURAL. Four of this project's five
+# largest errors were constructs that measured something other than their name,
+# and the one that cost a year (D125) was caught by a human watching a rendered
+# episode, not by a number.
+#
+# The three properties that make these GIFs evidence rather than decoration:
+#
+#   - UNSELECTED. The episode seeds are the first three CONSECUTIVE seeds of
+#     A1's construct-gate stream, fixed here before any outcome exists. No seed
+#     is ever chosen after seeing what it did, and there is no knob to choose
+#     one with.
+#   - THE GATE'S EPISODE, NOT A LOOK-ALIKE. The recorder is the gate's own
+#     `RecordingSearchMDP` at the gate's hold, shield, `shield_obs`,
+#     `escape_obs` and config, built with `reward_wrapper=None` (A1.3). What is
+#     watched is the behaviour the table summarises.
+#   - NO NUMBER IS INVENTED. The caption quotes the cell's MEASURED capture and
+#     deadlock rates out of its arm record, so a cell without a completed record
+#     stops the pass BEFORE anything renders rather than being captioned with a
+#     guess.
+#
+# Visuals carry NO verdict: nothing in this section writes or modifies a round
+# record, an arm record or the figure.
+
+CONSTRUCT_SEED0 = 1_880_000  # A1's construct-gate stream, disjoint from the rest
+GIF_N = 3  # "3 unselected episodes per cell" (CG4)
+GIF_SEED = SEEDS[0]  # 70 — one arm per cell, the first training seed, fixed here
+GIF_OPPONENT = CAPTURE_OPPONENT  # GREEDY, the primary metric's opponent
+
+
+def construct_seeds() -> tuple[int, ...]:
+    """CG4's episode seeds: the first `GIF_N` CONSECUTIVE seeds of the construct
+    stream. Consecutive and fixed is the whole point — a selected episode is not
+    evidence about a construct."""
+    return tuple(CONSTRUCT_SEED0 + i for i in range(GIF_N))
+
+
+def gif_arm(cell: str) -> str:
+    """The arm a cell is rendered from: its seed-`GIF_SEED` arm."""
+    return f"{cell}-{GIF_SEED}"
+
+
+def gifs_dir() -> pathlib.Path:
+    return OUT / f"{ARTEFACT_PREFIX}_gifs"
+
+
+def gif_path(cell: str, seed: int) -> pathlib.Path:
+    return gifs_dir() / f"{cell}_{seed}.gif"
+
+
+def read_arm(cell: str) -> dict:
+    """The cell's arm record, or SystemExit. The caption quotes that record's
+    measured rates, so a GIF without it would have to invent them."""
+    arm = gif_arm(cell)
+    path = _arm_file(arm)
+    if not path.exists():
+        raise SystemExit(
+            f"no completed arm record for cell {cell} at {path}: run --arms "
+            f"{arm} first. A CG4 caption carries that cell's MEASURED capture "
+            "and deadlock rates and is never fabricated (spec section 6)."
+        )
+    rec = json.loads(path.read_text())
+    gate = ((rec.get("final") or {}).get("gate") or {}).get(GIF_OPPONENT)
+    if gate is None:
+        raise SystemExit(
+            f"no completed arm record for cell {cell}: {path} has no gate entry "
+            f"for {GIF_OPPONENT} (verdict {rec.get('verdict')!r}), so there are "
+            "no measured rates to caption with."
+        )
+    return rec
+
+
+def gif_title(cell: str, rec: dict, seed: int) -> str:
+    """The caption: the cell, both seeds and the cell's two MEASURED rates,
+    against the opponent the episode is actually played against. No verdict.
+
+    Two lines, as in S14: the recorder prefixes the branch / outcome tag to the
+    first and `Renderer.draw` appends the step counter to the second, so neither
+    grows past the frame width."""
+    gate = rec["final"]["gate"][GIF_OPPONENT]
+    return (
+        f"{cell} (arm seed {rec['seed']}) vs {GIF_OPPONENT} · episode {seed}\n"
+        f"measured capture {gate['capture_rate']:.3f} · deadlock "
+        f"{gate['pursuer']['deadlock_episode_rate']:.3f} "
+        f"(N={gate['n_episodes']})"
+    )
+
+
+class CellRecorder(RecordingSearchMDP):
+    """The gate's env, keeping every `every`-th env step as an RGB frame.
+
+    It subclasses `RecordingSearchMDP` and not plain `SearchMDP` for CG4's
+    reason: what must be watched is the episode the GATE measures, so the class,
+    the hold, the shield, `shield_obs`, `escape_obs` and `reward_wrapper=None`
+    are the gate's and only the recording differs. Recording is passive —
+    `RecordingSearchMDP` adds counters and touches no dynamics — so the frames
+    are of the measured trajectory.
+
+    The overlay is S4's, unchanged: the FOV cone plus nominal-vs-executed arcs
+    from the shield info that was actually logged, so what is drawn is what was
+    recorded — the difference between what the policy ASKED for and what the
+    filter let through is visible in every frame, which is exactly what D125 was
+    missed for.
+    """
+
+    def __init__(self, cfg, opponent_factory, *, label: str, every: int = 4, **kw):
+        # pe2.render selects the Agg backend and must be imported before
+        # matplotlib.pyplot, hence the import order here (and the lazy import:
+        # nothing but the visuals should pay for matplotlib).
+        from pe2.render import FovOverlay, Renderer, ShieldOverlay, Trails
+
+        super().__init__(cfg, opponent_factory, **kw)
+        self.label = label
+        self.every = int(every)
+        self.frames: list = []
+        self.trace = []  # _step_inner records the EXECUTED (post-shield) command
+        # 5.5 x 5 at dpi 80 = 440 px, wide enough that the two-line caption
+        # (see `gif_title`) is never clipped: the cell identity is the point.
+        self._r = Renderer(cfg, dpi=80, figsize=(5.5, 5.0))
+        self._t = Trails()
+        self._live = {"nominal": None, "executed": None, "info": None}
+        self._ov = [
+            FovOverlay("pursuer"),
+            ShieldOverlay("pursuer", self.shield, self._live),
+        ]
+
+    def _draw(self, title: str) -> None:
+        self.frames.append(
+            self._r.draw(
+                self.inner.env, trails=self._t, overlays=self._ov, title_prefix=title
+            )
+        )
+
+    def _step_inner(self, action, branch: str = "law"):
+        cfg, env = self.cfg, self.inner.env
+        self._t.append("pursuer", *env.pursuer_pose[:2])
+        self._t.append("evader", *env.evader_pose[:2])
+        a = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+        nominal = ((float(a[0]) + 1.0) / 2.0 * cfg.v_max, float(a[1]) * cfg.omega_max)
+        out = super()._step_inner(action, branch)
+        v, w = self.trace[-1][2], self.trace[-1][3]
+        self._live.update(
+            nominal=nominal,
+            executed=((v + 1.0) / 2.0 * cfg.v_max, w * cfg.omega_max),
+            info=self._last_sinfo,
+        )
+        if env.current_step % self.every == 0:
+            self._draw(f"[{branch}] {self.label}")
+        return out
+
+    def finish(self, outcome: str, step: int, hold_frames: int = 10) -> None:
+        """Freeze the last state so the outcome is readable, then close the
+        figure (one figure per episode, 18 of them)."""
+        for _ in range(hold_frames):
+            self._draw(f"[{outcome.upper()} @ {step}] {self.label}")
+        self._r.close()
+
+
+def render_cell(
+    cell: str, seed: int, title: str, device: str = "cpu", every: int = 4
+) -> tuple[list, dict]:
+    """One construct-stream episode of this cell's seed-`GIF_SEED` arm, as
+    frames. Same checkpoint, opponent, hold, shield, `shield_obs`, `escape_obs`
+    and unwrapped reward as `evaluate_arm_policy` — only the recording differs."""
+    from pe2.shield import CBFShield
+
+    arm = gif_arm(cell)
+    cfg = EnvConfig()
+    model = _model(require_final_ckpt(arm), device)
+    _check_width(arm, model)
+    rec = CellRecorder(
+        cfg,
+        gate_opponent_factory(GIF_OPPONENT, device),
+        label=title,
+        every=every,
+        hold=HOLD,
+        shield=CBFShield(cfg),
+        shield_obs=SHIELD_OBS,
+        escape_obs=ESCAPE_OBS,
+        reward_wrapper=None,  # amendment A1.3, as at the gate
+    )
+    log = rec.play_episode(model.predict, seed)
+    rec.finish(log["outcome"], log["steps"])
+    return rec.frames, log
+
+
+def write_gifs(
+    names: list[str] | None = None,
+    device: str = "cpu",
+    every: int = 4,
+    fps: float = 15.0,
+) -> list[tuple[str, int]]:
+    """CG4: `GIF_N` unselected episodes per cell, from the construct stream.
+
+    An episode whose GIF exists is skipped; a cell with no completed arm record
+    or no final checkpoint stops the pass BEFORE anything is rendered. Nothing
+    here writes a record, a round artefact or a verdict — visuals carry none."""
+    from pe2.render import save_gif
+
+    wanted = list(CELL_ORDER) if not names else list(names)
+    unknown = [n for n in wanted if n not in CELLS]
+    if unknown:
+        raise SystemExit(
+            f"unknown cell(s): {unknown}; this round's cells are {CELL_ORDER}"
+        )
+    todo = [
+        (cell, seed)
+        for cell in wanted
+        for seed in construct_seeds()
+        if not gif_path(cell, seed).exists()
+    ]
+    # Every precondition of every remaining episode, resolved before the first
+    # frame: a pass that renders four cells and then refuses on the fifth leaves
+    # a half-watched gate, and a half-watched gate is how a construct error
+    # survives.
+    prepared = {}
+    for cell in dict.fromkeys(cell for cell, _ in todo):
+        prepared[cell] = read_arm(cell)
+        require_final_ckpt(gif_arm(cell))
+    n_all = len(wanted) * GIF_N
+    print(
+        f"{len(todo)}/{n_all} GIFs to render ({n_all - len(todo)} already exist), "
+        f"{GIF_N} unselected episodes per cell on seeds {construct_seeds()} "
+        f"vs {GIF_OPPONENT}, each from its {GIF_SEED}-seed arm (CG4)",
+        flush=True,
+    )
+    gifs_dir().mkdir(parents=True, exist_ok=True)
+    for cell, seed in todo:
+        frames, log = render_cell(
+            cell, seed, gif_title(cell, prepared[cell], seed), device, every
+        )
+        path = gif_path(cell, seed)
+        save_gif(frames, str(path), fps=fps)
+        print(
+            f"wrote {path} ({len(frames)} frames; {log['outcome']} @ {log['steps']})",
+            flush=True,
+        )
+    return todo
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument(
@@ -1371,6 +1617,17 @@ def main() -> None:
         help="gate the named arms' existing final checkpoints; train nothing",
     )
     p.add_argument("--summarize", action="store_true")
+    p.add_argument(
+        "--gifs",
+        nargs="*",
+        default=None,
+        help=(
+            "CG4 (spec section 6): render GIF_N unselected construct-stream "
+            "episodes per cell; bare --gifs means every cell. Writes no record "
+            "and no verdict"
+        ),
+    )
+    p.add_argument("--every", type=int, default=4, help="record every Nth env step")
     p.add_argument("--device", default="cpu")
     args = p.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -1380,6 +1637,11 @@ def main() -> None:
                 gate_arm(arm, args.device)
             else:
                 run_arm(arm, args.device)
+    # CG4 is BLOCKING and comes before the table (spec section 6), so a single
+    # `--gifs --summarize` invocation renders first and prints the verdicts
+    # second, in the order the gate is meant to be read.
+    if args.gifs is not None:
+        write_gifs(args.gifs or None, args.device, args.every)
     if args.summarize:
         results = load_results()
         summary = summarize(results)

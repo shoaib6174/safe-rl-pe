@@ -1169,3 +1169,278 @@ class TestGuards:
         monkeypatch.setattr("sys.argv", ["x"])
         R.main()
         assert calls == []
+
+
+# ----------------------------------------------------------------------------
+# section 6, CG4: the behavioural gate
+# ----------------------------------------------------------------------------
+class _Space:
+    shape = (R.obs_width(),)
+
+
+class _FakeModel:
+    """A checkpoint stand-in. Nothing here loads a real policy or renders a real
+    frame — CG4's LOGIC is what is under test, not matplotlib."""
+
+    observation_space = _Space()
+
+    def predict(self, obs, deterministic=True):
+        return np.zeros(2, dtype=np.float32), None
+
+
+def _stage(tmp_path, cells=None, *, records=True, ckpts=True):
+    """Lay down the arm records and final checkpoints CG4 reads."""
+    for cell in R.CELL_ORDER if cells is None else cells:
+        arm = R.gif_arm(cell)
+        if records:
+            R._write_json(R._arm_file(arm), _arm(arm, 0.40, 0.30, 0.20))
+        if ckpts:
+            d = R._ckpt_dir(arm)
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{arm}_{R.TOTAL}.zip").write_text("x")
+
+
+def _stub_rendering(monkeypatch):
+    """Replace the recorder, the checkpoint loader and the GIF writer with spies.
+
+    Returns `(built, written)`: one entry per CellRecorder constructed (its
+    kwargs plus the episode seed it was asked to play) and one path per GIF
+    written."""
+    built: list[dict] = []
+    written: list[str] = []
+
+    class _RecorderSpy:
+        def __init__(self, cfg, opponent_factory, *, label, every=4, **kw):
+            self.record = {
+                "cfg": cfg,
+                "opponent_factory": opponent_factory,
+                "label": label,
+                "every": every,
+                **kw,
+            }
+            built.append(self.record)
+            self.frames = ["frame"]
+
+        def play_episode(self, predict, seed):
+            self.record["seed"] = seed
+            self.record["predict"] = predict
+            return {"outcome": "timeout", "steps": 400}
+
+        def finish(self, outcome, step):
+            self.record["finished"] = (outcome, step)
+
+    monkeypatch.setattr(R, "CellRecorder", _RecorderSpy)
+    monkeypatch.setattr(R, "_model", lambda path, device: _FakeModel())
+    monkeypatch.setattr(
+        "pe2.render.save_gif",
+        lambda frames, path, fps=20.0: written.append(path),
+    )
+    return built, written
+
+
+class TestCG4:
+    """CG4 (spec section 6): "Render 3 unselected episodes per cell and watch
+    them, before reading the table."
+
+    The retrospective's rule (section 4) made mandatory. What is tested here is
+    everything that makes the GIFs evidence: the episodes are unselected, they
+    are the GATE's episodes, no caption invents a number, and a cell whose
+    record does not exist stops the pass rather than being captioned with a
+    guess."""
+
+    def test_the_episode_seeds_are_the_first_three_of_the_construct_stream(self):
+        """Unselected by construction: three CONSECUTIVE seeds off A1's
+        construct stream, fixed before any outcome exists."""
+        assert R.CONSTRUCT_SEED0 == 1_880_000  # amendment A1's stream table
+        assert R.GIF_N == 3
+        assert R.construct_seeds() == (1_880_000, 1_880_001, 1_880_002)
+
+    def test_the_construct_stream_is_disjoint_from_the_gate_and_the_probes(self):
+        seeds = set(R.construct_seeds())
+        assert not seeds & set(range(R.GATE_SEED0, R.GATE_SEED0 + R.GATE_N))
+        assert not seeds & set(range(R.PROBE_SEED0, R.PROBE_SEED0 + R.EVAL_N))
+
+    def test_every_cell_is_rendered_from_its_seed_70_arm(self):
+        assert R.GIF_SEED == 70 and R.GIF_SEED == R.SEEDS[0]
+        for cell in R.CELL_ORDER:
+            arm = R.gif_arm(cell)
+            assert arm in R.ARMS
+            assert R.ARMS[arm]["cell"] == cell and R.ARMS[arm]["seed"] == 70
+
+    def test_six_cells_times_three_episodes_is_eighteen_distinct_gifs(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        paths = [
+            R.gif_path(cell, seed)
+            for cell in R.CELL_ORDER
+            for seed in R.construct_seeds()
+        ]
+        assert len(R.CELL_ORDER) == 6
+        assert len(paths) == 18 and len(set(paths)) == 18
+        assert all(p.parent == tmp_path / "s18_gifs" for p in paths)
+
+    def test_an_unknown_cell_is_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        with pytest.raises(SystemExit, match="unknown cell"):
+            R.write_gifs(["NOPE"])
+        # an ARM name is not a cell name, and must not quietly pass for one
+        with pytest.raises(SystemExit, match="unknown cell"):
+            R.write_gifs(["SPARSE-BASE-70"])
+
+    def test_a_missing_arm_record_stops_the_pass_before_anything_renders(
+        self, tmp_path, monkeypatch
+    ):
+        """The caption quotes measured rates, so a cell without a completed
+        record would have to invent them. One missing record stops the WHOLE
+        pass: a half-watched gate is how a construct error survives."""
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        built, written = _stub_rendering(monkeypatch)
+        _stage(tmp_path, R.CELL_ORDER[:-1])  # every cell but the last
+        _stage(tmp_path, R.CELL_ORDER[-1:], records=False)  # its ckpt, no record
+        with pytest.raises(SystemExit, match="no completed arm record"):
+            R.write_gifs()
+        assert built == [] and written == []
+        assert not R.gifs_dir().exists()
+
+    def test_a_record_without_a_gate_entry_is_not_a_completed_record(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _stage(tmp_path)
+        crashed = _arm("DFLAT-PEN-70", 0.4, 0.3, 0.2)
+        crashed.pop("final")
+        crashed["verdict"] = "UNDETERMINED"
+        R._write_json(R._arm_file("DFLAT-PEN-70"), crashed)
+        with pytest.raises(SystemExit, match="no completed arm record"):
+            R.read_arm("DFLAT-PEN")
+
+    def test_a_missing_final_checkpoint_stops_the_pass_before_anything_renders(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        built, written = _stub_rendering(monkeypatch)
+        _stage(tmp_path, ckpts=False)
+        with pytest.raises(SystemExit, match="no final checkpoint"):
+            R.write_gifs()
+        assert built == [] and written == []
+
+    def test_an_existing_gif_is_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _built, written = _stub_rendering(monkeypatch)
+        _stage(tmp_path)
+        R.gifs_dir().mkdir(parents=True)
+        done = R.gif_path("SPARSE-BASE", 1_880_000)
+        done.write_text("already watched")
+        todo = R.write_gifs()
+        assert ("SPARSE-BASE", 1_880_000) not in todo
+        assert len(todo) == 17 and len(written) == 17
+        assert str(done) not in written
+        assert done.read_text() == "already watched"
+
+    def test_a_full_pass_renders_three_unselected_episodes_of_every_cell(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        built, written = _stub_rendering(monkeypatch)
+        _stage(tmp_path)
+        todo = R.write_gifs()
+        assert todo == [
+            (cell, seed) for cell in R.CELL_ORDER for seed in R.construct_seeds()
+        ]
+        assert [b["seed"] for b in built] == [
+            s for _ in R.CELL_ORDER for s in R.construct_seeds()
+        ]
+        assert len(written) == 18
+
+    def test_the_title_carries_the_cell_the_seeds_and_the_measured_rates(self):
+        rec = _arm("SPARSE-PEN-70", 0.42, 0.31, 0.2)
+        title = R.gif_title("SPARSE-PEN", rec, 1_880_001)
+        assert "SPARSE-PEN" in title
+        assert "1880001" in title  # the episode seed
+        assert "70" in title  # the arm's training seed
+        assert "0.420" in title and "0.310" in title
+        assert f"N={N}" in title
+        assert R.GIF_OPPONENT in title
+        # visuals carry no verdict (spec section 6)
+        for word in ("PASS", "FAIL", "H-CROSS", "H-MECH", "H-ZERO"):
+            assert word not in title
+
+    def test_the_title_reads_the_record_and_never_invents_a_number(self):
+        """The one thing a caption may not do. Change the record, and the two
+        numbers in the caption change with it."""
+        title = R.gif_title("DVARY-BASE", _arm("DVARY-BASE-70", 0.777, 0.123, 0.2), 0)
+        assert "0.777" in title and "0.123" in title
+        assert "0.400" not in title and "0.300" not in title
+
+    def test_the_title_quotes_the_opponent_the_episode_is_played_against(self):
+        """The caption's rates and the rendered episode must be about the same
+        opponent, or the GIF summarises a different measurement than it names."""
+        assert R.GIF_OPPONENT == R.CAPTURE_OPPONENT
+        assert R.GIF_OPPONENT in R.GATE_OPPONENTS
+        rec = _arm("DFLAT-BASE-70", 0.4, 0.3, 0.2)
+        gate = rec["final"]["gate"][R.GIF_OPPONENT]
+        title = R.gif_title("DFLAT-BASE", rec, 1_880_000)
+        assert f"{gate['capture_rate']:.3f}" in title
+        assert f"{gate['pursuer']['deadlock_episode_rate']:.3f}" in title
+
+    def test_the_rendered_episode_is_the_gates_episode(self, tmp_path, monkeypatch):
+        """Amendment A1.3 and section 4: same hold, shield, `shield_obs`,
+        `escape_obs`, opponent and `reward_wrapper=None` as
+        `evaluate_arm_policy`. A look-alike episode would validate nothing."""
+        from pe2.shield import CBFShield
+
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        built, _written = _stub_rendering(monkeypatch)
+        _stage(tmp_path, ["DFLAT-BASE"])
+        R.render_cell("DFLAT-BASE", 1_880_002, "title")
+        (kw,) = built
+        assert kw["reward_wrapper"] is None  # A1.3
+        assert kw["shield_obs"] is R.SHIELD_OBS and kw["escape_obs"] is R.ESCAPE_OBS
+        assert kw["hold"] == R.HOLD
+        assert isinstance(kw["shield"], CBFShield)
+        assert kw["opponent_factory"] is R.gate_opponent_factory(R.GIF_OPPONENT, "cpu")
+        assert kw["seed"] == 1_880_002
+        assert kw["label"] == "title"
+        assert kw["finished"] == ("timeout", 400)
+
+    def test_the_recorder_is_the_gates_env_class(self):
+        """`CellRecorder` subclasses the env the gate measures in, so the frames
+        are of the measured trajectory rather than of a re-implementation."""
+        assert issubclass(R.CellRecorder, R.RecordingSearchMDP)
+
+    def test_writing_gifs_writes_no_record_and_no_round_artefact(
+        self, tmp_path, monkeypatch
+    ):
+        """Visuals carry NO verdict (spec section 6)."""
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _stub_rendering(monkeypatch)
+        _stage(tmp_path)
+        before = {p: p.read_bytes() for p in sorted(tmp_path.glob("s18_*.json"))}
+        R.write_gifs()
+        after = {p: p.read_bytes() for p in sorted(tmp_path.glob("s18_*.json"))}
+        assert after == before
+        assert not R._round_file("json").exists()
+        assert not R._round_file("png").exists()
+
+    def test_the_cli_exposes_the_gate_and_runs_nothing_else(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        calls, trained = [], []
+        monkeypatch.setattr(R, "write_gifs", lambda *a: calls.append(a))
+        monkeypatch.setattr(R, "run_arm", lambda a, d: trained.append(a))
+
+        monkeypatch.setattr("sys.argv", ["x", "--gifs"])
+        R.main()
+        assert calls == [(None, "cpu", 4)] and trained == []
+
+        calls.clear()
+        monkeypatch.setattr("sys.argv", ["x", "--gifs", "SPARSE-BASE", "DVARY-PEN"])
+        R.main()
+        assert calls == [(["SPARSE-BASE", "DVARY-PEN"], "cpu", 4)]
+
+        calls.clear()
+        monkeypatch.setattr("sys.argv", ["x"])
+        R.main()
+        assert calls == []
