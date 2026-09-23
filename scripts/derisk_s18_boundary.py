@@ -884,16 +884,30 @@ def deadlock_rate(results: dict, arm: str) -> float | None:
     )
 
 
-def zero_motion_fraction(results: dict, arm: str) -> float | None:
+def zero_motion_fraction(
+    results: dict, arm: str, opponent: str | None = None
+) -> float | None:
     """H-ZERO's metric: decision-weighted fraction of the learner's REQUESTS
-    whose commanded speed is at or below the filter's immobility threshold,
-    pooled over both gate opponents."""
-    return _pooled(
-        results,
-        arm,
-        lambda e: e["zero_motion"]["n_zero_motion"],
-        lambda e: e["zero_motion"]["n_decisions"],
-    )
+    whose commanded speed is at or below the filter's immobility threshold.
+
+    `opponent=None` pools over both gate opponents (reported). H-ZERO itself
+    reads it on `CAPTURE_OPPONENT`: the hypothesis is triggered by a capture
+    DROP, capture is measured on GREEDY alone, and a mechanism number pooled
+    over an opponent the trigger never looked at would be a different
+    measurement wearing the same name -- the failure mode this round's
+    construct gate exists to prevent."""
+    if opponent is None:
+        return _pooled(
+            results,
+            arm,
+            lambda e: e["zero_motion"]["n_zero_motion"],
+            lambda e: e["zero_motion"]["n_decisions"],
+        )
+    e = _entry(results, arm, opponent)
+    if e is None:
+        return None
+    n = e["zero_motion"]["n_decisions"]
+    return e["zero_motion"]["n_zero_motion"] / n if n else 0.0
 
 
 def mean_intervention_magnitude(results: dict, arm: str) -> float | None:
@@ -1042,6 +1056,9 @@ def h_zero(results: dict) -> dict:
     zero-motion REQUEST fraction rises relative to its matched no-penalty
     control. Without it H-CROSS is a correlation.
 
+    The metric is read on `CAPTURE_OPPONENT`, the same opponent whose capture
+    drop triggers the hypothesis (the pooled value is recorded beside it).
+
     READING (stated, not silently chosen): the spec's "cell" is a grid entry of
     section 2's 2 x 3 (`Six cells, 3 seeds each`), so "every cell where the
     penalty lowers capture" is read as every COLUMN whose PEN cell lowers
@@ -1054,8 +1071,8 @@ def h_zero(results: dict) -> dict:
         eff = penalty_effect(results, column)
         per_seed: dict = {}
         for s in SEEDS:
-            pen = zero_motion_fraction(results, f"{column}-PEN-{s}")
-            base = zero_motion_fraction(results, f"{column}-BASE-{s}")
+            pen = zero_motion_fraction(results, f"{column}-PEN-{s}", CAPTURE_OPPONENT)
+            base = zero_motion_fraction(results, f"{column}-BASE-{s}", CAPTURE_OPPONENT)
             per_seed[s] = (
                 None
                 if pen is None or base is None
@@ -1064,6 +1081,8 @@ def h_zero(results: dict) -> dict:
                     "pen": pen,
                     "delta": pen - base,
                     "rises": pen > base,
+                    "base_pooled": zero_motion_fraction(results, f"{column}-BASE-{s}"),
+                    "pen_pooled": zero_motion_fraction(results, f"{column}-PEN-{s}"),
                 }
             )
         complete = eff["complete"] and all(v is not None for v in per_seed.values())

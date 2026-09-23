@@ -1444,3 +1444,43 @@ class TestCG4:
         monkeypatch.setattr("sys.argv", ["x"])
         R.main()
         assert calls == []
+
+
+class TestHZeroReadsItsTriggersOpponent:
+    """H-ZERO is triggered by a capture DROP, and capture is measured on GREEDY
+    alone. Reading the mechanism metric pooled over an opponent the trigger
+    never looked at would be a different measurement wearing the same name --
+    exactly the construct failure this round's gate exists to prevent."""
+
+    @staticmethod
+    def _res_with_split_zero_motion():
+        """PEN's zero-motion RISES on GREEDY but the HUG half is rigged so the
+        pooled number FALLS. A pooled reading flips the verdict."""
+        res = _full(SPARSE_PEN=(0.20, 0.30, 0.20), SPARSE_BASE=(0.40, 0.30, 0.10))
+        for s in R.SEEDS:
+            pen = res[f"SPARSE-PEN-{s}"]["final"]["gate"]
+            base = res[f"SPARSE-BASE-{s}"]["final"]["gate"]
+            pen["GREEDY"]["zero_motion"] = {"n_zero_motion": 200, "n_decisions": 1000}
+            base["GREEDY"]["zero_motion"] = {"n_zero_motion": 100, "n_decisions": 1000}
+            pen["HUG"]["zero_motion"] = {"n_zero_motion": 0, "n_decisions": 9000}
+            base["HUG"]["zero_motion"] = {"n_zero_motion": 4000, "n_decisions": 9000}
+        return res
+
+    def test_greedy_is_read_and_pooled_is_only_recorded(self):
+        res = self._res_with_split_zero_motion()
+        for s in R.SEEDS:
+            greedy = R.zero_motion_fraction(res, f"SPARSE-PEN-{s}", R.CAPTURE_OPPONENT)
+            pooled = R.zero_motion_fraction(res, f"SPARSE-PEN-{s}")
+            assert greedy == pytest.approx(0.20)
+            assert pooled == pytest.approx(0.02)
+
+        col = R.h_zero(res)["per_column"]["SPARSE"]
+        assert col["capture_lowered"] is True
+        # rises on GREEDY (0.10 -> 0.20) on every seed; pooled would FALL
+        assert col["n_rise"] == 3
+        assert col["verdict"] == "PASS"
+        for s in R.SEEDS:
+            row = col["per_seed"][s]
+            assert row["base"] == pytest.approx(0.10)
+            assert row["pen"] == pytest.approx(0.20)
+            assert row["base_pooled"] > row["pen_pooled"]

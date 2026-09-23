@@ -163,3 +163,31 @@ different objective.
 same `HUG7` that has served as a gate opponent since S17, with no learned component anywhere in the round.
 `GATE_OPPONENTS = ("GREEDY", "HUG")`; `GREEDY` remains the primary metric's opponent. No learned attacker is
 trained, selected or loaded at any point in S18.
+
+---
+
+## Amendment A3 (2026-09-23, before any arm of this round exists)
+
+Three protocol details that section 4 left to inheritance, recorded explicitly so they are pinned rather
+than assumed, plus one ruling on a reading the implementation surfaced.
+
+**A3.1 — H-ZERO reads its trigger's opponent.** H-ZERO fires on a capture DROP, and capture is measured on
+`GREEDY` alone. The first implementation read the zero-motion fraction pooled over both gate opponents. A
+mechanism number pooled over an opponent the trigger never looked at is a different measurement wearing the
+same name — the exact construct failure section 6 exists to prevent. **H-ZERO therefore reads
+`zero_motion_fraction` on `GREEDY`**; the pooled value is recorded beside it, and a test rigs the two to
+disagree so a regression to pooling fails loudly.
+
+**A3.2 — inherited protocol, now stated.** Training opponent `GreedyEvader`; probe opponent `GreedyEvader`
+at `EVAL_N = 200` (section 4 fixed the probe stream but not its N); PPO at SB3 defaults apart from the seed
+and `gamma = 0.99`. All three are unchanged from the S16/S17 line. `GREEDY` is therefore in-distribution and
+`HUG` is the held-out robustness check — the capture claim is an in-distribution claim and the paper must
+say so.
+
+**A3.3 — H-MECH carries no significance clause.** Section 5 states it as a sign requirement on >= 2/3 seeds
+and it is implemented exactly so. The pooled test is reported and plays no part in the verdict.
+
+**A3.4 — CG4 renders `GREEDY`.** Section 6 did not name an opponent. The three unselected episodes per cell
+are rendered against `GREEDY`, the primary metric's opponent, and each caption quotes that opponent's own
+measured capture and deadlock rates rather than a pooled number, so the episode and the caption describe the
+same measurement. `HUG` episodes are not rendered.
