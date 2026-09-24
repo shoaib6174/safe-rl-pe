@@ -32,6 +32,14 @@ from evaluation.comparison_framework import (
 )
 
 
+
+# `qpth` is an optional dependency of the Phase-2.5 BarrierNet chassis, which
+# belongs to Paper 1 (DROPPED at D117) and is imported by nothing in `pe2`.
+# It pins numpy<2 and cannot be installed here without downgrading the
+# environment the live work depends on, so these tests are skipped rather
+# than left failing: 68 permanent red results train everyone to ignore red,
+# and a real regression would then go unnoticed.
+pytest.importorskip("qpth")
 # --- Fixtures ---
 
 
