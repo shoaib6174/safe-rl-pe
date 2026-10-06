@@ -167,12 +167,43 @@ class TestShortcut:
         assert np.allclose(path[1], target)
 
 
-class TestUnreachable:
-    def test_n_unreachable_counts_a_target_inside_an_inflated_obstacle(self):
+class TestGoalSnapping:
+    """Amendment A2.1: the A* goal is the nearest free cell within one
+    inflated obstacle radius of the target; direct steering only if there is
+    no such cell."""
+
+    OBS: ClassVar[dict] = {"x": 0.0, "y": 0.0, "radius": 0.5}
+    R_EFF = 0.5 + CFG.agent_radius + MARGIN
+
+    def _law(self):
         law = PlannerInterceptLaw(CFG)
-        law.set_map([{"x": 0.0, "y": 0.0, "radius": 0.5}])
+        law.set_map([self.OBS])
+        return law
+
+    def test_a_clear_target_in_a_blocked_cell_snaps_and_does_not_count(self):
+        """The discretisation case that A2.1 exists for: the target POINT is
+        clear, only its 0.1 m cell CENTRE is inside the inflated disc."""
+        law = self._law()
+        target = np.array([0.649, 0.249])
+        assert law.segment_clearance(target, target) > 0.0  # the point is free
+        assert law._blocked[law._cell(target)]  # its cell centre is not
+        goal = law._snap_goal(target)
+        assert goal is not None
+        assert not law._blocked[goal]
+        assert float(np.hypot(*(law._centre(*goal) - target))) <= self.R_EFF
+        path = law.plan(np.array([-3.0, 0.0]), target)
+        assert path is not None
+        assert law.n_unreachable == 0
+        for v in path:
+            assert float(np.hypot(*v)) >= self.R_EFF - 1e-9
+
+    def test_a_target_at_the_disc_centre_has_no_free_cell_and_still_falls_back(self):
+        """One inflated radius from the centre is exactly the disc, so every
+        cell in range is blocked: the residual case n_unreachable counts."""
+        law = self._law()
         own = np.array([-2.0, 0.0, 0.0])  # pose: x, y, theta
         target = np.array([0.0, 0.0])  # the obstacle's own centre
+        assert law._snap_goal(target) is None
         assert law.plan(own[:2], target) is None
         assert law.n_unreachable == 0
         a = law._steer_planned(own, target)
@@ -180,10 +211,36 @@ class TestUnreachable:
         # "steer at the target directly": the line law's action.
         assert np.array_equal(a, law._steer_at(own, target))
 
+    def test_the_snapped_goal_is_the_nearest_free_cell(self):
+        """Target off-centre inside the disc: the free boundary is ~0.35 m
+        away on +x and ~0.95 m away on -x, so the goal must be on +x -- and it
+        must be the nearest free cell of ALL of them, by brute force."""
+        law = self._law()
+        target = np.array([0.3, 0.0])
+        goal = law._snap_goal(target)
+        assert goal is not None
+        centre = law._centre(*goal)
+        assert centre[0] > 0.0  # the near side, not the far one
+        free_far = np.array([-self.R_EFF - 0.05, 0.0])  # the far candidate
+        assert law.segment_clearance(free_far, free_far) > 0.0
+        assert float(np.hypot(*(centre - target))) < float(
+            np.hypot(*(free_far - target))
+        )
+        n = law._n
+        best, best_d2 = None, np.inf
+        for r in range(n):
+            for c in range(n):
+                if law._blocked[r, c]:
+                    continue
+                d2 = float(np.sum((law._centre(r, c) - target) ** 2))
+                if d2 < best_d2:
+                    best, best_d2 = (r, c), d2
+        assert goal == best
+        assert best_d2 <= self.R_EFF**2
+
     def test_counter_survives_reset(self):
         """It is cumulative by design so CG-C can read a whole cell."""
-        law = PlannerInterceptLaw(CFG)
-        law.set_map([{"x": 0.0, "y": 0.0, "radius": 0.5}])
+        law = self._law()
         law._steer_planned(np.array([-2.0, 0.0, 0.0]), np.array([0.0, 0.0]))
         law.reset()
         assert law.n_unreachable == 1

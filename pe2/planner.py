@@ -8,8 +8,8 @@ zero clearance (S126 CG4; S18's behavioural gate watched ~1100 steps of it in
 one episode), so every "cost of the shield" this project has reported was
 measured on a controller that drives into walls. This law changes ONLY the
 point steered toward: it plans around the known static map when the straight
-line is obstructed, and it is **bit-identical to `InterceptLaw` whenever the
-line is clear** (prereg section 2, invariant). Without that identity the S19
+line is obstructed (goal-snapped per amendment A2.1), and it is
+**bit-identical to `InterceptLaw` whenever the line is clear** (prereg section 2, invariant). Without that identity the S19
 round would compare two different laws rather than one law against
 itself-plus-planning.
 """
@@ -64,9 +64,9 @@ class PlannerInterceptLaw:
     project convention (L1.5) and the map does not change within an episode.
 
     `n_unreachable` is CUMULATIVE over the life of the object (not cleared by
-    `reset`): it counts the calls where A* found no path, which is the
-    target-inside-an-inflated-obstacle case, so CG-C can read how often it
-    happens over a whole cell.
+    `reset`): it counts the residual calls that still fall back to direct
+    steering after goal-snapping (amendment A2.1), so CG-C can read how often
+    it happens over a whole cell.
     """
 
     def __init__(self, cfg: EnvConfig) -> None:
@@ -146,13 +146,46 @@ class PlannerInterceptLaw:
     def _centre(self, r: int, c: int) -> np.ndarray:
         return np.array([self._axis[r], self._axis[c]], dtype=float)
 
+    def _snap_goal(self, target) -> tuple[int, int] | None:
+        """The A* goal cell (amendment A2.1): the target's own cell when it is
+        free, else the NEAREST FREE CELL whose centre lies within one inflated
+        obstacle radius of the target point. None when no such cell exists --
+        the only case the law still falls back to direct steering.
+
+        The radius is that of the obstacle nearest the target: the one whose
+        inflated disc blocked the cell. The original rule fell back whenever the
+        target's 0.1 m CELL CENTRE was blocked, which on the default arena fired
+        on ~14 % of planner calls -- mostly pure discretisation (the target point
+        itself clear) and otherwise an evader in contact with an obstacle, i.e.
+        exactly the HUG / learned-attacker behaviour the round is about.
+        """
+        cell = self._cell(target)
+        if not self._blocked[cell]:
+            return cell
+        if not self.obstacles:  # no obstacles, no blocked cells
+            return None
+        target = np.asarray(target, dtype=float)
+        k = int(np.argmin(np.linalg.norm(self._oc - target, axis=1) - self._or))
+        radius = float(self._or[k])
+        span = int(np.ceil(radius / CELL))
+        lo_r, hi_r = max(0, cell[0] - span), min(self._n, cell[0] + span + 1)
+        lo_c, hi_c = max(0, cell[1] - span), min(self._n, cell[1] + span + 1)
+        free = ~self._blocked[lo_r:hi_r, lo_c:hi_c]
+        d2 = (self._axis[lo_r:hi_r, None] - target[0]) ** 2 + (
+            self._axis[None, lo_c:hi_c] - target[1]
+        ) ** 2
+        d2 = np.where(free, d2, np.inf)
+        if float(d2.min()) > radius * radius:
+            return None
+        i = int(np.argmin(d2))  # row-major, so ties resolve deterministically
+        return lo_r + i // d2.shape[1], lo_c + i % d2.shape[1]
+
     def _astar(self, start: tuple[int, int], goal: tuple[int, int]) -> list | None:
-        """8-connected grid A* over the inflated map. The start cell is always
+        """8-connected grid A* over the inflated map, to a goal cell that
+        `_snap_goal` has already shown to be free. The start cell is always
         expandable (a pursuer in contact with an obstacle sits in a blocked
         cell); diagonal moves may not cut a blocked corner."""
         n, blocked = self._n, self._blocked
-        if blocked[goal]:
-            return None
         si, gi = start[0] * n + start[1], goal[0] * n + goal[1]
         g = np.full(n * n, np.inf)
         closed = np.zeros(n * n, dtype=bool)
@@ -209,10 +242,15 @@ class PlannerInterceptLaw:
         return out
 
     def plan(self, own_xy, target) -> list | None:
-        """The smoothed path own->target, or None if A* finds no path."""
+        """The smoothed path own->target, or None when there is no free goal
+        cell within one inflated obstacle radius of the target or A* cannot
+        reach the one there is."""
         own_xy = np.asarray(own_xy, dtype=float)
         target = np.asarray(target, dtype=float)
-        cells = self._astar(self._cell(own_xy), self._cell(target))
+        goal = self._snap_goal(target)
+        if goal is None:
+            return None
+        cells = self._astar(self._cell(own_xy), goal)
         if cells is None:
             return None
         pts = [own_xy, *cells]
@@ -241,7 +279,7 @@ class PlannerInterceptLaw:
 
     def _steer_planned(self, own: np.ndarray, target: np.ndarray) -> np.ndarray:
         path = self.plan(own[:2], target)
-        if path is None:  # target inside an inflated obstacle
+        if path is None:  # no free goal cell within one radius (A2.1 residual)
             self.n_unreachable += 1
             return self._steer_at(own, target)
         point = self.lookahead_point(path)
