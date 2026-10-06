@@ -183,3 +183,33 @@ come from `SearchMDP.episode_violations` in both columns (the env's own contact 
 **Disclosure.** The implementer ran a 4-cell smoke at N = 20 vs `GREEDY` (not a gate; N not
 pre-registered): LINE-SHIELD capture 0.25 / law-pin fraction 0.25; PLAN-SHIELD 0.25 / 0.00; LINE-OPEN
 0.30; PLAN-OPEN 0.25; mean all-step intervention 552 → 210 under the shield. Seen; must anchor nothing.
+
+---
+
+## Amendment A4 (2026-10-06, before any S19 gate number exists) — review rulings
+
+Independent review of the runner (commit `fa3b0d9`): APPROVE-WITH-FIXES, two confirmed defects. Rulings:
+
+**A4.1 — H-PLAN-2's significance conjunct is PER OPPONENT (binding).** §4/A2.2 read "cost(PLAN) < cost(LINE)
+on ≥ 2/3 opponents AND the SHIELD gain significant as in H-PLAN-1". The runner applied the round-wide
+H-PLAN-1 verdict, so the 2/3 with the smaller cost could be a different pair from the 2/3 with a
+significant gain. **Binding reading:** an opponent counts toward H-PLAN-2 only if, on that opponent, both
+cost(PLAN) < cost(LINE) AND the SHIELD gain is significant at p < 0.05. Pass on ≥ 2/3 such opponents. The
+round-wide conjunction is reported beside it, not gated. Stricter than the implementation, chosen because
+"the paper's number" must not rest on a gain that was not significant where the cost was smaller.
+
+**A4.2 — the NULL runs on BOTH the OPEN and SHIELD panels.** On OPEN every shield-derived field is
+structurally zero (A3.4), so the identity there cannot witness a divergence in `violations`, immobility or
+intervention. The 50-seed obstacle-free identity is run on `LINE-SHIELD` vs `PLAN-SHIELD` as well; **both**
+must hold for the NULL to pass.
+
+**A4.3 — CG-B is enforced INSIDE the runner, before the first episode.** `run_cells` asserts that all 36
+`s18_branch_split_*.json` exist with exact-reproduction PASS and records the tally in provenance. A3.2's
+"manual gate is weaker" concession is withdrawn; the launch wrapper remains as a second check and is
+committed to `scripts/` so it is provenance, not a file on a desk.
+
+**A4.4 — record validity.** A cell record is measurable only if `n_episodes == 500` and
+`seed0 == 2 000 000`; any other record (a smoke, a test artefact) is refused loudly, never skipped as "done"
+and never summarised. **A4.5 — a crashed cell writes `UNDETERMINED`** and is never re-run (§7).
+**A4.6 — no capture rate is printed during `--cells`**; the only reader of the numbers is `--summarize`,
+which runs after `--gifs` (CG-C). **A4.7 — `device` is in provenance.**
