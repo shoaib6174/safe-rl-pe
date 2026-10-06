@@ -236,3 +236,37 @@ lexicographically-last of two same-name files win silently — a hand-copy lever
 `results/` is gitignored; without the symlink CG-B reads 0/0 and refuses (fail-closed, but a blocked launch)
 and a hand-made directory would split the record root. The wrapper now creates the symlink and refuses
 unless `$WT/results` is a symlink to the main tree's `results/`. My error.
+
+---
+
+## Amendment A6 (2026-10-06) — CG-C watched; written BEFORE `--summarize`, no capture rate read
+
+All 12 cells MEASURED (N = 500, seed0 2 000 000). CG-C rendered 12 episodes (`results/derisk/s19_gifs/`).
+Seeds 1 990 001 and 1 990 002 are **identical across all four panels** (capture at the same step in each):
+the line was clear throughout, the planner never fired, and those six episodes cannot discriminate.
+Seed 1 990 000 is the one obstructed episode sampled. Findings, from the frames:
+
+**(a) No planner-specific route oscillation.** `LINE-SHIELD`, `PLAN-OPEN` and `PLAN-SHIELD` produce the
+same large looping trajectory and time out; `LINE-SHIELD` has no planner, so the loop is not an A\*
+replanning artefact. CG-C's specific concern is not observed. `n_unreachable` = 0 in both PLAN panels.
+
+**(b) No law pin on the sampled seeds.** `LINE-SHIELD` clearance stays > 0 throughout (0.09–2.5 m); the
+zero-clearance pinning S19 targets is a tail event (15 % of episodes on S18's reference cell) that three
+unselected episodes did not sample. That is what the 500-episode H-PLAN-3 statistic is for; CG-C neither
+confirms nor refutes it here.
+
+**(c) The planner does not help on the one obstructed episode, and the reason is mechanistic.**
+`LINE-OPEN` captures at step 159 by passing the right obstacle in contact — D112's mechanism (unshielded
+capture exploits free contact) seen from the other side. Both the shield and the planner forbid that
+brush; the evader keeps the obstacle between them; the chase becomes an orbit and never closes. On this
+episode the planner reproduces the shield's cost rather than removing it.
+
+**(d) Interpretation guard for H-PLAN-2, registered now.** If PLAN already forgoes the contact the shield
+forbids, PLAN's "shield cost" (OPEN − SHIELD) can be small because **the cost moved into the nominal**, not
+because the filter became cheap. H-PLAN-2 is read exactly as pre-registered, AND the round reports
+beside it the **total cost of safety under each nominal**: `LINE-OPEN − PLAN-SHIELD` and
+`LINE-OPEN − LINE-SHIELD`, per opponent. If H-PLAN-2 passes while `PLAN-SHIELD` does not beat `LINE-SHIELD`
+(H-PLAN-1), the correct sentence is "the planner pre-pays the filter's cost", not "a competent nominal
+makes the filter cheap". Hypothesis P's statement in §1 is read against H-PLAN-1 first.
+
+No bar, stream, seed or threshold changed. Written after watching, before reading.
