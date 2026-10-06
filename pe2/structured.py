@@ -62,7 +62,9 @@ class InterceptLaw:
         self.cfg = cfg
         self.last_seen: np.ndarray | None = None
 
-    def reset(self) -> None:
+    def reset(self, env=None) -> None:
+        # `env` is accepted and ignored so that a planning law can read the
+        # static map at reset through the same call (S19 prereg section 2).
         self.last_seen = None
 
     def act(self, obs: np.ndarray) -> np.ndarray | None:
@@ -148,6 +150,7 @@ class SearchMDP(gym.Env):
         escape_obs: bool = False,
         intervention_penalty: float = 0.0,
         reward_wrapper: Callable | None = None,
+        law: InterceptLaw | None = None,
     ):
         super().__init__()
         self.cfg = cfg
@@ -163,7 +166,7 @@ class SearchMDP(gym.Env):
         # stepping path goes through the wrapper, so a wrapper's `.env` never
         # shadows the simulator.
         self._driver = self.inner if reward_wrapper is None else reward_wrapper(self.inner)
-        self.law = InterceptLaw(cfg)
+        self.law = InterceptLaw(cfg) if law is None else law
         self.observation_space = self.inner.observation_space
         self.action_space = self.inner.action_space
         self.env_steps = 0
@@ -221,7 +224,7 @@ class SearchMDP(gym.Env):
     # -- internals -------------------------------------------------------
     def _begin(self, seed: int | None) -> np.ndarray:
         obs, _ = self._driver.reset(seed=seed)
-        self.law.reset()
+        self.law.reset(env=self.inner.env)
         self._visible = bool(obs[6] > 0.5)
         self._los_breaks = 0
         self._info = {}
