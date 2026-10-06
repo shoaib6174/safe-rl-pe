@@ -112,3 +112,35 @@ step). Any comparison to an S18 number must say which scope it uses.
 
 **A1.3 — record schema.** `longest_pinned_run` is an int with `branch_at_start` as a sibling key (`None`
 when no immobile step), per the implementation; the runner reads that schema.
+
+---
+
+## Amendment A2 (2026-10-06, before any S19 gate number exists)
+
+Raised by the planner implementation's report (commit `29b6d7e`). **Disclosure:** the implementer ran a
+20-episode OPEN-column smoke vs `GREEDY` (PLAN 0.25, LINE 0.30, n = 20, not a gate) which I have seen; the
+amendments below are motivated by mechanism (A2.1) and by a logical error in my own null (A2.2), and
+would be made identically had I not seen it. Both change *what is measured*, not any bar's value.
+
+**A2.1 — §2 step 2's fallback was wrong, and wrong exactly where it matters.** "If A\* finds no path,
+steer at the target directly" fires on **~14 % of planner calls** on the default arena. In 169 of 359
+smoke cases the target *point* is clear and only its 0.1 m cell *centre* is blocked — pure
+discretisation; the rest are the evader at zero clearance against an obstacle. Either way the rule
+degrades PLAN to LINE precisely when the evader hugs an obstacle — the `HUG` opponent's and the learned
+attackers' entire behaviour (D114/D115) — so H-PLAN-1 on `HUG` would have measured a discretisation
+artefact, not planning. **Restated:** the A\* goal is the **nearest free cell to the target point within
+one inflated obstacle radius** (goal-snapping); direct steering only if no free cell exists in that
+radius. `n_unreachable` continues to count the residual and is reported per cell.
+
+**A2.2 — my NULL conflated "open space" with "the OPEN column".** The OPEN column is *unshielded*, not
+obstacle-free: obstacles are present, and a law that plans around them legitimately differs from one
+that drives into them even without a shield. A capture band of |PLAN − LINE| < 0.05 in that column
+would fail for the right reason. **Restated:** the NULL is the obstacle-free bit-identity alone (passed,
+50/50, `test_planner.py`). The OPEN-column difference is **reported**, not a null, and **H-PLAN-2 drops
+its "OPEN difference within the null band" conjunct** — the difference-in-differences
+(OPEN − SHIELD per law) already isolates the shield's marginal cost per law regardless of the OPEN level.
+
+**A2.3 — arena-bound tolerance, recorded.** The clear-line check tests the inset arena bound to
+`8·eps_f32·arena_size = 9.54e-6 m`, the precision of the float32 observation it decodes from; an exact
+test rejected a clear line on seed 1 990 009 and fired the planner on an empty map. Obstacle clearance
+keeps the exact `≤ 0 ⇒ blocked` rule. No bar changed; the prereg was silent.
