@@ -1,8 +1,8 @@
 """scripts/derisk_s19_planner.py — the S19 round's cell table and verdicts.
 
 Spec: docs/pathway/planner_intercept_prereg_2026-10-06.md INCLUDING amendments
-A1 and A2. Everything here is either a constant the prereg fixes, a verdict
-rule it states, or one of the properties the round's only claim rests on:
+A1 to A4. Everything here is either a constant the prereg fixes, a verdict rule
+it states, or one of the properties the round's only claim rests on:
 
 - the cell table really is 2 x 2 x 3, and the ONLY differences between the rows
   and the columns are the law object and the shield. That is asserted on the
@@ -11,10 +11,20 @@ rule it states, or one of the properties the round's only claim rests on:
   ingredient differs;
 - the ATK column REFUSES to run without its frozen checkpoint;
 - A1.1's zero guard: a LINE law-pin fraction of 0 is VACUOUS, never PASS;
-- A2.2's null is the OBSTACLE-FREE bit-identity, and it FAILS when the two laws
-  differ there;
-- CG-C's seeds are the three construct seeds and nothing else;
-- the provenance of every record carries the pre-registration's sha256.
+- A4.1: H-PLAN-2's two conjuncts must hold on the SAME opponent — a case where
+  the 2/3 with the smaller cost is a different pair from the 2/3 with a
+  significant gain must FAIL;
+- A2.2/A4.2: the null is the OBSTACLE-FREE bit-identity on BOTH columns, and it
+  FAILS when the two laws differ on either;
+- A4.3: CG-B (36/36 exact S18 reproductions) refuses inside `run_cells`, before
+  the first episode;
+- A4.4/A4.5: a record at the wrong N or stream is REFUSED (not skipped as done,
+  not overwritten, never summarised), and a crashed cell is UNDETERMINED and
+  never re-run;
+- A4.6: no rate is printed while the cells run, and `--gifs` dispatches before
+  `--summarize`;
+- the provenance of every record carries the pre-registration's sha256 and the
+  device (A4.7).
 
 No real episodes beyond one smoke `play_episode` per row.
 """
@@ -221,6 +231,279 @@ def _still_evader():
     return _StillEvader()
 
 
+CGB_OK = {"verdict": "PASS", "n_pass": R.CGB_N, "required": R.CGB_N, "n_files": R.CGB_N}
+
+
+def _pass_cgb(monkeypatch):
+    """Make CG-B pass, so a test about something else is not shadowed by it."""
+    monkeypatch.setattr(R, "require_cgb", lambda: dict(CGB_OK))
+    return CGB_OK
+
+
+def _write_cgb(out: pathlib.Path, n_pass: int, n_files: int = R.CGB_N) -> None:
+    """`n_files` replay artefacts of which `n_pass` reproduce S18 exactly, in
+    the shape `scripts/replay_s18_branch_split.py` writes."""
+    out.mkdir(parents=True, exist_ok=True)
+    for i in range(n_files):
+        (out / f"s18_branch_split_ARM{i}_GREEDY.json").write_text(
+            json.dumps(
+                {
+                    "arm": f"ARM{i}",
+                    "opponent": "GREEDY",
+                    "reproduction": {"verdict": "PASS" if i < n_pass else "FAIL"},
+                }
+            )
+        )
+
+
+# ----------------------------------------------------------------------------
+# CG-B, enforced in the runner (amendment A4.3)
+# ----------------------------------------------------------------------------
+class TestCgB:
+    def test_thirty_six_exact_reproductions_are_required(self):
+        assert R.CGB_N == 36  # 18 S18 arms x 2 gate opponents
+        assert R.CGB_GLOB == "s18_branch_split_*.json"
+
+    def test_passes_on_thirty_six_passing_artefacts(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _write_cgb(tmp_path, n_pass=36)
+        status = R.require_cgb()
+        assert status["verdict"] == "PASS"
+        assert (status["n_pass"], status["n_files"]) == (36, 36)
+
+    def test_refuses_when_an_artefact_is_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _write_cgb(tmp_path, n_pass=35, n_files=35)
+        with pytest.raises(SystemExit, match="CG-B REFUSES"):
+            R.require_cgb()
+        assert R.cgb_status()["verdict"] == "REFUSE"
+
+    def test_refuses_when_a_reproduction_is_not_pass(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _write_cgb(tmp_path, n_pass=35, n_files=36)
+        with pytest.raises(SystemExit, match="35/36"):
+            R.require_cgb()
+        status = R.cgb_status()
+        assert status["not_passing"] == ["s18_branch_split_ARM35_GREEDY.json"]
+
+    def test_refuses_when_nothing_has_been_replayed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        with pytest.raises(SystemExit, match="CG-B REFUSES"):
+            R.require_cgb()
+
+    def test_an_unreadable_artefact_refuses_and_is_named(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _write_cgb(tmp_path, n_pass=36)
+        (tmp_path / "s18_branch_split_ARM0_GREEDY.json").write_text("{not json")
+        with pytest.raises(SystemExit):
+            R.require_cgb()
+        assert R.cgb_status()["unreadable"][0].startswith("s18_branch_split_ARM0")
+
+    def test_run_cells_refuses_before_the_first_episode(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _write_cgb(tmp_path, n_pass=35, n_files=36)
+        monkeypatch.setattr(
+            R, "run_cell", lambda *a, **k: pytest.fail("an episode ran before CG-B")
+        )
+        with pytest.raises(SystemExit, match="CG-B REFUSES"):
+            R.run_cells(["LINE-SHIELD_GREEDY"])
+
+    def test_the_tally_lands_in_provenance(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _write_cgb(tmp_path, n_pass=36)
+        p = R.provenance("cpu", R.cgb_status())
+        assert p["cg_b"]["verdict"] == "PASS"
+        assert p["cg_b"]["n_pass"] == 36
+
+
+# ----------------------------------------------------------------------------
+# record validity (A4.4) and the crashed cell (A4.5)
+# ----------------------------------------------------------------------------
+def _on_disk(out: pathlib.Path, rec: dict, name: str | None = None) -> pathlib.Path:
+    d = out / "s19_cells"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{name or rec['name']}.json"
+    path.write_text(json.dumps(rec))
+    return path
+
+
+def _measurable_record(name: str) -> dict:
+    """A record that passes A4.4: this round's cell, 500 episodes, the gate
+    stream."""
+    return _cell(name, 0.5, n=R.N_EPISODES) | {
+        "n_episodes": R.N_EPISODES,
+        "seed0": R.GATE_SEED0,
+    }
+
+
+class TestRecordValidity:
+    def test_a_measurable_record_is_loaded(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _on_disk(tmp_path, _measurable_record("LINE-SHIELD_GREEDY"))
+        assert R.record_status(_measurable_record("LINE-SHIELD_GREEDY"))[0] == (
+            "MEASURABLE"
+        )
+        assert list(R.load_records()) == ["LINE-SHIELD_GREEDY"]
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [("n_episodes", 20), ("n_episodes", 499), ("seed0", 1_990_000), ("seed0", 0)],
+    )
+    def test_the_wrong_n_or_stream_is_not_measurable(
+        self, tmp_path, monkeypatch, field, value
+    ):
+        """A4.4, the review's reproduction: a 20-episode smoke in `s19_cells/`
+        became the gate number because existence of the file was the only
+        test."""
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        rec = _measurable_record("LINE-SHIELD_GREEDY") | {field: value}
+        _on_disk(tmp_path, rec)
+        status, why = R.record_status(rec)
+        assert status == "INVALID"
+        assert field in why
+        assert R.load_records() == {}
+
+    def test_a_foreign_name_is_not_measurable(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        rec = _measurable_record("LINE-SHIELD_GREEDY") | {"name": "SOMETHING_ELSE"}
+        _on_disk(tmp_path, rec, name="SOMETHING_ELSE")
+        assert R.record_status(rec)[0] == "INVALID"
+        assert R.load_records() == {}
+
+    def test_an_invalid_record_is_refused_not_skipped(self, tmp_path, monkeypatch):
+        """Not a skip (that would make a smoke "done") and not an overwrite
+        (that would break the stop rule in the other direction) — a refusal."""
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _pass_cgb(monkeypatch)
+        _on_disk(
+            tmp_path, _measurable_record("LINE-SHIELD_GREEDY") | {"n_episodes": 20}
+        )
+        before = (tmp_path / "s19_cells" / "LINE-SHIELD_GREEDY.json").read_text()
+        monkeypatch.setattr(
+            R, "run_cell", lambda *a, **k: pytest.fail("re-ran a refused cell")
+        )
+        with pytest.raises(SystemExit, match="not a measurable record"):
+            R.run_cells(["LINE-SHIELD_GREEDY"])
+        # untouched
+        assert (
+            tmp_path / "s19_cells" / "LINE-SHIELD_GREEDY.json"
+        ).read_text() == before
+
+    def test_an_invalid_record_is_never_summarised(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        monkeypatch.setattr(R, "null_open", lambda **k: dict(HOLDS))
+        for name in R.CELL_ORDER:
+            _on_disk(tmp_path, _measurable_record(name) | {"n_episodes": 20})
+        blob = R.summarize()
+        v = blob["verdicts"]
+        assert v["n_records"] == 0
+        assert len(v["missing"]) == 12
+        assert len(blob["rejected_records"]) == 12
+        for key in ("h_plan_1", "h_plan_2", "h_plan_3", "h_safe"):
+            assert v[key]["verdict"] == "INCOMPLETE"
+        assert "incomplete" in blob["direction"]
+
+    def test_a_crashed_cell_is_undetermined_and_never_re_run(
+        self, tmp_path, monkeypatch
+    ):
+        """A4.5 + prereg section 7."""
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _pass_cgb(monkeypatch)
+
+        def _crash(*a, **k):
+            raise RuntimeError("the arena fell over")
+
+        monkeypatch.setattr(R, "run_cell", _crash)
+        R.run_cells(["LINE-SHIELD_GREEDY"])
+        rec = json.loads(
+            (tmp_path / "s19_cells" / "LINE-SHIELD_GREEDY.json").read_text()
+        )
+        assert rec["verdict"] == R.UNDETERMINED
+        assert "the arena fell over" in rec["error"]
+        assert "RuntimeError" in rec["traceback"]
+        assert rec["n_episodes"] == 0
+        # classified as UNDETERMINED, not measurable
+        status, why = R.record_status(rec)
+        assert status == "UNDETERMINED"
+        assert "crashed" in why
+        assert R.load_records() == {}
+        # and never re-run
+        monkeypatch.setattr(
+            R, "run_cell", lambda *a, **k: pytest.fail("re-ran an UNDETERMINED cell")
+        )
+        with pytest.raises(SystemExit, match="UNDETERMINED"):
+            R.run_cells(["LINE-SHIELD_GREEDY"])
+
+    def test_a_crash_does_not_stop_the_remaining_cells(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _pass_cgb(monkeypatch)
+        calls = []
+
+        def _flaky(name, *a, **k):
+            calls.append(name)
+            if name == "LINE-SHIELD_GREEDY":
+                raise RuntimeError("boom")
+            return _measurable_record(name)
+
+        monkeypatch.setattr(R, "run_cell", _flaky)
+        R.run_cells(["LINE-SHIELD_GREEDY", "LINE-SHIELD_HUG"])
+        assert calls == ["LINE-SHIELD_GREEDY", "LINE-SHIELD_HUG"]
+        assert list(R.load_records()) == ["LINE-SHIELD_HUG"]
+
+    def test_a_measurable_record_is_skipped_as_done(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _pass_cgb(monkeypatch)
+        _on_disk(tmp_path, _measurable_record("LINE-SHIELD_GREEDY"))
+        monkeypatch.setattr(
+            R, "run_cell", lambda *a, **k: pytest.fail("re-ran a completed cell")
+        )
+        assert R.run_cells(["LINE-SHIELD_GREEDY"]) == []
+
+    def test_no_rate_is_printed_while_the_cells_run(self, capsys):
+        """A4.6: `--summarize` is the only reader of this round's numbers."""
+        rec = _measurable_record("PLAN-SHIELD_GREEDY")
+        line = R._cell_line(rec)
+        assert line == "[PLAN-SHIELD_GREEDY] recorded, n_episodes 500"
+        for forbidden in ("capture", "law_pin", "viol", "int "):
+            assert forbidden not in line
+
+
+# ----------------------------------------------------------------------------
+# CLI dispatch order and an empty round
+# ----------------------------------------------------------------------------
+class TestCli:
+    def test_gifs_are_written_before_the_table_is_summarised(self, monkeypatch):
+        """CG-C is a BLOCKING construct gate: the episodes are watched before
+        any capture rate is read, so in one invocation `--gifs` precedes
+        `--summarize`."""
+        order = []
+        monkeypatch.setattr(R, "run_cells", lambda *a, **k: order.append("cells"))
+        monkeypatch.setattr(R, "write_gifs", lambda *a, **k: order.append("gifs"))
+        monkeypatch.setattr(
+            R,
+            "summarize",
+            lambda *a, **k: (
+                order.append("summarize"),
+                {"verdicts": R.verdicts({}, dict(HOLDS)), "direction": "x"},
+            )[1],
+        )
+        monkeypatch.setattr(
+            "sys.argv", ["derisk_s19_planner.py", "--summarize", "--gifs", "--cells"]
+        )
+        R.main()
+        assert order == ["cells", "gifs", "summarize"]
+
+    def test_summarize_survives_a_round_with_no_records(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        monkeypatch.setattr(R, "null_open", lambda **k: dict(HOLDS))
+        blob = R.summarize()
+        assert blob["verdicts"]["n_records"] == 0
+        assert blob["rejected_records"] == {}
+        assert "incomplete" in blob["direction"]
+        assert (tmp_path / "s19_round.json").exists()
+        assert (tmp_path / "s19_round.png").exists()
+
+
 # ----------------------------------------------------------------------------
 # the ATK refusal
 # ----------------------------------------------------------------------------
@@ -240,12 +523,13 @@ class TestAtkRefusal:
         and then refused would leave a half-measured round."""
         monkeypatch.setattr(R, "ATK_CKPT", tmp_path / "nope.zip")
         monkeypatch.setattr(R, "OUT", tmp_path)
+        _pass_cgb(monkeypatch)  # isolate the ATK refusal from CG-B's
 
         def _boom(*a, **k):
             raise AssertionError("an episode ran before the refusal")
 
         monkeypatch.setattr(R, "run_cell", _boom)
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit, match="ATK4-45"):
             R.run_cells(["LINE-SHIELD_GREEDY", "PLAN-SHIELD_ATK"])
 
     def test_scripted_opponents_need_no_checkpoint(self, tmp_path, monkeypatch):
@@ -328,9 +612,10 @@ class TestHPlan2:
     def test_passes_when_the_shield_cost_is_smaller_under_plan(self):
         v = R.h_plan_2(_pass_round())
         assert v["verdict"] == "PASS"
-        assert v["cost_part"] is True
-        assert v["gain_part"] is True
+        assert v["n_pass"] == 3
+        assert v["conjunction"] == "per opponent (amendment A4.1, binding)"
         b = v["opponents"]["GREEDY"]
+        assert (b["cost_smaller"], b["gain_significant"]) == (True, True)
         assert b["cost_line"] == pytest.approx(0.30)
         assert b["cost_plan"] == pytest.approx(0.05)
         assert b["cost_reduction"] == pytest.approx(0.25)
@@ -347,8 +632,9 @@ class TestHPlan2:
             }
         )
         v = R.h_plan_2(recs)
-        assert v["cost_part"] is True  # 0.30 vs 0.05
-        assert v["gain_part"] is False
+        assert v["n_cost_smaller"] == 3  # 0.30 vs 0.05
+        assert v["round_wide_gain_part"] is False
+        assert v["n_pass"] == 0
         assert v["verdict"] == "FAIL"
 
     def test_fails_when_the_cost_is_larger_under_plan(self):
@@ -361,9 +647,40 @@ class TestHPlan2:
             }
         )
         v = R.h_plan_2(recs)
-        assert v["gain_part"] is True
-        assert v["cost_part"] is False
+        assert v["round_wide_gain_part"] is True
+        assert v["n_cost_smaller"] == 0
         assert v["verdict"] == "FAIL"
+
+    def test_the_conjunction_is_per_opponent_not_round_wide(self):
+        """A4.1, the review's defect. GREEDY and HUG carry the smaller cost;
+        HUG and ATK carry the significant gain. Counted independently both
+        conjuncts clear 2/3 and the old round-wide reading would PASS — but only
+        HUG has BOTH, so under A4.1 this FAILS."""
+        recs = _round(
+            {
+                # cost smaller under PLAN on GREEDY and HUG only
+                ("LINE", "OPEN"): {"GREEDY": 0.90, "HUG": 0.90, "ATK": 0.40},
+                ("PLAN", "OPEN"): {"GREEDY": 0.70, "HUG": 0.90, "ATK": 0.90},
+                # significant SHIELD gain on HUG and ATK only
+                ("LINE", "SHIELD"): {"GREEDY": 0.60, "HUG": 0.30, "ATK": 0.30},
+                ("PLAN", "SHIELD"): {"GREEDY": 0.60, "HUG": 0.60, "ATK": 0.60},
+            }
+        )
+        v = R.h_plan_2(recs)
+        per = v["opponents"]
+        assert [per[o]["cost_smaller"] for o in ALL] == [True, True, False]
+        assert [per[o]["gain_significant"] for o in ALL] == [False, True, True]
+        # the weaker reading would have passed, and is reported as such
+        assert v["round_wide_cost_part"] is True
+        assert v["round_wide_gain_part"] is True
+        # ... but only HUG clears both conjuncts
+        assert v["n_pass"] == 1
+        assert v["verdict"] == "FAIL"
+        text = R.direction(R.verdicts(recs, HOLDS))
+        assert "H-PLAN-2 FAILS" in text
+        assert "PER OPPONENT" in text
+        assert "GREEDY (gain not significant)" in text
+        assert "ATK (cost not smaller)" in text
 
     def test_the_open_difference_is_reported_and_never_gated(self):
         """A2.2: the OPEN column is unshielded, NOT obstacle-free. A large OPEN
@@ -567,15 +884,20 @@ class TestNullOpen:
         # the prereg's section 4 name and the artefact's name are one function
         assert R.null_identity is R.null_open
 
-    def test_holds_on_an_obstacle_free_arena(self):
+    def test_holds_on_an_obstacle_free_arena_on_both_columns(self):
+        """A4.2: the identity runs on OPEN and on SHIELD, and both must hold."""
         v = R.null_open(n=3)
         assert v["verdict"] == "HOLDS"
         assert v["n_differing"] == 0
+        assert v["failing_columns"] == []
+        assert sorted(v["columns"]) == ["OPEN", "SHIELD"]
         assert v["seed0"] == R.CONSTRUCT_SEED0
         assert v["pre_registered"] is False  # n != NULL_N, and it says so
         assert "obstacle-free" in v["scenario"]
-        # A2.1's residual must never fire on an empty map
-        assert v["n_unreachable"] == 0
+        for col in ("OPEN", "SHIELD"):
+            assert v["columns"][col]["verdict"] == "HOLDS"
+            # A2.1's residual must never fire on an empty map
+            assert v["columns"][col]["n_unreachable"] == 0
 
     def test_defaults_are_the_pre_registered_fifty_from_the_construct_stream(
         self, monkeypatch
@@ -595,6 +917,8 @@ class TestNullOpen:
         assert v["seed0"] == 1_990_000
         assert v["pre_registered"] is True
         assert sorted(set(seen["seeds"])) == [1_990_000 + i for i in range(50)]
+        # both columns, so 2 x 2 envs x 50 seeds
+        assert len(seen["seeds"]) == 200
 
     def test_fails_when_the_plan_law_differs_in_open_space(self, monkeypatch):
         """The load-bearing negative: a PLAN law that is NOT bit-identical on an
@@ -609,8 +933,35 @@ class TestNullOpen:
         monkeypatch.setattr(R, "PlannerInterceptLaw", _Divergent)
         v = R.null_open(n=2)
         assert v["verdict"] == "FAILS"
-        assert v["n_differing"] == 2
+        assert sorted(v["failing_columns"]) == ["OPEN", "SHIELD"]
         assert v["differing_seeds"] == [1_990_000, 1_990_001]
+
+    def test_fails_when_only_the_shield_panel_identity_fails(self, monkeypatch):
+        """A4.2's whole point: on OPEN every shield-derived field is
+        structurally zero, so a divergence visible only under the filter would
+        have gone unseen by the OPEN-only null. Here the two laws agree on OPEN
+        and differ on SHIELD, and the NULL must still FAIL."""
+        real = R._null_panel
+
+        def _panel(col, n, seed0, device):
+            out = real(col, n, seed0, device)
+            if col != "SHIELD":
+                return out
+            return out | {
+                "verdict": "FAILS",
+                "n_differing": 1,
+                "differing_seeds": [seed0],
+            }
+
+        monkeypatch.setattr(R, "_null_panel", _panel)
+        v = R.null_open(n=1)
+        assert v["columns"]["OPEN"]["verdict"] == "HOLDS"
+        assert v["columns"]["SHIELD"]["verdict"] == "FAILS"
+        assert v["failing_columns"] == ["SHIELD"]
+        assert v["verdict"] == "FAILS"
+        text = R.direction(R.verdicts(_pass_round(), v))
+        assert "NULL FAILS on the SHIELD column(s)" in text
+        assert "H-PLAN-1 PASS" not in text
 
     def test_direction_stops_the_round_when_the_null_fails(self):
         v = R.verdicts(
@@ -620,6 +971,7 @@ class TestNullOpen:
                 "n_differing": 7,
                 "n_episodes": 50,
                 "differing_seeds": [1],
+                "failing_columns": ["OPEN", "SHIELD"],
             },
         )
         text = R.direction(v)
@@ -780,6 +1132,15 @@ class TestProvenance:
         assert p["omp_num_threads"] == "4"
         assert "git_commit" in p
 
+    def test_it_carries_the_device_and_cgb(self):
+        """A4.7 (a GPU and a CPU forward pass are not bit-identical, so "which
+        device" is part of what a paired record means) and A4.3."""
+        p = R.provenance("cuda", {"verdict": "PASS", "n_pass": 36})
+        assert p["device"] == "cuda"
+        assert p["cg_b"] == {"verdict": "PASS", "n_pass": 36}
+        assert R.provenance()["device"] == "cpu"
+        assert R.provenance()["cg_b"] is None
+
     def test_the_spec_file_exists_at_the_recorded_path(self):
         assert R.spec_path().exists()
 
@@ -819,9 +1180,11 @@ class TestSmoke:
             "law_pin_ge_40",
             "n_unreachable",
             "branch",
+            "device",
             "provenance",
         ):
             assert key in rec, key
+        assert rec["device"] == "cpu" == rec["provenance"]["device"]  # A4.7
         assert len(rec["capture_ind"]) == 2
         assert len(rec["branch"]) == 2
         assert rec["seed0"] == R.GATE_SEED0

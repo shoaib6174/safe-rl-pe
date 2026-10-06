@@ -2,7 +2,7 @@
 controller?
 
 Spec: `docs/pathway/planner_intercept_prereg_2026-10-06.md` INCLUDING amendments
-A1 and A2. Where this module and the prereg+amendments could be read to
+A1 to A4. Where this module and the prereg+amendments could be read to
 disagree, the prereg+amendments win; every such reading is named in a comment.
 
 Evaluation only. Nothing here trains, selects or tunes anything.
@@ -37,11 +37,23 @@ say the obvious version was wrong:
   gated quantity is the FRACTION of episodes carrying a law-branch pinned run
   >= `DEADLOCK_STEPS`; the median and the 90th percentile are reported beside
   it and gate nothing.
-- **The NULL is the obstacle-free bit-identity alone (A2.2).** The OPEN column
-  is UNSHIELDED, not obstacle-free: obstacles are there, and a law that plans
-  around them legitimately differs from one that drives into them even with no
-  filter. The OPEN-column PLAN - LINE difference is REPORTED, and H-PLAN-2 has
-  no OPEN-band conjunct.
+- **The NULL is the obstacle-free bit-identity alone (A2.2), on BOTH columns
+  (A4.2).** The OPEN column is UNSHIELDED, not obstacle-free: obstacles are
+  there, and a law that plans around them legitimately differs from one that
+  drives into them even with no filter. The OPEN-column PLAN - LINE difference
+  is REPORTED, and H-PLAN-2 has no OPEN-band conjunct. The identity itself runs
+  under the shield as well as without it, because on OPEN every shield-derived
+  field is structurally zero and cannot witness a divergence.
+
+And four things A4 made binding after review:
+
+- **A4.1** H-PLAN-2's two conjuncts must hold on the SAME opponent.
+- **A4.2** the NULL runs on both columns and both must hold.
+- **A4.3** CG-B (36/36 exact S18 reproductions) is enforced INSIDE `run_cells`,
+  before the first episode, and recorded in provenance.
+- **A4.4-A4.7** a record is measurable only at the pre-registered N and stream;
+  a crashed cell is `UNDETERMINED` and never re-run; no rate is printed while
+  the cells run; `device` is in provenance.
 
 Usage:
   ./venv/bin/python scripts/derisk_s19_planner.py --cells          (all missing)
@@ -198,11 +210,15 @@ def _ci(k: int, n: int) -> dict:
     return {"k": k, "n": n, "rate": k / n if n else float("nan"), "wilson": [lo, hi]}
 
 
-def provenance() -> dict:
-    """Commit, the `pe2` package this ran against, and the sha256 of the
-    pre-registration. The spec hash is the point: a cell record proves which
-    text's thresholds it was measured under, so an amendment appended after a
-    number existed is detectable rather than arguable."""
+def provenance(device: str = "cpu", cgb: dict | None = None) -> dict:
+    """Commit, the `pe2` package this ran against, the sha256 of the
+    pre-registration, the device (A4.7) and CG-B's tally (A4.3).
+
+    The spec hash is the point: a cell record proves which text's thresholds it
+    was measured under, so an amendment appended after a number existed is
+    detectable rather than arguable. `device` is here because a GPU and a CPU
+    forward pass are not bit-identical, so "which device" is part of what a
+    paired record means."""
     import subprocess
 
     import stable_baselines3
@@ -222,9 +238,11 @@ def provenance() -> dict:
         "pe2_file": pe2.__file__,
         "spec": SPEC,
         "spec_sha256": _sha256(spec_path()),
+        "device": device,
         "sb3_version": stable_baselines3.__version__,
         "torch_threads": torch.get_num_threads(),
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
+        "cg_b": cgb,
     }
 
 
@@ -234,16 +252,132 @@ def write_cell(record: dict) -> pathlib.Path:
     return path
 
 
-def load_records() -> dict:
+# ----------------------------------------------------------------------------
+# CG-B (amendment A4.3): the recorder reproduces S18 exactly, checked HERE
+# ----------------------------------------------------------------------------
+# CG-B is BLOCKING and A4.3 withdrew the concession that a manual check at
+# launch was enough: "a recorder that cannot reproduce the old numbers reads
+# nothing new" (prereg section 5), so the runner itself refuses before the first
+# episode rather than trusting a wrapper that someone might not run.
+#
+# The artefacts are `scripts/replay_s18_branch_split.py`'s outputs — one per S18
+# arm x gate opponent, 18 x 2 = 36 — and the gated key is the one that script
+# writes: `record["reproduction"]["verdict"] == "PASS"`, an EXACT comparison of
+# `intervention_total`, `capture_rate` and `n_episodes` against the recorded S18
+# gate entry, never relaxed to a tolerance.
+CGB_N = 36
+CGB_GLOB = "s18_branch_split_*.json"
+
+
+def cgb_status() -> dict:
+    """CG-B's tally: how many replay artefacts exist and how many reproduce
+    S18 exactly. Read-only; it never writes or repairs anything."""
+    paths = sorted(OUT.glob(CGB_GLOB)) if OUT.exists() else []
+    passed, failed, unreadable = [], [], []
+    for p in paths:
+        try:
+            rec = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            unreadable.append(f"{p.name}: {exc}")
+            continue
+        verdict = (rec.get("reproduction") or {}).get("verdict")
+        (passed if verdict == "PASS" else failed).append(p.name)
+    return {
+        "gate": "CG-B (prereg section 5, enforced in-runner by A4.3)",
+        "required": CGB_N,
+        "n_files": len(paths),
+        "n_pass": len(passed),
+        "verdict": "PASS"
+        if (len(paths) == CGB_N and len(passed) == CGB_N)
+        else "REFUSE",
+        "not_passing": sorted(failed),
+        "unreadable": sorted(unreadable),
+        "glob": str(OUT / CGB_GLOB),
+    }
+
+
+def require_cgb() -> dict:
+    """SystemExit unless all `CGB_N` replay artefacts exist and reproduce S18
+    exactly. Returns the tally so it can go into provenance."""
+    status = cgb_status()
+    if status["verdict"] != "PASS":
+        raise SystemExit(
+            f"CG-B REFUSES: {status['n_pass']}/{status['n_files']} replay "
+            f"artefacts reproduce S18 exactly, and {CGB_N}/{CGB_N} are required "
+            f"({status['glob']}). CG-B is BLOCKING before any capture rate is "
+            "read (prereg section 5, enforced here by A4.3): a recorder that "
+            "cannot reproduce the old numbers reads nothing new. "
+            f"not passing: {status['not_passing'] or 'none'}; "
+            f"unreadable: {status['unreadable'] or 'none'}."
+        )
+    return status
+
+
+# ----------------------------------------------------------------------------
+# record validity (amendment A4.4) and the crashed cell (A4.5)
+# ----------------------------------------------------------------------------
+# A4.4: a cell record is MEASURABLE only if it is one of this round's cells,
+# measured over the pre-registered N on the pre-registered stream. The review
+# reproduced a full PASS out of 20-episode smoke records sitting in
+# `s19_cells/`, because existence of the file was the only test. A smoke, a
+# test artefact or a half-run cell is now refused loudly — never silently
+# skipped as "done", never overwritten, and never summarised.
+UNDETERMINED = "UNDETERMINED"
+
+
+def record_status(rec: dict) -> tuple[str, str]:
+    """`(status, why)` for one record on disk. `status` is one of
+    `"MEASURABLE"`, `"UNDETERMINED"` (A4.5's crash marker) or `"INVALID"`."""
+    name = rec.get("name")
+    if name not in CELLS:
+        return "INVALID", f"name {name!r} is not a cell of this round"
+    if rec.get("verdict") == UNDETERMINED:
+        return UNDETERMINED, f"crashed cell: {rec.get('error')!r}"
+    n, seed0 = rec.get("n_episodes"), rec.get("seed0")
+    if n != N_EPISODES:
+        return "INVALID", f"n_episodes {n!r} != the pre-registered {N_EPISODES}"
+    if seed0 != GATE_SEED0:
+        return "INVALID", f"seed0 {seed0!r} != the pre-registered {GATE_SEED0}"
+    return "MEASURABLE", ""
+
+
+def scan_records() -> tuple[dict, dict]:
+    """`(measurable, rejected)`. `rejected` maps the file name to the reason, so
+    a refusal names the file rather than leaving a reader to guess."""
     d = cells_dir()
+    measurable: dict = {}
+    rejected: dict = {}
     if not d.exists():
-        return {}
-    out = {}
+        return measurable, rejected
     for p in sorted(d.glob("*.json")):
-        rec = json.loads(p.read_text())
-        if rec.get("name"):
-            out[rec["name"]] = rec
-    return out
+        try:
+            rec = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            rejected[p.name] = f"unreadable: {exc}"
+            continue
+        status, why = record_status(rec)
+        if status == "MEASURABLE":
+            measurable[rec["name"]] = rec
+        else:
+            rejected[p.name] = f"{status}: {why}"
+    return measurable, rejected
+
+
+def load_records(*, quiet: bool = False) -> dict:
+    """Only the MEASURABLE records (A4.4). Anything else is dropped and listed
+    loudly: a record that is not the pre-registered N on the pre-registered
+    stream may not become a gate number by sitting in the right directory."""
+    measurable, rejected = scan_records()
+    if rejected and not quiet:
+        print(
+            f"REFUSED {len(rejected)} record(s) in {cells_dir()} — not measurable "
+            "(A4.4: a cell record must be one of this round's cells with "
+            f"n_episodes == {N_EPISODES} and seed0 == {GATE_SEED0}):",
+            flush=True,
+        )
+        for fname, why in sorted(rejected.items()):
+            print(f"  {fname}: {why}", flush=True)
+    return measurable
 
 
 def read_cell(name: str) -> dict:
@@ -377,9 +511,18 @@ def _q(xs: list[float], q: float) -> float:
     )
 
 
-def run_cell(name: str, device: str = "cpu", n_episodes: int | None = None) -> dict:
+def run_cell(
+    name: str,
+    device: str = "cpu",
+    n_episodes: int | None = None,
+    *,
+    cgb: dict | None = None,
+) -> dict:
     """One cell: N paired episodes of this row's law, under this column's
     shield, against this opponent, on the gate stream.
+
+    `cgb` is CG-B's tally, passed in by `run_cells` (which is where the gate is
+    enforced, A4.3) so it lands in the record's provenance.
 
     The episodes are driven here rather than through `evaluate_structured` for
     two reasons: the record needs the recorder's per-episode `branch` block and
@@ -431,6 +574,7 @@ def run_cell(name: str, device: str = "cpu", n_episodes: int | None = None) -> d
         "escape_obs": ESCAPE_OBS,
         "n_episodes": n,
         "seed0": GATE_SEED0,
+        "device": device,  # A4.7
         "capture_ind": capture_ind,
         "capture_rate": k / n if n else float("nan"),
         "wilson_capture": _ci(k, n),
@@ -463,29 +607,63 @@ def run_cell(name: str, device: str = "cpu", n_episodes: int | None = None) -> d
             else float("nan"),
             "intervention_scope": "all steps (amendment A1.2)",
         },
-        "provenance": provenance(),
+        "provenance": provenance(device, cgb),
     }
 
 
 def _cell_line(rec: dict) -> str:
-    a = rec["aggregate"]
-    return (
-        f"[{rec['name']}] capture {rec['capture_rate']:.3f} "
-        f"law_pin>={LAW_PIN_STEPS} {a['episode_frac_law_pin_ge_40']:.3f} "
-        f"int {a['intervention_total_mean']:.2f} "
-        f"unreach {rec['n_unreachable']} viol {rec['violations']}"
-    )
+    """A4.6: NO capture rate, law-pin fraction or any other number is printed
+    while the cells run. `--summarize` is the only reader of this round's
+    numbers, and it runs after `--gifs` (CG-C), so the behavioural gate is
+    watched before any rate is seen. The line says that the cell was recorded
+    and over how many episodes, which is what a resumable pass needs."""
+    return f"[{rec['name']}] recorded, n_episodes {rec['n_episodes']}"
+
+
+def undetermined_record(name: str, exc: BaseException, device: str = "cpu") -> dict:
+    """A4.5 / prereg section 7: a crashed cell is `UNDETERMINED`.
+
+    It is written as a record, not left absent, so the stop rule can be
+    enforced mechanically: an absent cell invites a re-run, and section 7
+    forbids re-running anything after a number is seen. `n_episodes` is 0 so
+    `record_status` can never mistake it for a measurement."""
+    import traceback
+
+    return {
+        "name": name,
+        "verdict": UNDETERMINED,
+        "error": f"{type(exc).__name__}: {exc}",
+        "traceback": "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        ),
+        "n_episodes": 0,
+        "seed0": GATE_SEED0,
+        "note": (
+            "a crashed cell is UNDETERMINED and is NEVER re-run (prereg section "
+            "7, amendment A4.5). Delete this file only with an amendment that "
+            "says so, appended before the number it touches exists."
+        ),
+        "provenance": provenance(device),
+    }
 
 
 def run_cells(
     names: list[str] | None = None, device: str = "cpu", n_episodes: int | None = None
 ) -> list[str]:
-    """Every named cell that has no record yet (default: all 12).
+    """Every named cell with no record yet (default: all 12).
 
     Literal names only — there is no pattern, no "all shielded" shorthand and no
     way to ask for "the cells that failed", which is the plan's section 7
-    discipline. The ATK checkpoint is resolved BEFORE the first episode so a
-    pass cannot run three cells and then refuse on the fourth."""
+    discipline.
+
+    Everything that can refuse, refuses BEFORE the first episode: CG-B (A4.3),
+    the ATK checkpoint, and every existing file's validity (A4.4). A cell whose
+    file exists but is not a measurable record of THIS round — a smoke, a test
+    artefact, a half-run cell — is a REFUSAL, not a skip and not an overwrite:
+    silently treating it as done is how a 20-episode smoke becomes a gate
+    number, and silently overwriting it would break the stop rule in the other
+    direction. An `UNDETERMINED` cell (A4.5) is likewise refused, never re-run.
+    """
     wanted = list(CELL_ORDER) if names is None else list(names)
     unknown = [n for n in wanted if n not in CELLS]
     if unknown:
@@ -493,18 +671,42 @@ def run_cells(
             f"unknown cell(s): {unknown}; this round's cells are {CELL_ORDER}"
         )
     cells_dir().mkdir(parents=True, exist_ok=True)
-    todo = [n for n in wanted if not cell_file(n).exists()]
+    measurable, rejected = scan_records()
+    blocked = {n: rejected[f"{n}.json"] for n in wanted if f"{n}.json" in rejected}
+    if blocked:
+        raise SystemExit(
+            "REFUSED before any episode ran — "
+            f"{len(blocked)} requested cell(s) already have a file that is not a "
+            "measurable record of this round (A4.4/A4.5): "
+            + "; ".join(f"{cell_file(n)} — {why}" for n, why in sorted(blocked.items()))
+            + f". A measurable record has n_episodes == {N_EPISODES} and seed0 == "
+            f"{GATE_SEED0}. Nothing here overwrites or re-runs it: resolve the "
+            "file deliberately (an UNDETERMINED cell stays UNDETERMINED under "
+            "the stop rule; a smoke or test artefact must be moved out of "
+            f"{cells_dir()} by hand)."
+        )
+    todo = [n for n in wanted if n not in measurable]
+    cgb = require_cgb()  # A4.3, before the first episode
     if any(CELLS[n]["opponent"] == "ATK" for n in todo):
         require_atk_ckpt()
     print(
+        f"CG-B {cgb['n_pass']}/{cgb['required']} exact reproductions: PASS. "
         f"{len(todo)}/{len(wanted)} cells to run "
-        f"({len(wanted) - len(todo)} already have a record; stop rule: never "
-        f"re-run), N = {N_EPISODES if n_episodes is None else n_episodes} from "
-        f"seed {GATE_SEED0}",
+        f"({len(wanted) - len(todo)} already have a measurable record; stop "
+        f"rule: never re-run), N = "
+        f"{N_EPISODES if n_episodes is None else n_episodes} from seed "
+        f"{GATE_SEED0}. No rate is printed here (A4.6) — read --summarize, "
+        "after --gifs.",
         flush=True,
     )
     for name in todo:
-        rec = run_cell(name, device, n_episodes)
+        try:
+            rec = run_cell(name, device, n_episodes, cgb=cgb)
+        except Exception as exc:  # noqa: BLE001 — A4.5: record it, do not re-run
+            rec = undetermined_record(name, exc, device)
+            write_cell(rec)
+            print(f"[{name}] {UNDETERMINED}: {rec['error']}", flush=True)
+            continue
         write_cell(rec)
         print(_cell_line(rec), flush=True)
     return todo
@@ -520,18 +722,51 @@ def null_config() -> EnvConfig:
     return dataclasses.replace(cell_config(), n_physical_obstacles=0)
 
 
+def _null_panel(col: str, n: int, seed0: int, device: str) -> dict:
+    """The obstacle-free bit-identity on one column, PLAN vs LINE."""
+    cfg = null_config()
+    # GREEDY's cells: the opponent must be identical on both sides and is not a
+    # free choice — it is the primary metric's opponent (prereg section 5).
+    plan = build_cell_env(cell_name("PLAN", col, "GREEDY"), cfg, device)
+    line = build_cell_env(cell_name("LINE", col, "GREEDY"), cfg, device)
+    policy = OrbitSearch(cfg)
+    differing: list[int] = []
+    for i in range(n):
+        seed = seed0 + i
+        if plan.play_episode(policy.predict, seed) != line.play_episode(
+            policy.predict, seed
+        ):
+            differing.append(seed)
+    return {
+        "column": col,
+        "verdict": "HOLDS" if not differing else "FAILS",
+        "n_differing": len(differing),
+        "differing_seeds": differing[:10],
+        "n_unreachable": getattr(plan.law, "n_unreachable", None),
+    }
+
+
 def null_open(
     n: int | None = None, seed0: int | None = None, device: str = "cpu"
 ) -> dict:
     """A2.2's NULL: PLAN and LINE produce bit-identical `play_episode` logs on
-    an OBSTACLE-FREE arena over `n` seeds of the construct stream.
+    an OBSTACLE-FREE arena over `n` seeds of the construct stream — on BOTH
+    columns (A4.2), and both must hold.
 
-    "OPEN" here means obstacle-free, NOT the OPEN column. A2.2 corrected the
-    prereg on exactly this point: the OPEN column is unshielded with obstacles
-    present, and a law that plans around them legitimately differs from one
-    that drives into them even with no filter, so a capture band in that column
-    would fail for the right reason. The OPEN-column PLAN - LINE difference is a
-    REPORTED quantity (`h_plan_2`), never a null.
+    **A4.2.** The first implementation ran the identity on the OPEN column
+    only, where every shield-derived field of the record is structurally zero
+    (A3.4): no shield, so `immobile`, `intervention_magnitude` and the pin runs
+    cannot witness a divergence at all. Running it again under the shield makes
+    the identity cover exactly the fields the round's mechanism claims are
+    about, and the NULL passes only if BOTH columns hold.
+
+    "OPEN" in this function's name means obstacle-free, NOT the OPEN column.
+    A2.2 corrected the prereg on exactly this point: the OPEN column is
+    unshielded with obstacles present, and a law that plans around them
+    legitimately differs from one that drives into them even with no filter, so
+    a capture band in that column would fail for the right reason. The
+    OPEN-column PLAN - LINE difference is a REPORTED quantity (`h_plan_2`),
+    never a null.
 
     The prereg's section 4 also said "the open-arena scenarios of
     `pe2/scenarios.py`". Those are NOT used, and could not be: `close_open`,
@@ -543,39 +778,33 @@ def null_open(
     This duplicates `tests/pe2/test_planner.py::TestInvariant` on purpose: the
     round record must carry its own null, not merely cite a test suite. It runs
     on the round's OWN instrument (the branch-tagged recorder at the cells'
-    hold and observation flags, shield off) so the comparison covers the branch
+    hold, shield and observation flags) so the comparison covers the branch
     attribution too, and not only the outcome.
     """
     n = NULL_N if n is None else int(n)
     seed0 = CONSTRUCT_SEED0 if seed0 is None else int(seed0)
-    cfg = null_config()
-    # GREEDY's cells: the opponent must be identical on both sides and is not a
-    # free choice — it is the primary metric's opponent (prereg section 5).
-    plan = build_cell_env("PLAN-OPEN_GREEDY", cfg, device)
-    line = build_cell_env("LINE-OPEN_GREEDY", cfg, device)
-    policy = OrbitSearch(cfg)
-    differing: list[int] = []
-    for i in range(n):
-        seed = seed0 + i
-        if plan.play_episode(policy.predict, seed) != line.play_episode(
-            policy.predict, seed
-        ):
-            differing.append(seed)
+    panels = {col: _null_panel(col, n, seed0, device) for col in COLS}
+    failing = [c for c, b in panels.items() if b["verdict"] == "FAILS"]
     return {
-        "hypothesis": "NULL (amendment A2.2)",
-        "verdict": "HOLDS" if not differing else "FAILS",
+        "hypothesis": "NULL (amendments A2.2 and A4.2)",
+        "verdict": "HOLDS" if not failing else "FAILS",
+        "columns": panels,
+        "failing_columns": failing,
         "scenario": (
-            "obstacle-free arena, EnvConfig(n_physical_obstacles=0); NOT the "
-            "OPEN column and NOT pe2/scenarios.py's *_open scenarios (those "
-            "sit on the canonical two-obstacle layout)"
+            "obstacle-free arena, EnvConfig(n_physical_obstacles=0), on BOTH "
+            "the OPEN and SHIELD columns (A4.2); NOT the OPEN column's arena "
+            "and NOT pe2/scenarios.py's *_open scenarios (those sit on the "
+            "canonical two-obstacle layout)"
         ),
         "n_episodes": n,
         "seed0": seed0,
         "stream": "construct",
         "pre_registered": bool(n == NULL_N and seed0 == CONSTRUCT_SEED0),
-        "n_differing": len(differing),
-        "differing_seeds": differing[:10],
-        "n_unreachable": getattr(plan.law, "n_unreachable", None),
+        # Pooled over both columns, so a reader of `direction()` sees the total.
+        "n_differing": sum(b["n_differing"] for b in panels.values()),
+        "differing_seeds": sorted(
+            {s for b in panels.values() for s in b["differing_seeds"]}
+        )[:10],
         "comparison": "== on the full play_episode log, including log['branch']",
     }
 
@@ -663,9 +892,18 @@ def h_plan_1(records: dict) -> dict:
 
 
 def h_plan_2(records: dict) -> dict:
-    """H-PLAN-2 (the paper's number), as amended by A2.2: the shield's cost
-    `OPEN capture - SHIELD capture` is SMALLER under PLAN than LINE on
-    >= 2/3 opponents, AND the SHIELD gain is significant (H-PLAN-1's test).
+    """H-PLAN-2 (the paper's number), as amended by A2.2 and A4.1: the shield's
+    cost `OPEN capture - SHIELD capture` is SMALLER under PLAN than LINE, and
+    the SHIELD gain is significant, ON THE SAME OPPONENT — on >= 2/3 opponents.
+
+    **A4.1 is binding and PER OPPONENT.** The first implementation applied the
+    ROUND-WIDE H-PLAN-1 verdict as the gain conjunct, which let the 2/3 with
+    the smaller cost be a different pair of opponents from the 2/3 with a
+    significant gain. Under A4.1 an opponent counts only if BOTH hold on that
+    opponent: `cost(PLAN) < cost(LINE)` and `paired_indicator_test` p < P_GATE
+    on its SHIELD capture indicators. The round-wide conjunction is still
+    reported (`round_wide_*`) but gates nothing, because "the paper's number"
+    must not rest on a gain that was not significant where the cost was smaller.
 
     A2.2 DROPPED the third conjunct ("the OPEN difference within the null
     band"). The difference-in-differences already isolates the shield's
@@ -694,8 +932,14 @@ def h_plan_2(records: dict) -> dict:
             r: cells[(r, "OPEN")]["capture_rate"] - cells[(r, "SHIELD")]["capture_rate"]
             for r in ("LINE", "PLAN")
         }
+        cost_smaller = cost["PLAN"] < cost["LINE"]
+        # The SAME opponent's H-PLAN-1 test, not the round-wide verdict (A4.1).
+        gain_here = gain["opponents"][o]["verdict"] == "PASS"
         per[o] = {
-            "verdict": "PASS" if cost["PLAN"] < cost["LINE"] else "FAIL",
+            "verdict": "PASS" if (cost_smaller and gain_here) else "FAIL",
+            "cost_smaller": bool(cost_smaller),
+            "gain_significant": bool(gain_here),
+            "gain_p": gain["opponents"][o]["p"],
             "cost_line": cost["LINE"],
             "cost_plan": cost["PLAN"],
             # Positive = the planner carries the SMALLER shield cost.
@@ -709,19 +953,24 @@ def h_plan_2(records: dict) -> dict:
         }
     n_pass = sum(b["verdict"] == "PASS" for b in per.values())
     incomplete = any(b["verdict"] == "INCOMPLETE" for b in per.values())
-    cost_part = n_pass >= PASS_MIN
-    gain_part = gain["verdict"] == "PASS"
+    # Reported only (A4.1): the two conjuncts counted independently, which is
+    # the reading A4.1 replaced. Kept so the artefact shows what the weaker bar
+    # would have said.
+    n_cost = sum(b.get("cost_smaller", False) for b in per.values())
     return {
         "hypothesis": "H-PLAN-2",
         "verdict": "INCOMPLETE"
         if incomplete or gain["verdict"] == "INCOMPLETE"
-        else ("PASS" if (cost_part and gain_part) else "FAIL"),
-        "cost_part": bool(cost_part),
-        "gain_part": bool(gain_part),
-        "gain_verdict": gain["verdict"],
+        else ("PASS" if n_pass >= PASS_MIN else "FAIL"),
+        "conjunction": "per opponent (amendment A4.1, binding)",
         "n_pass": n_pass,
         "pass_min": PASS_MIN,
         "n_opponents": len(OPPONENTS),
+        "n_cost_smaller": n_cost,
+        "round_wide_cost_part": bool(n_cost >= PASS_MIN),
+        "round_wide_gain_part": bool(gain["verdict"] == "PASS"),
+        "round_wide_note": "reported, never gated (A4.1 made the conjunction per opponent)",
+        "gain_verdict": gain["verdict"],
         "open_band_conjunct": "dropped by amendment A2.2",
         "opponents": per,
     }
@@ -867,13 +1116,15 @@ def direction(v: dict) -> str:
             "precondition of the whole round and nothing else is read."
         )
     if null is not None and null["verdict"] == "FAILS":
+        cols = ", ".join(null.get("failing_columns") or ["?"])
         return (
-            f"NULL FAILS ({null['n_differing']}/{null['n_episodes']} obstacle-free "
-            f"episodes differ; first {null['differing_seeds']}): PLAN is a "
-            "DIFFERENT law in open space, so no verdict in this round may be read "
-            "as being about obstruction. Report and stop (prereg section 4, as "
-            "restated by A2.2); fix the law's clear-line path before any capture "
-            "number here means anything."
+            f"NULL FAILS on the {cols} column(s) (A4.2 requires both): "
+            f"{null['n_differing']} obstacle-free episode(s) of "
+            f"{null['n_episodes']} differ; first {null['differing_seeds']}. PLAN "
+            "is a DIFFERENT law in open space, so no verdict in this round may be "
+            "read as being about obstruction. Report and stop (prereg section 4, "
+            "as restated by A2.2); fix the law's clear-line path before any "
+            "capture number here means anything."
         )
     if "INCOMPLETE" in (h1["verdict"], h2["verdict"], h3["verdict"], safe["verdict"]):
         return (
@@ -917,24 +1168,34 @@ def direction(v: dict) -> str:
     if h2["verdict"] == "PASS":
         parts.append(
             f"H-PLAN-2 PASS ({h2['n_pass']}/{h2['n_opponents']} opponents carry a "
-            f"smaller shield cost under PLAN, and the SHIELD gain is significant; "
-            f"{costs}): the shield's task cost is substantially a property of the "
-            "NOMINAL CONTROLLER, not of the filter — the paper's number."
+            "smaller shield cost under PLAN AND a significant SHIELD gain on the "
+            f"SAME opponent (A4.1); {costs}): the shield's task cost is "
+            "substantially a property of the NOMINAL CONTROLLER, not of the "
+            "filter — the paper's number."
         )
     else:
-        why = []
-        if not h2["cost_part"]:
-            why.append(
-                f"the difference-in-differences clears {h2['pass_min']}/"
-                f"{h2['n_opponents']} on only {h2['n_pass']}"
+        short = [
+            f"{o} ("
+            + ", ".join(
+                x
+                for x in (
+                    None if b.get("cost_smaller") else "cost not smaller",
+                    None if b.get("gain_significant") else "gain not significant",
+                )
+                if x
             )
-        if not h2["gain_part"]:
-            why.append(
-                f"the SHIELD gain is not significant (H-PLAN-1 {h2['gain_verdict']})"
-            )
+            + ")"
+            for o, b in h2["opponents"].items()
+            if b["verdict"] != "PASS"
+        ]
         parts.append(
-            f"H-PLAN-2 FAILS ({'; '.join(why)}; {costs}): the shield's cost on this "
-            "controller is not shown to be the controller's."
+            f"H-PLAN-2 FAILS ({h2['n_pass']}/{h2['n_opponents']} opponents clear "
+            f"BOTH conjuncts, {h2['pass_min']} needed; short on "
+            f"{'; '.join(short)}; {costs}): the shield's cost on this controller is "
+            "not shown to be the controller's. Under A4.1 the conjunction is PER "
+            "OPPONENT — counted independently the round-wide reading would say "
+            f"cost {h2['round_wide_cost_part']}, gain "
+            f"{h2['round_wide_gain_part']}, and that weaker reading gates nothing."
         )
     parts.append(
         "Reported, not gated (A2.2): the OPEN-column PLAN - LINE capture "
@@ -1094,17 +1355,25 @@ _BULK_KEYS = (
 
 
 def summarize(device: str = "cpu") -> dict:
+    """The round's only reader of numbers (A4.6), run after `--gifs` (CG-C).
+
+    Only MEASURABLE records are summarised (A4.4); everything else in
+    `s19_cells/` is listed as rejected both on stdout and in the artefact, so a
+    smoke or a crashed cell is visible in the record rather than invisible.
+    """
     records = load_records()
+    _measurable, rejected = scan_records()
     null = null_open(device=device)
     v = verdicts(records, null)
     blob = {
         "verdicts": v,
         "direction": direction(v),
+        "rejected_records": rejected,
         "cells": {
             n: {k: val for k, val in r.items() if k not in _BULK_KEYS}
             for n, r in records.items()
         },
-        "provenance": provenance(),
+        "provenance": provenance(device, cgb_status()),
     }
     _write_json(round_file("json"), blob)
     write_figure(records, round_file("png"), null)
