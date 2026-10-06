@@ -144,3 +144,8 @@ its "OPEN difference within the null band" conjunct** — the difference-in-diff
 `8·eps_f32·arena_size = 9.54e-6 m`, the precision of the float32 observation it decodes from; an exact
 test rejected a clear line on seed 1 990 009 and fired the planner on an empty map. Obstacle clearance
 keeps the exact `≤ 0 ⇒ blocked` rule. No bar changed; the prereg was silent.
+
+**A2.1 clarification (2026-10-06, commit `e356ae6`).** "One inflated obstacle radius" is the radius of the
+obstacle **nearest the target point** — the one whose disc blocked the cell. It bounds only the search
+window; the goal is still the nearest free cell, so no reading of this changes a result. After the change:
+`n_unreachable` 359/2554 (14.1 %) → 0/2704 (0.0 %) on the same 20-episode smoke; invariant 50/50; CG-A 0/200.
