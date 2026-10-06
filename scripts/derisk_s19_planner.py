@@ -2,7 +2,7 @@
 controller?
 
 Spec: `docs/pathway/planner_intercept_prereg_2026-10-06.md` INCLUDING amendments
-A1 to A4. Where this module and the prereg+amendments could be read to
+A1 to A5. Where this module and the prereg+amendments could be read to
 disagree, the prereg+amendments win; every such reading is named in a comment.
 
 Evaluation only. Nothing here trains, selects or tunes anything.
@@ -54,6 +54,9 @@ And four things A4 made binding after review:
 - **A4.4-A4.7** a record is measurable only at the pre-registered N and stream;
   a crashed cell is `UNDETERMINED` and never re-run; no rate is printed while
   the cells run; `device` is in provenance.
+- **A5.1** a CG-C caption carries NO measured rate — only per-episode
+  quantities — and `read_cell` refuses a record that is not MEASURABLE.
+- **A5.2** two files claiming one cell reject BOTH, however they are named.
 
 Usage:
   ./venv/bin/python scripts/derisk_s19_planner.py --cells          (all missing)
@@ -341,33 +344,64 @@ def record_status(rec: dict) -> tuple[str, str]:
     return "MEASURABLE", ""
 
 
-def scan_records() -> tuple[dict, dict]:
-    """`(measurable, rejected)`. `rejected` maps the file name to the reason, so
-    a refusal names the file rather than leaving a reader to guess."""
+def scan_records() -> tuple[dict, dict, dict]:
+    """`(measurable, rejected, rejected_by_cell)`.
+
+    `rejected` maps the FILE NAME to the reason, so a refusal names the file
+    rather than leaving a reader to guess. `rejected_by_cell` maps a cell name
+    to the rejected files that claim it: a duplicate pair may be named anything
+    at all, so `run_cells` cannot find it by looking for `{cell}.json`.
+
+    A5.2 — DUPLICATES REJECT BOTH. Keying by `rec["name"]` alone let the
+    lexicographically last of two same-name files win silently, which is a
+    hand-copy lever on the gate number. A cell claimed by more than one file is
+    poisoned: every file claiming it is rejected and none of them is
+    summarised, however many there are.
+    """
     d = cells_dir()
     measurable: dict = {}
+    source: dict = {}  # cell name -> the file the measurable record came from
+    poisoned: set = set()  # cells claimed by more than one file (A5.2)
     rejected: dict = {}
+    by_cell: dict = {}
     if not d.exists():
-        return measurable, rejected
+        return measurable, rejected, by_cell
+
+    def reject(fname: str, cell: str | None, why: str) -> None:
+        rejected[fname] = why
+        if cell in CELLS:
+            by_cell.setdefault(cell, []).append(fname)
+
     for p in sorted(d.glob("*.json")):
         try:
             rec = json.loads(p.read_text())
         except (OSError, json.JSONDecodeError) as exc:
-            rejected[p.name] = f"unreadable: {exc}"
+            reject(p.name, None, f"unreadable: {exc}")
             continue
         status, why = record_status(rec)
-        if status == "MEASURABLE":
-            measurable[rec["name"]] = rec
-        else:
-            rejected[p.name] = f"{status}: {why}"
-    return measurable, rejected
+        name = rec.get("name")
+        if status != "MEASURABLE":
+            reject(p.name, name, f"{status}: {why}")
+            continue
+        if name in poisoned:
+            reject(p.name, name, f"duplicate record for cell {name}")
+            continue
+        if name in measurable:
+            poisoned.add(name)
+            del measurable[name]
+            reject(source.pop(name), name, f"duplicate record for cell {name}")
+            reject(p.name, name, f"duplicate record for cell {name}")
+            continue
+        measurable[name] = rec
+        source[name] = p.name
+    return measurable, rejected, by_cell
 
 
 def load_records(*, quiet: bool = False) -> dict:
     """Only the MEASURABLE records (A4.4). Anything else is dropped and listed
     loudly: a record that is not the pre-registered N on the pre-registered
     stream may not become a gate number by sitting in the right directory."""
-    measurable, rejected = scan_records()
+    measurable, rejected, _by_cell = scan_records()
     if rejected and not quiet:
         print(
             f"REFUSED {len(rejected)} record(s) in {cells_dir()} — not measurable "
@@ -381,16 +415,35 @@ def load_records(*, quiet: bool = False) -> dict:
 
 
 def read_cell(name: str) -> dict:
-    """The cell's record, or SystemExit. A CG-C caption quotes that cell's
-    MEASURED capture and law-pin fraction and is never fabricated."""
+    """The cell's MEASURABLE record, or SystemExit.
+
+    CG-C is watched only for a panel that has actually been measured over the
+    pre-registered N on the pre-registered stream, so A5.1 makes this the same
+    validity test as everything else reads: existence of the file is not
+    enough, and a non-measurable or `UNDETERMINED` record refuses loudly rather
+    than being rendered from (and rather than raising `KeyError` on a field a
+    crash record does not have).
+    """
     path = cell_file(name)
     if not path.exists():
         raise SystemExit(
-            f"no cell record for {name} at {path}: run --cells {name} first. A "
-            "CG-C caption carries that cell's MEASURED capture rate and law-pin "
-            "fraction and is never fabricated (prereg section 5)."
+            f"no cell record for {name} at {path}: run --cells {name} first. "
+            "CG-C is watched per measured panel (prereg section 5)."
         )
-    return json.loads(path.read_text())
+    try:
+        rec = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"cell record {path} is unreadable: {exc}") from exc
+    status, why = record_status(rec)
+    if status != "MEASURABLE":
+        raise SystemExit(
+            f"cell record {path} is not measurable ({status}: {why}), so there "
+            f"is nothing to watch for {name}. A measurable record has "
+            f"n_episodes == {N_EPISODES} and seed0 == {GATE_SEED0} (A4.4); an "
+            "UNDETERMINED cell stays UNDETERMINED under the stop rule and is "
+            "never rendered from (A5.1)."
+        )
+    return rec
 
 
 # ----------------------------------------------------------------------------
@@ -671,14 +724,21 @@ def run_cells(
             f"unknown cell(s): {unknown}; this round's cells are {CELL_ORDER}"
         )
     cells_dir().mkdir(parents=True, exist_ok=True)
-    measurable, rejected = scan_records()
-    blocked = {n: rejected[f"{n}.json"] for n in wanted if f"{n}.json" in rejected}
+    measurable, rejected, by_cell = scan_records()
+    # Keyed by CELL, not by `{cell}.json`: a duplicate pair (A5.2) may be named
+    # anything, so a filename lookup would miss it and the cell would be re-run
+    # beside the files that already claim it.
+    blocked = {
+        n: "; ".join(f"{cells_dir() / f} — {rejected[f]}" for f in by_cell[n])
+        for n in wanted
+        if n in by_cell
+    }
     if blocked:
         raise SystemExit(
             "REFUSED before any episode ran — "
             f"{len(blocked)} requested cell(s) already have a file that is not a "
-            "measurable record of this round (A4.4/A4.5): "
-            + "; ".join(f"{cell_file(n)} — {why}" for n, why in sorted(blocked.items()))
+            "measurable record of this round (A4.4/A4.5/A5.2): "
+            + "; ".join(f"{n}: {why}" for n, why in sorted(blocked.items()))
             + f". A measurable record has n_episodes == {N_EPISODES} and seed0 == "
             f"{GATE_SEED0}. Nothing here overwrites or re-runs it: resolve the "
             "file deliberately (an UNDETERMINED cell stays UNDETERMINED under "
@@ -1362,7 +1422,7 @@ def summarize(device: str = "cpu") -> dict:
     smoke or a crashed cell is visible in the record rather than invisible.
     """
     records = load_records()
-    _measurable, rejected = scan_records()
+    _measurable, rejected, _by_cell = scan_records()
     null = null_open(device=device)
     v = verdicts(records, null)
     blob = {
@@ -1401,9 +1461,14 @@ def summarize(device: str = "cpu") -> dict:
 #     is the behaviour the table summarises — and the frame label carries the
 #     BRANCH, so "the law drove into that wall" is readable off the frame rather
 #     than inferred.
-#   - NO NUMBER IS INVENTED. The caption quotes the cell's MEASURED capture rate
-#     and law-pin fraction out of its record; a panel with no record stops the
-#     pass before a single frame is drawn.
+#   - NO MEASURED RATE IS ON THE FRAME (A5.1). Every number a frame carries is
+#     a property of THAT episode: the branch or outcome tag, the running
+#     `n_unreachable`, the step counter and the env's own outcome. Section 5
+#     says the episodes are watched "before any capture rate is read", and a
+#     caption quoting the cell's rate would hand the watcher the number first.
+#     The rates live in `--summarize` alone. A panel whose record is absent or
+#     not MEASURABLE still stops the pass before a single frame is drawn — the
+#     gate is watched per measured panel — it is just never quoted.
 #
 # Visuals carry NO verdict: nothing in this section writes a cell record, a
 # round artefact or a verdict.
@@ -1423,19 +1488,19 @@ def gif_cell(panel: str) -> str:
     return cell_name(*panel.split("-"), GIF_OPPONENT)
 
 
-def gif_title(panel: str, rec: dict, seed: int) -> str:
-    """The caption: the panel, the episode seed and the cell's two MEASURED
-    numbers. No verdict.
+def gif_title(panel: str, seed: int) -> str:
+    """The caption: the panel and the episode seed, and NO MEASURED RATE (A5.1).
 
-    Two lines, as in S14/S18: the recorder prefixes the branch / outcome tag to
-    the first and `Renderer.draw` appends the step counter to the second, so
-    neither line grows past the frame width."""
-    return (
-        f"{panel} vs {GIF_OPPONENT} · episode {seed}\n"
-        f"measured capture {rec['capture_rate']:.3f} · law pin >= "
-        f"{LAW_PIN_STEPS} {rec['aggregate']['episode_frac_law_pin_ge_40']:.3f} "
-        f"(N={rec['n_episodes']})"
-    )
+    S18's CG4 captions quoted the cell's measured capture and deadlock so that
+    caption and episode described one measurement. A5.1 binds the stricter
+    reading of section 5's "watched before any capture rate is read": a watcher
+    who reads the rate off the frame has read the number before the behaviour,
+    which is the opposite of what the gate is for. What the frames carry is all
+    PER EPISODE — this caption, the branch or outcome tag the recorder prefixes,
+    the running `n_unreachable` it appends, and the step counter and env outcome
+    `Renderer.draw` adds. The measured rates appear only in `--summarize`.
+    """
+    return f"{panel} vs {GIF_OPPONENT} · episode {seed}"
 
 
 class CellRecorder(BranchTaggedSearchMDP):
@@ -1481,6 +1546,14 @@ class CellRecorder(BranchTaggedSearchMDP):
             )
         )
 
+    def caption(self, tag: str) -> str:
+        """`[tag] {label} · unreachable N` — every part of it a property of THIS
+        episode, so A5.1's "no measured rate in a CG-C frame" holds by
+        construction. `n_unreachable` is the planner's A2.1 residual, running;
+        `n/a` on the LINE row, whose law has no such counter."""
+        n = getattr(self.law, "n_unreachable", None)
+        return f"[{tag}] {self.label} · unreachable {'n/a' if n is None else n}"
+
     def _step_inner(self, action, branch: str = "law"):
         cfg, env = self.cfg, self.inner.env
         self._t.append("pursuer", *env.pursuer_pose[:2])
@@ -1495,14 +1568,14 @@ class CellRecorder(BranchTaggedSearchMDP):
             info=self._last_sinfo,
         )
         if env.current_step % self.every == 0:
-            self._draw(f"[{branch}] {self.label}")
+            self._draw(self.caption(branch))
         return out
 
     def finish(self, outcome: str, step: int, hold_frames: int = 10) -> None:
         """Freeze the last state so the outcome is readable, then close the
         figure (one figure per episode, 12 of them)."""
         for _ in range(hold_frames):
-            self._draw(f"[{outcome.upper()} @ {step}] {self.label}")
+            self._draw(self.caption(f"{outcome.upper()} @ {step}"))
         self._r.close()
 
 
@@ -1541,8 +1614,9 @@ def write_gifs(
 
     `names` are PANEL names (`LINE-OPEN`, `PLAN-SHIELD`, ...), which is what a
     GIF's filename is keyed on. An episode whose GIF exists is skipped; a panel
-    with no cell record stops the pass BEFORE anything renders rather than being
-    captioned with a guess. Nothing here writes a record or a verdict."""
+    whose record is missing or not MEASURABLE stops the pass BEFORE anything
+    renders (A5.1). No caption carries a measured rate. Nothing here writes a
+    record or a verdict."""
     from pe2.render import save_gif
 
     wanted = list(PANELS) if not names else list(names)
@@ -1560,8 +1634,11 @@ def write_gifs(
     # Every precondition of every remaining episode resolved before the first
     # frame: a pass that renders two panels and then refuses on the third leaves
     # a half-watched gate, and a half-watched gate is how a construct error
-    # survives (D125).
-    prepared = {p: read_cell(gif_cell(p)) for p in dict.fromkeys(p for p, _ in todo)}
+    # survives (D125). The records are read to VALIDATE that each panel has been
+    # measured over the pre-registered N on the pre-registered stream — under
+    # A5.1 nothing from them reaches the caption.
+    for p in dict.fromkeys(p for p, _ in todo):
+        read_cell(gif_cell(p))
     n_all = len(wanted) * GIF_N
     print(
         f"{len(todo)}/{n_all} GIFs to render ({n_all - len(todo)} already exist), "
@@ -1572,9 +1649,7 @@ def write_gifs(
     )
     gifs_dir().mkdir(parents=True, exist_ok=True)
     for panel, seed in todo:
-        frames, log = render_panel(
-            panel, seed, gif_title(panel, prepared[panel], seed), device, every
-        )
+        frames, log = render_panel(panel, seed, gif_title(panel, seed), device, every)
         path = gif_path(panel, seed)
         save_gif(frames, str(path), fps=fps)
         print(

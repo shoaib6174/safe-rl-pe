@@ -1,7 +1,7 @@
 """scripts/derisk_s19_planner.py — the S19 round's cell table and verdicts.
 
 Spec: docs/pathway/planner_intercept_prereg_2026-10-06.md INCLUDING amendments
-A1 to A4. Everything here is either a constant the prereg fixes, a verdict rule
+A1 to A5. Everything here is either a constant the prereg fixes, a verdict rule
 it states, or one of the properties the round's only claim rests on:
 
 - the cell table really is 2 x 2 x 3, and the ONLY differences between the rows
@@ -21,8 +21,10 @@ it states, or one of the properties the round's only claim rests on:
 - A4.4/A4.5: a record at the wrong N or stream is REFUSED (not skipped as done,
   not overwritten, never summarised), and a crashed cell is UNDETERMINED and
   never re-run;
-- A4.6: no rate is printed while the cells run, and `--gifs` dispatches before
-  `--summarize`;
+- A4.6/A5.1: no rate is printed while the cells run and no measured rate reaches
+  a CG-C caption, and `--gifs` dispatches before `--summarize`; `read_cell`
+  refuses a non-measurable or UNDETERMINED record instead of captioning from it;
+- A5.2: two files claiming one cell reject BOTH, however they are named;
 - the provenance of every record carries the pre-registration's sha256 and the
   device (A4.7).
 
@@ -449,6 +451,70 @@ class TestRecordValidity:
         R.run_cells(["LINE-SHIELD_GREEDY", "LINE-SHIELD_HUG"])
         assert calls == ["LINE-SHIELD_GREEDY", "LINE-SHIELD_HUG"]
         assert list(R.load_records()) == ["LINE-SHIELD_HUG"]
+
+    def test_two_files_claiming_one_cell_reject_both(self, tmp_path, monkeypatch):
+        """A5.2: keying by `rec["name"]` let the lexicographically last of two
+        same-name files win silently — a hand-copy lever on the gate number.
+        Neither may be summarised, and the cell is not re-run either."""
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _pass_cgb(monkeypatch)
+        rec = _measurable_record("LINE-SHIELD_GREEDY")
+        _on_disk(tmp_path, rec)  # LINE-SHIELD_GREEDY.json
+        _on_disk(tmp_path, rec | {"capture_rate": 0.99}, name="a_copy")
+        measurable, rejected, by_cell = R.scan_records()
+        assert measurable == {}
+        assert set(rejected) == {"LINE-SHIELD_GREEDY.json", "a_copy.json"}
+        assert set(rejected.values()) == {
+            "duplicate record for cell LINE-SHIELD_GREEDY"
+        }
+        assert sorted(by_cell["LINE-SHIELD_GREEDY"]) == [
+            "LINE-SHIELD_GREEDY.json",
+            "a_copy.json",
+        ]
+        assert R.load_records() == {}
+        monkeypatch.setattr(
+            R, "run_cell", lambda *a, **k: pytest.fail("re-ran a duplicated cell")
+        )
+        with pytest.raises(SystemExit, match="duplicate record"):
+            R.run_cells(["LINE-SHIELD_GREEDY"])
+
+    def test_a_duplicate_named_anything_still_blocks_the_cell(
+        self, tmp_path, monkeypatch
+    ):
+        """The pair need not include `{cell}.json`, so the refusal is keyed on
+        the CELL and not on the file name."""
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _pass_cgb(monkeypatch)
+        rec = _measurable_record("PLAN-SHIELD_ATK")
+        _on_disk(tmp_path, rec, name="one")
+        _on_disk(tmp_path, rec, name="two")
+        assert not (tmp_path / "s19_cells" / "PLAN-SHIELD_ATK.json").exists()
+        monkeypatch.setattr(
+            R, "run_cell", lambda *a, **k: pytest.fail("re-ran a duplicated cell")
+        )
+        with pytest.raises(SystemExit, match="duplicate record"):
+            R.run_cells(["PLAN-SHIELD_ATK"])
+
+    def test_a_third_copy_does_not_resurrect_the_cell(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        rec = _measurable_record("LINE-OPEN_HUG")
+        for name in ("a", "b", "c"):
+            _on_disk(tmp_path, rec, name=name)
+        measurable, rejected, _by_cell = R.scan_records()
+        assert measurable == {}
+        assert set(rejected) == {"a.json", "b.json", "c.json"}
+
+    def test_duplicates_are_never_summarised(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        monkeypatch.setattr(R, "null_open", lambda **k: dict(HOLDS))
+        for name in R.CELL_ORDER:
+            _on_disk(tmp_path, _measurable_record(name))
+        _on_disk(tmp_path, _measurable_record("LINE-SHIELD_GREEDY"), name="copy")
+        blob = R.summarize()
+        assert blob["verdicts"]["n_records"] == 11
+        assert blob["verdicts"]["missing"] == ["LINE-SHIELD_GREEDY"]
+        assert len(blob["rejected_records"]) == 2
+        assert blob["verdicts"]["h_plan_1"]["verdict"] == "INCOMPLETE"
 
     def test_a_measurable_record_is_skipped_as_done(self, tmp_path, monkeypatch):
         monkeypatch.setattr(R, "OUT", tmp_path)
@@ -1083,21 +1149,99 @@ class TestGifs:
             raise AssertionError("a frame was rendered before the refusal")
 
         monkeypatch.setattr(R, "render_panel", _boom)
-        with pytest.raises(SystemExit, match="never fabricated"):
+        with pytest.raises(SystemExit, match="no cell record"):
             R.write_gifs(["PLAN-SHIELD"])
+
+    @pytest.mark.parametrize(
+        ("overrides", "match"),
+        [
+            ({"n_episodes": 20}, "not measurable"),
+            ({"seed0": 1_990_000}, "not measurable"),
+            ({"verdict": R.UNDETERMINED, "n_episodes": 0}, "UNDETERMINED"),
+        ],
+    )
+    def test_a_non_measurable_record_refuses_rather_than_captioning(
+        self, tmp_path, monkeypatch, overrides, match
+    ):
+        """A5.1: existence of the file is not enough. An UNDETERMINED record in
+        particular has no `capture_rate` or `aggregate` at all, so the old
+        existence-only gate would have raised KeyError mid-render instead of
+        refusing."""
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _on_disk(tmp_path, _measurable_record("PLAN-SHIELD_GREEDY") | overrides)
+        monkeypatch.setattr(
+            R, "render_panel", lambda *a, **k: pytest.fail("rendered from a bad record")
+        )
+        with pytest.raises(SystemExit, match=match):
+            R.write_gifs(["PLAN-SHIELD"])
+        with pytest.raises(SystemExit, match=match):
+            R.read_cell("PLAN-SHIELD_GREEDY")
+
+    def test_read_cell_returns_a_measurable_record(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _on_disk(tmp_path, _measurable_record("PLAN-SHIELD_GREEDY"))
+        assert R.read_cell("PLAN-SHIELD_GREEDY")["n_episodes"] == R.N_EPISODES
 
     def test_unknown_panel_refuses(self, tmp_path, monkeypatch):
         monkeypatch.setattr(R, "OUT", tmp_path)
         with pytest.raises(SystemExit, match="unknown panel"):
             R.write_gifs(["PLAN-SHIELD_GREEDY"])
 
-    def test_the_title_quotes_measured_numbers_only(self):
-        rec = _cell("PLAN-SHIELD_GREEDY", 0.6, pin_frac=0.1)
-        title = R.gif_title("PLAN-SHIELD", rec, 1_990_000)
-        assert "PLAN-SHIELD vs GREEDY" in title
-        assert "episode 1990000" in title
-        assert "0.600" in title and "0.100" in title
-        assert "PASS" not in title and "FAIL" not in title  # no verdict
+    def test_the_caption_carries_no_measured_rate(self):
+        """A5.1: section 5 has the episodes watched BEFORE any capture rate is
+        read, so a caption quoting the cell's rate hands the watcher the number
+        first. The caption is the panel and the seed; everything else a frame
+        shows is a property of that episode."""
+        title = R.gif_title("PLAN-SHIELD", 1_990_000)
+        assert title == "PLAN-SHIELD vs GREEDY · episode 1990000"
+        assert "\n" not in title
+        # no rate, no fraction, no N, no verdict
+        rec = _measurable_record("PLAN-SHIELD_GREEDY")
+        for forbidden in (
+            "capture",
+            "law pin",
+            "measured",
+            "N=",
+            f"{rec['capture_rate']:.3f}",
+            "PASS",
+            "FAIL",
+        ):
+            assert forbidden not in title
+        # and nothing in the signature can reach a record any more
+        assert "rec" not in R.gif_title.__code__.co_varnames
+
+    def test_the_frame_caption_adds_only_per_episode_quantities(self, monkeypatch):
+        """What the recorder puts on a frame: the branch or outcome tag, the
+        caption, and the planner's running `n_unreachable` (A5.1)."""
+        monkeypatch.setattr(R, "opponent_factory", lambda *a, **k: _still_evader)
+        cfg = R.cell_config()
+        plan = R.CellRecorder(
+            cfg,
+            None,
+            label=R.gif_title("PLAN-SHIELD", 1_990_000),
+            hold=HOLD,
+            shield=R.build_shield(cfg),
+            shield_obs=R.SHIELD_OBS,
+            escape_obs=R.ESCAPE_OBS,
+            reward_wrapper=None,
+            law=R.row_law("PLAN", cfg),
+        )
+        assert plan.caption("law") == (
+            "[law] PLAN-SHIELD vs GREEDY · episode 1990000 · unreachable 0"
+        )
+        assert "capture" not in plan.caption("CAPTURE @ 12")
+        line = R.CellRecorder(
+            cfg,
+            None,
+            label=R.gif_title("LINE-SHIELD", 1_990_000),
+            hold=HOLD,
+            shield=R.build_shield(cfg),
+            reward_wrapper=None,
+            law=R.row_law("LINE", cfg),
+        )
+        # `InterceptLaw` has no such counter, and the frame says so rather than
+        # showing a 0 that would read as "the planner never fell back"
+        assert line.caption("search").endswith("· unreachable n/a")
 
     def test_existing_gifs_are_skipped(self, tmp_path, monkeypatch):
         monkeypatch.setattr(R, "OUT", tmp_path)
