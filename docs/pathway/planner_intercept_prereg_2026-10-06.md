@@ -213,3 +213,26 @@ committed to `scripts/` so it is provenance, not a file on a desk.
 and never summarised. **A4.5 — a crashed cell writes `UNDETERMINED`** and is never re-run (§7).
 **A4.6 — no capture rate is printed during `--cells`**; the only reader of the numbers is `--summarize`,
 which runs after `--gifs` (CG-C). **A4.7 — `device` is in provenance.**
+
+---
+
+## Amendment A5 (2026-10-06, before any S19 gate number exists) — re-review rulings
+
+Scoped re-review of commit `dadf9f3`: all seven A4 findings RESOLVED; three new, none able to alter a
+recorded number.
+
+**A5.1 — CG-C captions carry NO measured rate.** S18's CG4 captions quoted each cell's measured capture and
+deadlock (S18 A3.4, so that caption and episode described one measurement). That reading is in tension with
+§5's "watched before any capture rate is read": the watcher sees the number before the behaviour. For S19
+the stricter reading binds — captions carry panel, seed, the episode's own outcome and step count, and
+`n_unreachable`; the measured rates appear only in `--summarize`. `read_cell` (used by `--gifs`) must refuse
+a non-measurable or UNDETERMINED record rather than caption from it.
+
+**A5.2 — duplicate records for one cell reject BOTH.** `scan_records` keyed by name let the
+lexicographically-last of two same-name files win silently — a hand-copy lever. Both files go to
+`rejected` with the reason.
+
+**A5.3 — the launch wrapper must link `results/`.** `OUT` is cwd-relative and the frozen worktree's
+`results/` is gitignored; without the symlink CG-B reads 0/0 and refuses (fail-closed, but a blocked launch)
+and a hand-made directory would split the record root. The wrapper now creates the symlink and refuses
+unless `$WT/results` is a symlink to the main tree's `results/`. My error.

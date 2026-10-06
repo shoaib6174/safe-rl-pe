@@ -18,6 +18,10 @@ PY
 echo "CG-B: $pass/$n cells reproduce S18 exactly"
 if [ "$n" -lt 36 ] || [ "$pass" -lt 36 ]; then echo "REFUSED: CG-B requires 36/36"; exit 1; fi
 [ -d "$WT" ] || { echo "REFUSED: no frozen worktree at $WT"; exit 1; }
+# A5.3: OUT is cwd-relative and the worktree's results/ is gitignored -- link it to the ONE record root
+[ -e "$WT/results" ] || ln -s "$MAIN/results" "$WT/results"
+[ -L "$WT/results" ] && [ "$(readlink -f "$WT/results")" = "$(readlink -f "$MAIN/results")" ] \
+  || { echo "REFUSED: $WT/results is not a symlink to $MAIN/results"; exit 1; }
 cd $WT && echo "frozen at $(git rev-parse --short HEAD)"
 # 4 chains, disjoint literal cell lists; OMP 4 each = 16 threads
 nohup env PYTHONPATH=$WT OMP_NUM_THREADS=4 $V -u scripts/derisk_s19_planner.py --cells LINE-OPEN_GREEDY LINE-OPEN_HUG LINE-OPEN_ATK > /home/niro-1/s19_logs/s19_c0.log 2>&1 &
