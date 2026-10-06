@@ -91,3 +91,24 @@ the number they touch exists, appended here with a timestamp. A crashed cell is 
 
 `results/derisk/s19_cells.json` (per cell × opponent), `s19_round.{json,png}`, `s19_construct.json`,
 `s19_gifs/`, `s19_paths.png`. Launched from a frozen worktree at the commit that passes CG-A and CG-B.
+
+---
+
+## Amendment A1 (2026-10-06, before any S19 number exists)
+
+Raised by the recorder's reproduction run on S18 `SPARSE-PEN-70` vs `GREEDY` (D139), not by any S19 data.
+
+**A1.1 — H-PLAN-3's statistic had no power.** The law's longest pinned run has **median 0** on that cell:
+only 85/500 episodes carry any law pin at all; it is a heavy tail, not a typical episode. "Median falls by
+≥ 50 %" would read 0 against 0 — the same uninformative shape as S17's H3 (D131). **H-PLAN-3 is restated:**
+the **fraction of episodes with a law-branch pinned run ≥ 40 steps** (`aggregate.episode_frac_law_pin_ge_40`,
+already recorded; 0.152 on the reference cell) falls by ≥ 50 % relative, PLAN vs LINE, SHIELD, on ≥ 2/3
+opponents. The median and the 90th percentile of the longest law run are reported beside it, not gated.
+
+**A1.2 — intervention scope is the all-step scope.** S18's `intervention.total` began at the first learner
+decision (`step()` zeroes the accumulator), omitting the law steps before it — 9.3 % of the magnitude on
+the reference cell, all law. S19 is evaluation-only and uses the recorder's `intervention_total` (every
+step). Any comparison to an S18 number must say which scope it uses.
+
+**A1.3 — record schema.** `longest_pinned_run` is an int with `branch_at_start` as a sibling key (`None`
+when no immobile step), per the implementation; the runner reads that schema.
