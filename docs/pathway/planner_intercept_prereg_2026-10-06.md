@@ -149,3 +149,37 @@ keeps the exact `≤ 0 ⇒ blocked` rule. No bar changed; the prereg was silent.
 obstacle **nearest the target point** — the one whose disc blocked the cell. It bounds only the search
 window; the goal is still the nearest free cell, so no reading of this changes a result. After the change:
 `n_unreachable` 359/2554 (14.1 %) → 0/2704 (0.0 %) on the same 20-episode smoke; invariant 50/50; CG-A 0/200.
+
+---
+
+## Amendment A3 (2026-10-06, before any S19 gate number exists) — runner rulings
+
+From the runner implementation (commit `fa3b0d9`, 63 tests). Rulings on its stated readings:
+
+**A3.1 — the NULL runs on an obstacle-free arena, not `pe2/scenarios.py`.** §4's phrase "open-arena
+scenarios of `pe2/scenarios.py`" cannot implement the invariant: `close_open` / `mid_open` / `far_open`
+are start geometries on the canonical two-obstacle layout ("open" = clear line of sight at the start). A2.2
+already restated the NULL as the obstacle-free bit-identity; the runner implements that
+(`EnvConfig(n_physical_obstacles=0)`, 50 construct seeds, `OrbitSearch`, `==` on the full log including
+`branch`, built through the round's own `build_cell_env`). §4's wording is superseded.
+
+**A3.2 — CG-B is enforced at launch, not in the runner.** The runner does not read the replay artefact.
+The launch script refuses to start any cell unless all 36 `s18_branch_split_*.json` carry an exact
+reproduction PASS, and prints the tally into the launch log. A manual gate is weaker than a mechanical one
+and this is recorded as such.
+
+**A3.3 — H-PLAN-3 VACUOUS scope.** Per opponent: LINE fraction 0 → that opponent is VACUOUS (never PASS,
+never FAIL). Overall: PASS on ≥ 2 real passes; VACUOUS (not FAIL) when real passes < 2 but
+passes + vacuous ≥ 2 — the shortfall is an absent phenomenon, not evidence against the planner. Accepted as
+the reading closest to A1's intent.
+
+**A3.4 — OPEN-column pin/intervention fields are structurally zero** (no shield → the recorder writes its
+"nothing acted" record). H-PLAN-3 and H-SAFE are SHIELD-only; the OPEN contact count is reported, not gated.
+"OPEN has no law pins" is not a finding.
+
+**A3.5 — contact counting.** `pe2.metrics.summarize_shield` refuses shield-less logs, so contact steps
+come from `SearchMDP.episode_violations` in both columns (the env's own contact predicates, every step).
+
+**Disclosure.** The implementer ran a 4-cell smoke at N = 20 vs `GREEDY` (not a gate; N not
+pre-registered): LINE-SHIELD capture 0.25 / law-pin fraction 0.25; PLAN-SHIELD 0.25 / 0.00; LINE-OPEN
+0.30; PLAN-OPEN 0.25; mean all-step intervention 552 → 210 under the shield. Seen; must anchor nothing.
