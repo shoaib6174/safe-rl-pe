@@ -118,3 +118,11 @@ behavioural tests — no selector, no learning, no numbers that gate anything.
 - ORBIT's keeping rate is measured against the S19 `PLAN` chaser; the chaser is named in the test so it
   cannot be swapped silently. Speed-agnostic assertion passed at 0.8 / 1.0 / 1.2.
 - **For S24.1's pre-registration (from review):** neither adapter calls `applicable()` before running a tactic; a learned selector must be constrained (action mask) to applicable tactics, and an inapplicable pick is a logged event, never a silent `None`.
+
+## S24.0 Step 2 — belief gate FAILED (D145); gate 2 pre-registered (2026-10-13, before it runs)
+The pre-registered gate scored the belief MEAN; it fails on both opponents. The consumers of the belief
+(`SWEEP`, `AMBUSH`) read the strongest MODE. **Gate 2, written now:** on the same 200 paired episodes and
+the same occluded steps, the error of the particle belief's `mode` to the true position must have a
+LOWER median than dead-reckoning's point estimate on both opponents. Also reported, not gated: the
+after-first-sighting split for the mode. If gate 2 fails, `LastSeenBelief` is the memory for every S24
+round and the particle belief is shelved with both numbers on record. One run; no other change.
