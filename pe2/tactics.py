@@ -8,7 +8,7 @@ Nothing here selects, learns or scores; the v0 rule table and the learned
 selector are later steps, and `select` is injected into the two adapters.
 
 Every tactic WRAPS a primitive this repo already has (`GreedyEvader`,
-`ObstacleHuggingEvader`'s two hug modes, `PlannerInterceptLaw` /
+`ObstacleHuggingEvader`'s hug-circle mode, `PlannerInterceptLaw` /
 `LeadPlannerInterceptLaw` and their A* planning, `OrbitSearch`, `is_visible`)
 and adds only the precondition, the termination predicate and — for the two
 mirrored-goal tactics — the goal point.
@@ -38,6 +38,8 @@ from pe2.planner import LeadPlannerInterceptLaw, PlannerInterceptLaw
 from pe2.scripted import (
     HUG_CLEARANCE,
     HUG_THREAT_RANGE,
+    RADIAL_CLIP,
+    RADIAL_GAIN,
     GreedyEvader,
     ObstacleHuggingEvader,
 )
@@ -185,6 +187,32 @@ def counter_orbit_goal(
     c = np.array([obstacle["x"], obstacle["y"]], dtype=float)
     goal = c + hug_radius(obstacle, agent_radius) * np.array([np.cos(phi), np.sin(phi)])
     return goal, remaining
+
+
+def wall_slide_direction(own_xy, opp_xy, lim: float, band: float) -> np.ndarray:
+    """Press toward the nearest arena wall and slide along it away from the
+    opponent: the tangent the opponent is NOT on, plus a clipped radial pull
+    toward a standoff of `band` past the inset bound `lim`.
+
+    The same shape as `ObstacleHuggingEvader._boundary_hug` (tangent plus
+    RADIAL_GAIN times a RADIAL_CLIP-limited radial error, exact tie slides +),
+    but with the band as an argument instead of that law's `WALL_HUG_BAND`.
+    The law is a gate opponent in three completed rounds and stays frozen;
+    its 0.35 m standoff from a bound already inset by `agent_radius` is 0.50 m
+    from the wall, which is not "pressed against" it."""
+    own = np.asarray(own_xy, dtype=float)[:2]
+    opp = np.asarray(opp_xy, dtype=float)[:2]
+    walls = (
+        (np.array([1.0, 0.0]), lim - own[0]),
+        (np.array([-1.0, 0.0]), own[0] + lim),
+        (np.array([0.0, 1.0]), lim - own[1]),
+        (np.array([0.0, -1.0]), own[1] + lim),
+    )
+    outward, dist = min(walls, key=lambda w: w[1])
+    tangent = np.array([-outward[1], outward[0]])
+    sign = 1.0 if float(tangent @ (own - opp)) >= 0.0 else -1.0
+    radial = np.clip(dist - band, -RADIAL_CLIP, RADIAL_CLIP) * outward
+    return sign * tangent + RADIAL_GAIN * radial
 
 
 def _evader_command(direction, pose, cfg: EnvConfig) -> tuple[float, float]:
@@ -395,12 +423,22 @@ class Hop(EvaderTactic):
 
 
 class WallSlide(EvaderTactic):
-    """`ObstacleHuggingEvader`'s wall mode: press against the nearest wall and
-    slide along it away from the pursuer. DONE when the pursuer is farther than
-    HUG_THREAT_RANGE (which is also the precondition — there is always a
-    nearest wall, so only the threat makes hugging one a tactic)."""
+    """Press against the nearest wall and slide along it away from the pursuer
+    (`wall_slide_direction`). DONE when the pursuer is farther than
+    HUG_THREAT_RANGE, which is also the precondition: there is always a nearest
+    wall, so only the threat makes hugging one a tactic.
+
+    `band` is this tactic's OWN standoff past the arena bound already inset by
+    `agent_radius` — the default 0.10 m puts the body 0.25 m from the wall,
+    which is what "pressed against it" means here. It is a constructor
+    argument rather than `ObstacleHuggingEvader`'s `WALL_HUG_BAND` because that
+    law is a frozen gate opponent and its 0.35 m leaves a 0.50 m standoff."""
 
     name = "WALL-SLIDE"
+
+    def __init__(self, cfg: EnvConfig, band: float = 0.10) -> None:
+        super().__init__(cfg)
+        self.band = float(band)
 
     def _threatened(self, env) -> bool:
         gap = env.evader_pose[:2] - env.pursuer_pose[:2]
@@ -412,11 +450,15 @@ class WallSlide(EvaderTactic):
     def act(self, obs, env):
         if not self._threatened(env):
             return None
-        direction = ObstacleHuggingEvader._boundary_hug(
-            env.evader_pose[:2], env.pursuer_pose[:2], env
+        cfg = env.cfg
+        direction = wall_slide_direction(
+            env.evader_pose[:2],
+            env.pursuer_pose[:2],
+            cfg.arena_size / 2.0 - cfg.agent_radius,
+            self.band,
         )
         self.steps += 1
-        return _evader_command(direction, env.evader_pose, env.cfg)
+        return _evader_command(direction, env.evader_pose, cfg)
 
 
 class HoldHidden(EvaderTactic):
