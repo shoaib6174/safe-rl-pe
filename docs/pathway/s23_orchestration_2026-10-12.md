@@ -18,7 +18,7 @@ finish the current step, report, stop.
 ## Steps and budget
 | # | step | model (impl / review) | budget | actual | status |
 |---|---|---|---|---|---|
-| 1 | `LEAD-τ` + velocity estimate + CG-S1 identity test | opus / sonnet | 230 k | | |
+| 1 | `LEAD-τ` + velocity estimate + CG-S1 identity test | opus / sonnet | 230 k | 110 k impl | `8769115`; CG-S1 50/50 both τ; differs vs Greedy 42/50; review pending |
 | 2 | §3 isolated-obstacle diagnostic (`PLAN`, `LEAD-0.5`, `LEAD-1.0`), reading written first | opus / sonnet | 180 k | | |
 | — | **Decision:** build `MPC-H` only if the diagnostic says the orbit is not already broken by `LEAD` | me | — | | |
 | 3 | `MPC-H` vectorised sampling planner + CG-S1 for it (conditional) | opus / opus | 500 k | | |
@@ -31,3 +31,4 @@ finish the current step, report, stop.
 
 ## Log
 - 2026-10-12: ledger opened; Step 1 dispatched.
+- Step 1 landed (110 k). Accepted deviation: 'exactly zero' velocity uses the module's decoding-precision tolerance (9.54e-6 m/step; measured stationary jitter 2.2e-6) — without it CG-S1 fails in the last ulps. Step index from env.current_step (a call counter would invent velocity across a learner's hold span).
