@@ -122,6 +122,80 @@ def pursuer_step(
     return new_pose, wall_contact, obstacle_contact
 
 
+def pursuer_step_batch(
+    poses,
+    v,
+    omega,
+    cfg: EnvConfig,
+    obstacles: list[dict],
+    x_lim: tuple[float, float],
+    y_lim: tuple[float, float],
+):
+    """`pursuer_step` for a BATCH of (pose, v, omega) -- the same arithmetic,
+    vectorised over a leading axis, bit for bit.
+
+    `pe2.planner.MpcInterceptLaw` rolls K = 64 candidate action sequences over
+    H = 40 steps on EVERY law call; 2560 scalar calls per call is ~100x too slow
+    for an evaluation round, so this is a second copy of the dynamics. It is
+    bound to the scalar one by
+    `test_pursuer_step_batch_equals_the_scalar_law_bitwise`
+    (tests/pe2/test_mpc_law.py), exactly as
+    `test_hard_rows_equal_env_predicates_bitwise` binds the shield's transcription
+    of `euler_step` -- change either copy without re-running it and the identity
+    is unverified. Keep the operation order of `pursuer_step`, element for element.
+
+    `poses` is (N, 3); `v` and `omega` are (N,). Returns the (N, 3) new poses and
+    the two (N,) contact flags.
+    """
+    x_min, x_max = x_lim
+    y_min, y_max = y_lim
+    poses = np.asarray(poses, dtype=float)
+    v = np.asarray(v, dtype=float)
+    omega = np.asarray(omega, dtype=float)
+
+    # euler_step, elementwise: (v * cos) * dt, then + x.
+    x = poses[:, 0] + v * np.cos(poses[:, 2]) * cfg.dt
+    y = poses[:, 1] + v * np.sin(poses[:, 2]) * cfg.dt
+    theta = wrap_angle(poses[:, 2] + omega * cfg.dt)
+
+    # The scalar form is `if x < x_min ... elif x > x_max`; x_min < x_max, so at
+    # most one branch can fire and the pair is exactly a clip -- and the clip
+    # changes the value if and only if one of them would have fired, which is
+    # the flag (four comparisons per rolled step saved; the rollout runs 40).
+    cx = np.clip(x, x_min, x_max)
+    cy = np.clip(y, y_min, y_max)
+    wall_contact = (cx != x) | (cy != y)
+    x, y = cx, cy
+
+    obstacle_contact = np.zeros(x.shape, dtype=bool)
+    for _ in range(3):
+        resolved_any = False
+        for obs in obstacles:
+            dx = x - obs["x"]
+            dy = y - obs["y"]
+            dist = np.hypot(dx, dy)
+            min_dist = obs["radius"] + cfg.agent_radius
+            hit = dist < min_dist
+            if not hit.any():
+                continue  # this obstacle resolved nothing for any element
+            resolved_any = True
+            obstacle_contact |= hit
+            degenerate = dist < 1e-10
+            safe = np.where(degenerate, 1.0, dist)
+            nx = np.where(degenerate, np.cos(theta), dx / safe)
+            ny = np.where(degenerate, np.sin(theta), dy / safe)
+            x = np.where(hit, obs["x"] + nx * min_dist, x)
+            y = np.where(hit, obs["y"] + ny * min_dist, y)
+        if not resolved_any:
+            break
+    # The per-element loop in `pursuer_step` stops as soon as THAT element is
+    # resolved; here an already-resolved element simply has `hit` False in every
+    # later pass, so the fixed point reached is the same one.
+    x = np.clip(x, x_min, x_max)
+    y = np.clip(y, y_min, y_max)
+    return np.stack((x, y, theta), axis=1), wall_contact, obstacle_contact
+
+
 class PursuitEvasionEnv(gym.Env):
     """1v1 pursuit-evasion with unicycle dynamics in a bounded arena."""
 

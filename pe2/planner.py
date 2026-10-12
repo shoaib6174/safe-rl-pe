@@ -16,12 +16,14 @@ itself-plus-planning.
 
 from __future__ import annotations
 
+import hashlib
 import heapq
 from itertools import pairwise
 
 import numpy as np
 
 from pe2.config import EnvConfig
+from pe2.env import pursuer_step_batch
 from pe2.structured import (
     K_OMEGA,
     LAST_SEEN_TOL,
@@ -410,3 +412,182 @@ class LeadPlannerInterceptLaw(PlannerInterceptLaw):
         self.last_seen = pos  # as the parent's visible branch would have set it
         self.last_aim = self._aim_point(pos, v_est)
         return self._steer_toward(own_pose_from_obs(obs, self.cfg), self.last_aim)
+
+
+# -- MPC-H (plan sections 1 and 2) -------------------------------------------
+MPC_HORIZON = 2.0  # s, H -- 40 env steps at dt = 0.05
+MPC_HOLD = 10  # env steps one sampled (v, omega) is held for
+MPC_K = 64  # sampled action sequences per call, INCLUDING the direct one
+MPC_PATH_WEIGHT = 0.01  # cost per metre of predicted path
+
+
+def _episode_entropy(env) -> int:
+    """A 64-bit digest of the env's RNG state as `reset(env=...)` finds it.
+
+    The law's sampling must be a deterministic function of the episode, and
+    Gymnasium does not keep the integer seed `reset(seed=...)` was given. The
+    bit generator's state after the episode's obstacles and initial poses were
+    drawn IS such a function (`SearchMDP._begin` resets the env, then the law),
+    and reading it consumes nothing, so the episode itself is unchanged.
+    0 on the map-only unit path, where there is no env.
+    """
+    rng = getattr(env, "np_random", None)
+    if rng is None:
+        return 0
+    digest = hashlib.blake2b(
+        repr(rng.bit_generator.state).encode(), digest_size=8
+    ).digest()
+    return int.from_bytes(digest, "big")
+
+
+class MpcInterceptLaw(LeadPlannerInterceptLaw):
+    """`LeadPlannerInterceptLaw` with the fixed-tau aim point replaced by a
+    sampled short-horizon plan over the environment's OWN dynamics.
+
+    Spec: docs/pathway/pursuit_strategy_plan_2026-10-12.md sections 1, 2 and 4.
+    `LEAD` aims one fixed tau ahead; this law asks whether H = 2 s of reasoning
+    over `pe2.env.pursuer_step` finds the cut-off, the reversal or the
+    wall-cornering by itself. The opponent model is inertia and nothing else
+    (section 2): the evader is predicted at constant velocity from the
+    inherited estimate, clipped into the inset arena.
+
+    Per call: K action sequences of `n_seg` segments of `hold` constant steps,
+    K - 1 drawn uniformly from the action box and one -- row 0 -- the parent's
+    own action held throughout, so the plan can never cost more than the
+    parent's on its own cost and exact ties resolve to the parent. Cost is the
+    minimum predicted pursuer-evader distance over the horizon, zeroed at
+    capture and tie-broken by the earliest capture step, plus
+    MPC_PATH_WEIGHT x path length; +inf if any predicted state contacts a wall
+    or an inflated obstacle. The first segment of the winner is executed for
+    THIS step only -- replanned every call, no commitment.
+
+    ONE variable (CG-S1): when the evader is not visible, or the inherited
+    velocity estimate reads as zero under the module's decoding tolerance,
+    the call is the parent's -- which is `PlannerInterceptLaw`'s -- so the
+    action is bit-identical to `PLAN`. The sampling runs only when `v_est` is
+    nonzero. Since the path term is at most MPC_PATH_WEIGHT x v_max x H = 0.02
+    and a non-capturing cost is at least the 0.30 m capture distance,
+    `last_cost < cfg.capture_distance` iff the chosen plan captures.
+    """
+
+    def __init__(
+        self,
+        cfg: EnvConfig,
+        horizon: float = MPC_HORIZON,
+        k: int = MPC_K,
+        hold: int = MPC_HOLD,
+    ) -> None:
+        # tau = the horizon: row 0 is the parent's lead action, and the lead a
+        # constant-velocity plan is implicitly compared against is the one over
+        # the same H. `_aim_point` is otherwise unused by this law.
+        super().__init__(cfg, tau=horizon)
+        self.k = int(k)
+        self.hold = int(hold)
+        self.h_steps = round(float(horizon) / cfg.dt)
+        if self.h_steps % self.hold:
+            raise ValueError(f"horizon {horizon} s is not {self.hold} | steps")
+        self.n_seg = self.h_steps // self.hold
+        # The pursuer bounds the ROLLOUT must use are the env's own expressions
+        # (`PursuitEvasionEnv.__init__`), not -self._lim, so the predicted clip
+        # is the executed one to the last ulp.
+        half = cfg.arena_size / 2.0
+        self._x_lim = (-half + cfg.agent_radius, half - cfg.agent_radius)
+        self._y_lim = self._x_lim
+        self._ep_seed = 0
+        self._clear_plan_records()
+
+    def _clear_plan_records(self) -> None:
+        """No plan ran this call (the CG-S1 delegation, or a fresh episode).
+        `last_aim is None` is the flag; these three say the sampling was idle."""
+        self.last_cost = float("inf")
+        self.last_feasible_count = 0
+        self.last_chose_direct = False
+
+    def reset(self, env=None) -> None:
+        super().reset(env)
+        self._ep_seed = _episode_entropy(env)
+        self._clear_plan_records()
+
+    # -- the plan --------------------------------------------------------
+    def _sequences(self, a_direct, rng) -> np.ndarray:
+        """(K, n_seg, 2) Box actions: K - 1 uniform over the action box, plus
+        the parent's own action held for every segment at row 0."""
+        acts = rng.uniform(-1.0, 1.0, size=(self.k, self.n_seg, 2)).astype(np.float32)
+        acts[0] = np.asarray(a_direct, dtype=np.float32)
+        return acts
+
+    def _rollout(self, own, pos, v_est, acts: np.ndarray):
+        """Roll `acts` over the horizon through `pursuer_step_batch`.
+
+        Returns the per-sequence cost (+inf on any wall or obstacle contact),
+        the first predicted capture step (+inf when there is none) and the
+        (h_steps, 2) predicted evader path. Commands are decoded from the Box
+        exactly as `SingleAgentWrapper._scale_action` decodes them, so what is
+        planned is what the harness executes.
+        """
+        cfg = self.cfg
+        k = acts.shape[0]
+        v = (acts[:, :, 0].astype(float) + 1.0) / 2.0 * cfg.v_max
+        w = acts[:, :, 1].astype(float) * cfg.omega_max
+        poses = np.repeat(np.asarray(own, dtype=float)[None, :3], k, axis=0)
+        # Constant velocity, clipped into the inset arena (as `_aim_point`).
+        e_pred = np.clip(
+            np.asarray(pos, dtype=float)
+            + np.outer(np.arange(1, self.h_steps + 1) * cfg.dt, v_est),
+            -self._lim,
+            self._lim,
+        )
+        # The loop body is kept to the dynamics itself -- the cost is formed
+        # afterwards over the whole (h_steps, k) trace, which is what keeps a
+        # call inside the 2 ms budget.
+        bad = np.zeros(k, dtype=bool)
+        xy = np.empty((self.h_steps, k, 2))
+        for t in range(self.h_steps):
+            seg = t // self.hold
+            poses, wall, obstacle = pursuer_step_batch(
+                poses,
+                v[:, seg],
+                w[:, seg],
+                cfg,
+                self.obstacles,
+                self._x_lim,
+                self._y_lim,
+            )
+            bad |= wall | obstacle  # infeasible from this step on
+            xy[t] = poses[:, :2]
+        start = np.broadcast_to(np.asarray(own, dtype=float)[None, None, :2], (1, k, 2))
+        legs = np.diff(xy, axis=0, prepend=start)
+        path = np.hypot(legs[:, :, 0], legs[:, :, 1]).sum(axis=0)
+        d = np.hypot(xy[:, :, 0] - e_pred[:, None, 0], xy[:, :, 1] - e_pred[:, None, 1])
+        captured = d <= cfg.capture_distance
+        any_cap = captured.any(axis=0)
+        cap = np.where(any_cap, captured.argmax(axis=0), np.inf)  # first such step
+        cost = np.where(any_cap, 0.0, d.min(axis=0))
+        cost = np.where(bad, np.inf, cost + MPC_PATH_WEIGHT * path)
+        return cost, np.where(bad, np.inf, cap), e_pred
+
+    def act(self, obs: np.ndarray) -> np.ndarray | None:
+        # The parent owns the step index, the velocity estimate, `last_seen`
+        # and both non-sampling branches; its return is also the direct
+        # sequence. Calling it is therefore the CG-S1 delegation AND the
+        # baseline the plan is scored against -- one code path, not two.
+        a_direct = super().act(obs)
+        if self.last_aim is None:  # not visible, or v_est zero: this IS `PLAN`
+            self._clear_plan_records()
+            return a_direct
+        own = own_pose_from_obs(obs, self.cfg)
+        pos = opponent_world_from_obs(obs, self.cfg)
+        # `_velocity` just recorded this call's env step index there.
+        step = self._prev[1]
+        rng = np.random.default_rng((self._ep_seed, int(step)))
+        acts = self._sequences(a_direct, rng)
+        cost, cap, e_pred = self._rollout(own, pos, self.last_v_est, acts)
+        # Keys last to first: cost, then earliest capture step, then the index
+        # -- so an exact tie goes to row 0, the parent's own action.
+        best = int(np.lexsort((np.arange(self.k), cap, cost))[0])
+        t_aim = int(cap[best]) if np.isfinite(cap[best]) else self.h_steps - 1
+        self.last_aim = e_pred[t_aim]
+        self.last_cost = float(cost[best])
+        self.last_feasible_count = int(np.isfinite(cost).sum())
+        self.last_chose_direct = best == 0
+        return acts[best, 0]  # first segment only: replanned every call
