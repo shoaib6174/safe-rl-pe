@@ -117,3 +117,4 @@ behavioural tests — no selector, no learning, no numbers that gate anything.
   its own band (0.10 m past the inset) inside `pe2/tactics.py`.
 - ORBIT's keeping rate is measured against the S19 `PLAN` chaser; the chaser is named in the test so it
   cannot be swapped silently. Speed-agnostic assertion passed at 0.8 / 1.0 / 1.2.
+- **For S24.1's pre-registration (from review):** neither adapter calls `applicable()` before running a tactic; a learned selector must be constrained (action mask) to applicable tactics, and an inapplicable pick is a logged event, never a silent `None`.
