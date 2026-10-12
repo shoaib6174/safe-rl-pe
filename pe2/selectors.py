@@ -58,6 +58,7 @@ from pe2.belief import LastSeenBelief
 from pe2.config import EnvConfig
 from pe2.obs import opponent_world_from_obs
 from pe2.recogniser import TacticRecogniser
+from pe2.rewards import SearchStalenessTracker
 from pe2.scripted import HUG_RANGE, HUG_THREAT_RANGE
 from pe2.tactics import (
     AMBUSH_CLOSE,
@@ -104,6 +105,11 @@ AT_OBSTACLE_LEVEL = 0.10
 # The recogniser's own standing bar: below it the window holds no motion to
 # lead, so there is nothing for `LEAD` to aim ahead of.
 MOVING_SPEED = 0.15
+# Fix round 1 (D149), evader rule 1 only: HOLD-HIDDEN is offered only while the
+# pursuer is farther than this. The tactic itself is unchanged — a watched
+# capture ended with the label `EVADER: HOLD-HIDDEN`, the evader standing still
+# because an unseeing pursuer (FOV +-45 deg) was about to run it over at 0.4 m.
+HOLD_HIDDEN_MIN_RANGE = 2.0  # m, full-state distance (L1.5)
 
 # Plan section 1: "chooses a tactic at decision points (the current tactic's
 # `DONE`, or every T = 40 steps)". The Step 1 adapters switch on DONE ONLY, so
@@ -191,18 +197,29 @@ class TacticMemory:
         self.full_state = bool(full_state)
         self.belief = LastSeenBelief(cfg) if with_belief else None
         self.recogniser = TacticRecogniser(cfg, opponent_role, int(window))
+        # Fix round 1 (D149): the searcher's map of where it has not looked.
+        # Updated from THIS role's own pose and sensing on every env step, the
+        # chase steps included, so a cell swept during a chase is not searched
+        # again afterwards. Only the FOV-limited observer needs one.
+        self.staleness = SearchStalenessTracker(cfg) if with_belief else None
         self.speed_ratio = float(cfg.evader_speed_ratio)  # NOT read by v0
         self.own_history: list = []  # the adapter's span log, refreshed per call
 
     def reset(self) -> None:
         if self.belief is not None:
             self.belief.reset()
+        if self.staleness is not None:
+            self.staleness.reset()
         self.recogniser.reset()
         self.own_history = []
 
-    def observe(self, obs, own_pose, opponent_pose, obstacles) -> None:
+    def observe(self, obs, own_pose, opponent_pose, obstacles, step: int = 0) -> None:
         if self.belief is not None:
             self.belief.update(np.asarray(obs))
+        if self.staleness is not None:
+            # The reward it returns is not used here; what is used is the side
+            # effect — the cells this pose can see are now fresh.
+            self.staleness.observe_and_reward(own_pose, list(obstacles), int(step))
         seen = self.full_state or bool(obs[6] > 0.5)
         self.recogniser.observe(
             own_pose, np.asarray(opponent_pose, dtype=float)[:2] if seen else None,
@@ -327,9 +344,11 @@ class EvaderRulesV0(_RulesV0):
         f = memory.features()  # the PURSUER's motion features (D147)
         threat = float(np.hypot(*(env.evader_pose[:2] - env.pursuer_pose[:2])))
         surfaces = _surface_distances(env.evader_pose, env.obstacles)
-        # 1. Out of the pursuer's sight: standing still costs nothing and gives
-        #    its search nothing to follow.
-        if self.hold_hidden.applicable(obs, env):
+        # 1. Out of the pursuer's sight AND not already on top of me: standing
+        #    still costs nothing and gives its search nothing to follow — but an
+        #    unseeing pursuer inside HOLD_HIDDEN_MIN_RANGE is about to run me
+        #    over, so below that the table falls through (D149).
+        if threat > HOLD_HIDDEN_MIN_RANGE and self.hold_hidden.applicable(obs, env):
             return self.hold_hidden
         # 2. The pursuer's path about MY obstacle is mostly tangential while it
         #    closes — it is coming round the thing I am hiding behind, so leave
@@ -397,7 +416,9 @@ class PursuerRulesV0(_RulesV0):
 
     def __init__(self, cfg: EnvConfig, memory: TacticMemory | None = None) -> None:
         super().__init__(cfg, memory)
-        self.sweep = _Capped(Sweep(cfg, belief=self.memory.belief))
+        self.sweep = _Capped(
+            Sweep(cfg, belief=self.memory.belief, staleness=self.memory.staleness)
+        )
         self.counter_orbits = [
             _Capped(CounterOrbit(cfg, k)) for k in range(cfg.n_obstacles)
         ]

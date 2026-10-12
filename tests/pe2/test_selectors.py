@@ -49,6 +49,7 @@ from pe2.selectors import (
     COMING_ROUND_SWEEP,
     DECISION_PERIOD,
     FLAT_OBSTACLE_TREND,
+    HOLD_HIDDEN_MIN_RANGE,
     MOVING_SPEED,
     ORBITING_SWEEP,
     STRAIGHT_RUN,
@@ -133,6 +134,22 @@ class TestEvaderRuleOrder:
             tactic.reset(env)
         pick = rules.select(obs["evader"], env, _Features())
         assert pick.name == "HOLD-HIDDEN"
+
+    def test_rule_1_does_not_hold_still_under_an_unseeing_pursuer_at_1_2_m(self):
+        """D149: hidden but 1.2 m away, inside HOLD_HIDDEN_MIN_RANGE. The
+        tactic is still applicable — its own precondition is unchanged — and the
+        rule table declines to offer it, falling through to rule 3."""
+        env, obs = _scene(MAP, (-1.2, 1.5, np.pi), (0.0, 1.5))
+        assert not _visible(env)
+        gap = float(np.hypot(*(env.evader_pose[:2] - env.pursuer_pose[:2])))
+        assert gap < HOLD_HIDDEN_MIN_RANGE
+        rules = EvaderRulesV0(CFG)
+        for tactic in rules.tactics:
+            tactic.reset(env)
+        assert rules.hold_hidden.applicable(obs["evader"], env)
+        pick = rules.select(obs["evader"], env, _Features())
+        assert pick.name == "ORBIT(0)"
+        assert pick.applicable(obs["evader"], env)
 
     def test_rule_2_hop_fires_on_a_pursuer_coming_round_my_obstacle(self):
         """Visible (so rule 1 is out), the pursuer's window is mostly tangential
@@ -423,12 +440,16 @@ def test_the_thresholds_are_pinned():
     assert selectors.AT_OBSTACLE_LEVEL == 0.10
     assert selectors.MOVING_SPEED == 0.15
     assert (selectors.WINDOW, selectors.DECISION_PERIOD) == (40, 40)
+    assert selectors.HOLD_HIDDEN_MIN_RANGE == 2.0  # D149, evader rule 1 only
     # Imported, not restated: the two ranges rule 3 and rule 4 share with the
     # hug law, and the ambush's own DONE distance.
     from pe2.scripted import HUG_RANGE, HUG_THREAT_RANGE
 
     assert (HUG_THREAT_RANGE, HUG_RANGE, AMBUSH_CLOSE) == (7.0, 4.0, 2.0)
     assert BELIEF_FRESH_STEPS == 100
+    from pe2.tactics import STALE_TARGET_MAX_STEPS
+
+    assert STALE_TARGET_MAX_STEPS == 120
 
 
 # ------------------------------------------------------- the decision period
@@ -524,34 +545,103 @@ class TestHarness:
         assert out.index(GAME.READING) < out.index("ratio 1.2:")
         assert out.index(GAME.READING) < out.index(f"{summary['mean_steps']:.1f}")
 
-    def test_the_sweep_hook_steers_at_a_fresh_estimate_and_orbits_without_one(self):
-        """The additive hook in `pe2.tactics.Sweep` (Step 4): the belief drives
-        it while the estimate is fresh, `OrbitSearch` when it is not."""
+    def test_the_shield_is_the_recovery_one_and_fresh_every_episode(self):
+        """D149: the tactic game runs under D131's forward-offering recovery,
+        built as S17 builds it, and rebuilt per episode because its immobile run
+        and counters are shield state with no episode hook."""
+        from pe2.shield import RECOVERY_AFTER, RecoveryShieldV2
+
+        cfg = EnvConfig(evader_speed_ratio=1.2)
+        mdp, _ = GAME.build_game(cfg)
+        shield = GAME.build_shield(cfg)
+        assert isinstance(shield, RecoveryShieldV2)
+        assert (shield.margin, shield.gamma) == (0.0, 0.2)
+        assert shield.recovery_after == RECOVERY_AFTER
+        first = GAME.play_episode(mdp, CONSTRUCT_SEED0, cfg)
+        used = mdp.shield
+        assert first["shield_class"] == "RecoveryShieldV2"
+        GAME.play_episode(mdp, CONSTRUCT_SEED0 + 1, cfg)
+        assert mdp.shield is not used  # a new one, not the carried run
+
+
+class TestSweepHooks:
+    """`pe2.tactics.Sweep`'s two additive hooks (Step 4, then D149)."""
+
+    def test_a_fresh_estimate_outranks_the_map_and_a_bare_sweep_is_orbit_search(
+        self,
+    ):
         from pe2.structured import OrbitSearch
         from pe2.tactics import Sweep
 
         env, obs = _scene(MAP, (-3.0, 0.0, np.pi), (0.0, 1.5))
         blind = obs["pursuer"]
         assert blind[6] <= 0.5
+        # With neither hook the class is Step 1's, bit for bit.
+        bare = Sweep(CFG)
+        bare.reset(env)
+        assert np.array_equal(bare.act(blind), OrbitSearch(CFG).predict(blind)[0])
+        assert bare.last_goal is None
+
         rules = PursuerRulesV0(CFG)
         sweep = rules.sweep
         sweep.reset(env)
         assert isinstance(sweep.inner, Sweep) and sweep.belief is rules.memory.belief
-        # Never seen: the orbit search, bit for bit.
-        reference = OrbitSearch(CFG)
-        assert np.array_equal(sweep.act(blind), reference.predict(blind)[0])
-        assert sweep.last_goal is None
-        # A fresh sighting: it steers at the estimate instead.
+        assert sweep.staleness is rules.memory.staleness
+        # Never seen: the stalest reachable cell, not the orbit.
+        assert sweep.act(blind) is not None
+        assert sweep.last_goal is not None and sweep.target is not None
+        # A fresh sighting outranks the map and clears the cell target.
         rules.memory.observe(
             _scene(MAP, (1.5, 1.5), (0.0, 1.2))[1]["pursuer"],
             env.pursuer_pose,
             env.evader_pose,
             env.obstacles,
+            env.current_step,
         )
-        assert sweep.act(blind) is not None
-        assert sweep.last_goal is not None
-        # Stale beyond the horizon: back to the orbit search.
+        sweep.act(blind)
+        assert sweep.target is None
+        assert np.allclose(sweep.last_goal, rules.memory.point)
+        # Older than the horizon: back to the map, never to a stale estimate.
         rules.memory.belief.t_since_seen = BELIEF_FRESH_STEPS
         sweep.enter()  # a fresh span: the 40-step cap is not what returns None
         sweep.act(blind)
-        assert sweep.last_goal is None
+        assert sweep.target is not None
+        assert not np.allclose(sweep.last_goal, rules.memory.point)
+
+    @staticmethod
+    def _search_coverage(cfg: EnvConfig, steps: int = 600) -> float:
+        """Drive the pursuer by SWEEP alone against an evader it NEVER sees
+        (the observation's visibility flag is forced down, which is the
+        'never-visible evader' the bar is stated over), and return the fraction
+        of grid cells the search has observed by `steps`."""
+        from pe2.rewards import SearchStalenessTracker
+        from pe2.tactics import Sweep
+
+        env = PursuitEvasionEnv(cfg)
+        obs, _ = env.reset(seed=CONSTRUCT_SEED0)
+        tracker = SearchStalenessTracker(cfg)
+        sweep = Sweep(cfg, staleness=tracker)
+        sweep.reset(env)
+        for _ in range(steps):
+            blind = np.asarray(obs["pursuer"], dtype=np.float32).copy()
+            blind[6] = 0.0
+            action = sweep.act(blind)
+            assert action is not None
+            a = np.clip(np.asarray(action, dtype=float), -1.0, 1.0)
+            # `SingleAgentWrapper._scale_action` for the pursuer role.
+            v, w = (a[0] + 1.0) / 2.0 * cfg.v_max, a[1] * cfg.omega_max
+            obs, _, term, trunc, _ = env.step([v, w, 0.0, 0.0])
+            tracker.observe_and_reward(env.pursuer_pose, env.obstacles, env.current_step)
+            if term or trunc:
+                break
+        return float(np.mean(tracker.last_observed > -tracker.t_stale))
+
+    def test_an_empty_arena_is_fully_searched_within_600_steps(self):
+        cfg = EnvConfig(n_physical_obstacles=0, evader_speed_ratio=1.2)
+        assert self._search_coverage(cfg) == 1.0
+
+    def test_the_default_arena_is_mostly_searched_within_600_steps(self):
+        """Below 1.0 by construction: a cell centre inside an obstacle can
+        never be observed, and the bar is the brief's 0.9."""
+        cfg = EnvConfig(evader_speed_ratio=1.2)
+        assert self._search_coverage(cfg) >= 0.9

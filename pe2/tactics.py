@@ -56,6 +56,10 @@ AMBUSH_GAP_RANGE = 5.0  # m — only ambush a gap this close
 # (5 s at dt = 0.05) and falls back to `OrbitSearch` beyond it — the brief's
 # "while its age is < 100 steps, else OrbitSearch".
 BELIEF_FRESH_STEPS = 100
+# Fix round 1 (D149): steps the search spends on one stale cell before giving
+# it up for the next-stalest — the guard against a target that can be reached
+# but, from the bearings the route allows, never actually observed.
+STALE_TARGET_MAX_STEPS = 120
 
 
 # ---------------------------------------------------------------- geometry
@@ -686,23 +690,38 @@ class Sweep(PursuerTactic):
     unchanged: with `belief=None` the class is bit-for-bit the Step 1 one
     (`tests/pe2/test_tactics.py` holds it to `OrbitSearch` by identity).
 
-    The hook reads only the belief's own API (`seen`, `mean`, `t_since_seen`) —
-    no speed and no speed ratio, as every tactic here.
+    S24.0 Step 4 fix round 1 (D149): with no fresh estimate — never seen, or
+    `BELIEF_FRESH_STEPS` old — the search is no longer the fixed orbit. Given a
+    `staleness` map (`pe2.rewards.SearchStalenessTracker`, updated once per step
+    by whoever owns the observation stream), it steers at the STALEST reachable
+    grid-cell centre and re-targets when that cell is observed, when it is
+    reached, or after `STALE_TARGET_MAX_STEPS` on one target. `OrbitSearch`
+    remains the fallback when there is no map to be stale (every candidate cell
+    blocked) and when no `staleness` is given at all.
+
+    Both hooks read only their object's own API — the belief's (`seen`, `mean`,
+    `t_since_seen`) and the tracker's (`centres`, `last_observed`) — no speed
+    and no speed ratio, as every tactic here.
     """
 
     name = "SWEEP"
 
-    def __init__(self, cfg: EnvConfig, belief=None) -> None:
+    def __init__(self, cfg: EnvConfig, belief=None, staleness=None) -> None:
         super().__init__(cfg)
         self.search = OrbitSearch(cfg)
         self.belief = belief
+        self.staleness = staleness
         self.law = PlannerInterceptLaw(cfg)  # the planned route to the estimate
         self.last_goal: np.ndarray | None = None
+        self.target: int | None = None  # index into the staleness grid
+        self._target_since = 0
 
     def reset(self, env=None) -> None:
         super().reset(env)
         self.law.reset(env)
         self.last_goal = None
+        self.target = None
+        self._target_since = 0
 
     def _fresh_point(self) -> np.ndarray | None:
         """The dead-reckoning estimate while it is fresh enough to steer at."""
@@ -714,6 +733,43 @@ class Sweep(PursuerTactic):
             return None
         return np.asarray(belief.mean, dtype=float)[:2]
 
+    def _reachable_cell(self, index: int) -> bool:
+        """A cell whose centre is inside an INFLATED obstacle can never be
+        stood on or (from most bearings) seen, so it is not a search target —
+        the planner's own blocked grid decides, not a second copy of it."""
+        centre = self.staleness.centres[index]
+        return not bool(self.law._blocked[self.law._cell(centre)])
+
+    def _stale_point(self) -> np.ndarray | None:
+        """The stalest reachable cell centre, held until it is observed,
+        reached, or `STALE_TARGET_MAX_STEPS` old. Ties go to the nearest cell,
+        so the search does not cross the arena for an equally stale one."""
+        tracker, env = self.staleness, self.env
+        if tracker is None or env is None:
+            return None
+        own = np.asarray(env.pursuer_pose, dtype=float)[:2]
+        step = int(env.current_step)
+        if self.target is not None:
+            centre = np.asarray(tracker.centres[self.target], dtype=float)
+            expired = step - self._target_since >= STALE_TARGET_MAX_STEPS
+            observed = int(tracker.last_observed[self.target]) >= self._target_since
+            arrived = float(np.hypot(*(centre - own))) <= ARRIVAL_TOL
+            if not (expired or observed or arrived):
+                return centre
+        giving_up = self.target
+        stale = step - np.asarray(tracker.last_observed, dtype=float)
+        centres = np.asarray(tracker.centres, dtype=float)
+        dist = np.hypot(centres[:, 0] - own[0], centres[:, 1] - own[1])
+        for index in np.lexsort((dist, -stale)):
+            index = int(index)
+            if index == giving_up or not self._reachable_cell(index):
+                continue
+            self.target = index
+            self._target_since = step
+            return centres[index]
+        self.target = None
+        return None
+
     def applicable(self, obs, env) -> bool:
         return obs[6] <= 0.5
 
@@ -721,7 +777,11 @@ class Sweep(PursuerTactic):
         if obs[6] > 0.5:
             return None
         self.steps += 1
-        point = self._fresh_point()
+        point = self._fresh_point()  # a fresh sighting outranks the map
+        if point is not None:
+            self.target = None
+        else:
+            point = self._stale_point()
         self.last_goal = point
         if point is None:
             return self.search.predict(obs)[0]

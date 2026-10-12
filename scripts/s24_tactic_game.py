@@ -55,7 +55,7 @@ Readings this module fixes, because the brief or the plan can be read two ways:
 Usage:
   ./venv/bin/python scripts/s24_tactic_game.py --episodes 100 --seed0 2290000
   ./venv/bin/python scripts/s24_tactic_game.py --gifs --episodes 3 --ratio 1.2
-  ./venv/bin/python scripts/s24_tactic_game.py --summarize
+  ./venv/bin/python scripts/s24_tactic_game.py --tag v0b --summarize
 """
 
 from __future__ import annotations
@@ -88,15 +88,24 @@ from pe2.config import EnvConfig
 from pe2.recogniser import UNKNOWN, TacticRecogniser, tactic_family
 from pe2.recorder import BranchTaggedSearchMDP
 from pe2.selectors import EvaderRulesV0, PursuerRulesV0
-from pe2.shield import CBFShield
+from pe2.shield import RECOVERY_AFTER, RecoveryShieldV2
 from pe2.structured import HOLD, OrbitSearch
 from pe2.tactics import BELIEF_FRESH_STEPS, TacticLaw, TacticOpponent
 
 PLAN = "docs/pathway/tactics_plan_2026-10-13.md"
 OUT = pathlib.Path("results/derisk")
+# `--tag` suffixes the record and the GIFs, so a re-run after a fix round lands
+# beside the run it supersedes instead of overwriting it (D149: the first run
+# keeps `s24_tactic_game.json`, this fix round writes `..._v0b.json`).
+TAG = ""
 RECORD = OUT / "s24_tactic_game.json"
 GIFS = OUT / "s24_gifs"
 GATE_RECORD = OUT / "s24_recogniser_gate.json"
+
+
+def _paths(out: pathlib.Path, tag: str) -> tuple[pathlib.Path, pathlib.Path]:
+    suffix = f"_{tag}" if tag else ""
+    return out / f"s24_tactic_game{suffix}.json", out / "s24_gifs"
 
 # --- fixed here before the run. Do not tune. -------------------------------
 CONSTRUCT_SEED0 = 2_290_000  # this step's construct stream
@@ -150,16 +159,33 @@ def label_branch() -> str:
 # ----------------------------------------------------------------------------
 # the game
 # ----------------------------------------------------------------------------
-def build_shield(cfg: EnvConfig) -> CBFShield:
-    """`CBFShield(cfg)` at its defaults, ASSERTED rather than restated as
-    keyword arguments (S19's `build_shield`, same reason: the round must fail
-    loudly if the library's defaults move)."""
-    shield = CBFShield(cfg)
+def build_shield(cfg: EnvConfig) -> RecoveryShieldV2:
+    """`RecoveryShieldV2(cfg, recovery_after=RECOVERY_AFTER)` — exactly S17's
+    construction (`scripts/derisk_s17_fixes_b.py::shield_factory_for`), which is
+    D131's forward-offering recovery.
+
+    Fix round 1 (D149): the first run used plain `CBFShield` and reproduced the
+    D125 absorbing loop inside the tactic game (11/30 replayed episodes with an
+    immobile pursuer at ratio 1.2, one pinned 787 consecutive steps).
+
+    The CBF defaults are still ASSERTED rather than restated as keyword
+    arguments (S19's `build_shield`, same reason), and `recovery_after` is
+    passed exactly as S17 passes it so the recovery this round runs under is
+    the one that round measured.
+
+    A FRESH shield per episode (S17's first evaluation-path requirement): the
+    immobile run and the recovery counters are shield state with no episode
+    hook, so one shield over a block would carry an open run across the
+    paired-seed boundary. `TacticGameMDP._begin` rebuilds it.
+    """
+    shield = RecoveryShieldV2(cfg, recovery_after=RECOVERY_AFTER)
     if (shield.margin, shield.gamma) != (0.0, 0.2):
         raise SystemExit(
-            f"CBFShield defaults moved to margin {shield.margin}, gamma "
+            f"CBF defaults moved to margin {shield.margin}, gamma "
             f"{shield.gamma}; S18/S19/S23 and this step run at 0.0 / 0.2."
         )
+    if shield.recovery_after != RECOVERY_AFTER:
+        raise SystemExit("recovery_after moved; S17 runs at the library default")
     return shield
 
 
@@ -192,6 +218,9 @@ class _TacticGameMemory:
         return self.rules["pursuer" if role == "evader" else "evader"].memory
 
     def _begin(self, seed):
+        # A fresh recovery shield per episode (S17): its immobile run and
+        # counters are shield state with no episode hook of their own.
+        self.shield = build_shield(self.cfg)
         obs = super()._begin(seed)
         for rules in self.rules.values():
             rules.reset()
@@ -210,10 +239,18 @@ class _TacticGameMemory:
         }
         # Post-step poses and observations: reading 2.
         self.rules["pursuer"].memory.observe(
-            joint["pursuer"], env.pursuer_pose, env.evader_pose, env.obstacles
+            joint["pursuer"],
+            env.pursuer_pose,
+            env.evader_pose,
+            env.obstacles,
+            env.current_step,
         )
         self.rules["evader"].memory.observe(
-            joint["evader"], env.evader_pose, env.pursuer_pose, env.obstacles
+            joint["evader"],
+            env.evader_pose,
+            env.pursuer_pose,
+            env.obstacles,
+            env.current_step,
         )
         for role in ("evader", "pursuer"):
             self.usage[role][truth[role]] += 1
@@ -297,6 +334,16 @@ def play_episode(mdp, seed: int, cfg: EnvConfig) -> dict:
         "violations": int(log.get("violations", 0)),
         "los_breaks": int(log["los_breaks"]),
         "search_steps": int(mdp.search_steps),
+        "shield_class": type(mdp.shield).__name__,
+        "recovery": {
+            "n_recoveries": int(mdp.shield.n_recoveries),
+            "n_forward": int(mdp.shield.n_recoveries_forward),
+            "n_rotation": int(mdp.shield.n_recoveries_rotation),
+        },
+        "immobile_steps": sum(
+            mdp.branch_summary()["immobile_by_branch"].values()
+        ),
+        "longest_pinned_run": mdp.branch_summary()["longest_pinned_run"],
         "tactics": {
             "evader": _history(mdp.evader),
             "pursuer": _history(mdp.law),
@@ -331,6 +378,19 @@ def summarise(episodes: list[dict]) -> dict:
     n = len(episodes)
     return {
         "n_episodes": n,
+        "shield_class": episodes[0]["shield_class"],
+        "episodes_with_immobile_steps": sum(
+            bool(e["immobile_steps"]) for e in episodes
+        ),
+        "episodes_with_a_pin_of_40_steps": sum(
+            e["longest_pinned_run"] >= 40 for e in episodes
+        ),
+        "immobile_fraction": statistics.fmean(
+            e["immobile_steps"] / e["steps"] for e in episodes
+        ),
+        "recoveries_total": sum(e["recovery"]["n_recoveries"] for e in episodes),
+        "recoveries_forward": sum(e["recovery"]["n_forward"] for e in episodes),
+        "recoveries_rotation": sum(e["recovery"]["n_rotation"] for e in episodes),
         "capture_rate": sum(e["outcome"] == "capture" for e in episodes) / n,
         "mean_steps": statistics.fmean(e["steps"] for e in episodes),
         "violations_total": sum(e["violations"] for e in episodes),
@@ -380,8 +440,9 @@ def print_table(record: dict) -> None:
         f"estimate while age < {BELIEF_FRESH_STEPS} steps"
     )
     print(
-        f"scripted v0 selectors, both roles · shield CBFShield(0.0, 0.2) on the "
-        f"pursuer · hold {HOLD} · seeds {record['seed0']}+ · "
+        f"scripted v0 selectors, both roles · shield {record['shield_class']}"
+        f"(margin 0.0, gamma 0.2, recovery_after {RECOVERY_AFTER}), fresh per "
+        f"episode, on the pursuer · hold {HOLD} · seeds {record['seed0']}+ · "
         f"{record['n_episodes']} paired episodes per ratio"
     )
     for ratio in record["ratios"]:
@@ -391,6 +452,14 @@ def print_table(record: dict) -> None:
             f"{s['mean_steps']:.1f} · violations {s['violations_total']} "
             f"({s['episodes_with_violations']} episodes) · search-policy steps "
             f"{s['search_steps_total']}"
+        )
+        print(
+            f"    immobile: {s['episodes_with_immobile_steps']}/"
+            f"{s['n_episodes']} episodes ({s['episodes_with_a_pin_of_40_steps']} "
+            f"with a pin >= 40 steps, mean fraction "
+            f"{s['immobile_fraction']:.3f}) · recoveries "
+            f"{s['recoveries_total']} ({s['recoveries_forward']} forward, "
+            f"{s['recoveries_rotation']} rotation)"
         )
         for role in ("evader", "pursuer"):
             print(f"    {role:<8} top-3 {_top3(s['usage_share'][role])}")
@@ -528,7 +597,8 @@ def write_gifs(n: int = GIF_N, ratio: float = GIF_RATIO, seed0: int = CONSTRUCT_
     written = []
     for seed in range(seed0, seed0 + n):
         frames, episode = render_episode(seed, ratio)
-        path = GIFS / f"tactic_game_r{ratio}_{seed}.gif"
+        suffix = f"_{TAG}" if TAG else ""
+        path = GIFS / f"tactic_game_r{ratio}_{seed}{suffix}.gif"
         save_gif(frames, str(path), fps=15.0)
         written.append(str(path))
         print(
@@ -564,7 +634,14 @@ def provenance(cfg: EnvConfig) -> dict:
         "numpy": np.__version__,
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
         "config": dataclasses.asdict(cfg),
-        "shield": "CBFShield(cfg) at margin 0.0, gamma 0.2",
+        "shield": (
+            f"RecoveryShieldV2(cfg, recovery_after={RECOVERY_AFTER}), CBF "
+            "defaults 0.0 / 0.2, one per episode"
+        ),
+        "staleness_search": (
+            "pe2.rewards.SearchStalenessTracker at its defaults (10x10 grid), "
+            "updated from the pursuer's own pose every env step"
+        ),
         "shield_obs": SHIELD_OBS,
         "escape_obs": ESCAPE_OBS,
         "hold": HOLD,
@@ -593,6 +670,11 @@ def run(n_episodes: int, seed0: int, ratios=RATIOS) -> dict:
         "reading": READING,
         "label_branch": branch,
         "memory": "LastSeenBelief dead reckoning (D146); ParticleBelief shelved",
+        "shield_class": RecoveryShieldV2.__name__,
+        "shield": (
+            f"RecoveryShieldV2(cfg, recovery_after={RECOVERY_AFTER}) at the CBF "
+            "defaults 0.0 / 0.2, rebuilt per episode (D149, S17's construction)"
+        ),
         "window": TacticRecogniser(EnvConfig(), "evader").window,
         "seed0": seed0,
         "n_episodes": n_episodes,
@@ -614,20 +696,20 @@ def write_record(record: dict) -> None:
 
 
 def main() -> None:
-    global OUT, RECORD, GIFS
+    global OUT, RECORD, GIFS, TAG
     p = argparse.ArgumentParser()
     p.add_argument("--episodes", type=int, default=N_EPISODES)
     p.add_argument("--seed0", type=int, default=CONSTRUCT_SEED0)
     p.add_argument("--ratio", type=float, default=None, help="one ratio only")
     p.add_argument("--out", default=str(OUT))
+    p.add_argument("--tag", default="", help="suffix for the record and the GIFs")
     p.add_argument("--gifs", action="store_true")
     p.add_argument("--summarize", action="store_true")
     args = p.parse_args()
 
-    if args.out != str(OUT):
-        OUT = pathlib.Path(args.out)
-        RECORD = OUT / "s24_tactic_game.json"
-        GIFS = OUT / "s24_gifs"
+    OUT = pathlib.Path(args.out)
+    TAG = str(args.tag)
+    RECORD, GIFS = _paths(OUT, TAG)
 
     if args.summarize:
         print_table(json.loads(RECORD.read_text()))
