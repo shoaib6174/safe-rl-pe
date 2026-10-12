@@ -8,7 +8,7 @@ Plan: `tactics_plan_2026-10-13.md`. Started 2026-10-13. Budget 4.0 M (hard stop 
 | 0.2 | memory: occlusion-aware belief (particle filter) vs dead-reckoning gate | opus / opus | 350 k | **168 k** | DONE `a76cb2e`; gates 1 AND 2 FAIL (D145/D146) → memory = LastSeenBelief; PF shelved |
 | 0.3 | recogniser + accuracy gate on self-play ground truth | opus / sonnet | 250 k | **240 k** | DONE `73dd182`; gates 1 AND 2 FAIL (D147/D148) → features only, both roles; `features(t)` is the product |
 | 0.4 | scripted selectors v0 (over features) + labelled GIF harness; watch | opus / sonnet | 250 k | **317 k** | DONE `46f986e`; v0b 1.00/0.68/0.68; pins 9/30→0/30; re-watched (D150) |
-| 1 | S24.1 prereg → learned pursuer selector → run → watch → read | opus / opus | 1.2 M | | prereg committed; step 1.1 (SelectorMDP + training) dispatched |
+| 1 | S24.1 prereg → learned pursuer selector → run → watch → read | opus / opus | 1.2 M | **≈ 1.0 M** (1.1: 467 k; 1.2: 505 k; A5 patch mine) | DONE — D151: H-TAC-1 PASS 2/3 (held-out transfer), H-TAC-2 PASS 3/3, H-TAC-3 PASS 2/3, H-SAFE HOLDS; S24.2 licensed |
 | 2 | S24.2 | | 1.0 M | | |
 | 3 | S24.3 speed sweep | | 0.6 M | | |
 
@@ -30,3 +30,4 @@ Plan: `tactics_plan_2026-10-13.md`. Started 2026-10-13. Budget 4.0 M (hard stop 
 - Step 1.2 gate runner landed (261 k; `b937bd6`; 93 tests; pe2/ untouched since the training freeze). Review dispatched (opus). Running total **≈ 1 834 k / 4.0 M**; S24.1 ≈ 731 k of 1.2 M.
 - Step 1.2 review (199 k): APPROVE-WITH-FIXES — 2 confirmed (absent evidence scored as zero; comparator span accounting blind), 2 plausible. A3 rules them. Fix round 1/2 dispatched. Running total **≈ 2 033 k / 4.0 M**; S24.1 ≈ 930 k of 1.2 M.
 - Step 1.2 fix landed (≈ 45 k; step total ≈ 505 k incl. review) and verified directly; gate worktree frozen at `e4159ba` (pe2 identical to the training freeze). Launcher pointed at the gate worktree. Running total **≈ 2 078 k / 4.0 M**; S24.1 ≈ 975 k of 1.2 M. Waiting on the six arms (3/12 checkpoints each).
+- **S24.1 closed (D151).** Six arms trained, gate of 24 cells, CG-T3 watched (A4) before the table; A2.1 guard refused on one env step per cell in two cells → A5 restated the bar in the open; summary read. Running total **≈ 2.08 M / 4.0 M**; remaining ≈ 1.9 M for S24.2 (1.0 M) + S24.3 (0.6 M) + reserve.
