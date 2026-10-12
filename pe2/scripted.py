@@ -117,6 +117,21 @@ class BoxRoundTripEvader(GreedyEvader):
         return (a64[0] + 1.0) / 2.0 * cfg.evader_v_max, a64[1] * cfg.omega_max
 
 
+class StationaryEvader:
+    """An evader that never moves — the reference opponent for CG-S1
+    (docs/pathway/pursuit_strategy_plan_2026-10-12.md section 4): with the
+    evader frozen, every member of the S23 strategy family must act
+    bit-identically to `PlannerInterceptLaw`."""
+
+    uses_truth = True
+
+    def reset(self) -> None:
+        pass
+
+    def act(self, obs: np.ndarray, env: PursuitEvasionEnv) -> tuple[float, float]:
+        return 0.0, 0.0
+
+
 OPEN_SPACE_HEADINGS = 16  # candidate directions, evenly spaced
 OPEN_SPACE_HORIZON = 1.0  # seconds of straight-line lookahead
 

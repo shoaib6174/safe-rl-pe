@@ -277,6 +277,14 @@ class PlannerInterceptLaw:
         err = wrap_angle(float(np.arctan2(to[1], to[0])) - own[2])
         return _normalize(cfg.v_max, _clip_omega(K_OMEGA * err, cfg), cfg)
 
+    def _steer_toward(self, own: np.ndarray, point) -> np.ndarray:
+        """Steer at a WORLD point: directly when the line to it is clear, else
+        through the planned path. Shared by the last-seen branch and by
+        `LeadPlannerInterceptLaw`'s aim point so there is one such path, not two."""
+        if self.is_clear(own[:2], point):
+            return self._steer_at(own, point)
+        return self._steer_planned(own, point)
+
     def _steer_planned(self, own: np.ndarray, target: np.ndarray) -> np.ndarray:
         path = self.plan(own[:2], target)
         if path is None:  # no free goal cell within one radius (A2.1 residual)
@@ -302,8 +310,103 @@ class PlannerInterceptLaw:
             own = own_pose_from_obs(obs, cfg)
             to = self.last_seen - own[:2]
             if float(np.hypot(*to)) > LAST_SEEN_TOL:
-                if self.is_clear(own[:2], self.last_seen):
-                    return self._steer_at(own, self.last_seen)
-                return self._steer_planned(own, self.last_seen)
+                return self._steer_toward(own, self.last_seen)
             self.last_seen = None
         return None
+
+
+# A stationary evader does NOT decode to a bit-identical world position twice:
+# the reconstruction is own[:2] + R(own_theta) @ body_offset from a float32
+# observation, and own moves even when the evader does not, so the apparent
+# displacement wanders inside the decoding precision this module already
+# quantifies (`_BOUND_REL_TOL * arena_size` = 9.5e-6 m; the measured worst case
+# for the position itself is 1.9e-6 m, see the module docstring above).  An
+# apparent displacement at or below that precision is therefore read as exactly
+# zero -- which is what makes CG-S1's identity exact rather than approximate.
+# The cost is a blind spot below 1.9e-4 m/s: four orders under the evader's
+# 1.2 m/s and 1600 s to cross the 0.30 m capture radius.
+
+
+class LeadPlannerInterceptLaw(PlannerInterceptLaw):
+    """`PlannerInterceptLaw` aiming `tau` seconds AHEAD of the visible evader.
+
+    Spec: docs/pathway/pursuit_strategy_plan_2026-10-12.md sections 1 and 4.
+    D142 showed the planner's chase is "steer at where the evader IS"; against
+    an evader 1.2x faster and free to orbit an obstacle with contact forbidden,
+    following cannot close. This law changes ONLY the aim point: the evader's
+    decoded world position plus `tau` times its estimated velocity, clipped
+    into the inset arena and goal-snapped out of an inflated disc.
+
+    ONE variable (CG-S1): whenever the estimated velocity is zero -- a
+    stationary evader, or no pair of consecutive sightings to difference -- the
+    call DELEGATES to `PlannerInterceptLaw.act`, the same code path, so the
+    action is bit-identical to `PLAN` rather than merely close to it.
+
+    `last_aim` / `last_v_est` are per-call records for CG-S4's recorder.
+    """
+
+    def __init__(self, cfg: EnvConfig, tau: float) -> None:
+        super().__init__(cfg)
+        self.tau = float(tau)
+        self._env = None
+        self._calls = 0
+        self._prev: tuple[np.ndarray, int] | None = None
+        self.last_aim: np.ndarray | None = None
+        self.last_v_est = np.zeros(2)
+
+    def reset(self, env=None) -> None:
+        super().reset(env)
+        self._env = env
+        self._calls = 0
+        self._prev = None
+        self.last_aim = None
+        self.last_v_est = np.zeros(2)
+
+    def _step_index(self) -> int:
+        """The env step index the current observation describes.
+
+        `SearchMDP` calls the law once per env step inside `_advance`, but NOT
+        during a learner's `hold` span -- `step()` drives those itself -- so
+        counting calls would make the two sightings either side of a span look
+        consecutive and invent a velocity over `hold` steps. The env's
+        `current_step` (not yet incremented for the step this call produces) is
+        therefore the source whenever `reset` was handed an env; counting calls
+        is the fallback for the map-only unit path where there is no env.
+        """
+        self._calls += 1
+        return self._calls if self._env is None else int(self._env.current_step)
+
+    def _velocity(self, pos: np.ndarray, step: int) -> np.ndarray:
+        """Backward difference over the IMMEDIATELY preceding env step, or zero
+        when there is no such sighting. Updates the memory either way."""
+        prev, self._prev = self._prev, (pos, step)
+        if prev is None or step - prev[1] != 1:
+            return np.zeros(2)
+        d = pos - prev[0]
+        if float(np.hypot(*d)) <= self._bound_tol:  # decoding noise, see above
+            return np.zeros(2)
+        return d / self.cfg.dt
+
+    def _aim_point(self, pos: np.ndarray, v_est: np.ndarray) -> np.ndarray:
+        aim = np.clip(pos + self.tau * v_est, -self._lim, self._lim)
+        if self.segment_clearance(aim, aim) <= 0.0:  # inside an inflated disc
+            goal = self._snap_goal(aim)  # the same rule as the A* goal (A2.1)
+            if goal is not None:
+                aim = self._centre(*goal)
+        return aim
+
+    def act(self, obs: np.ndarray) -> np.ndarray | None:
+        step = self._step_index()
+        if obs[6] <= 0.5:  # not visible: nothing to lead; parent owns last-seen
+            self.last_aim = None
+            self.last_v_est = np.zeros(2)
+            return super().act(obs)
+        pos = opponent_world_from_obs(obs, self.cfg)
+        v_est = self._velocity(pos, step)
+        self.last_v_est = v_est
+        if v_est[0] == 0.0 and v_est[1] == 0.0:  # CG-S1: the SAME code path
+            self.last_aim = None
+            return super().act(obs)
+        self.last_seen = pos  # as the parent's visible branch would have set it
+        self.last_aim = self._aim_point(pos, v_est)
+        return self._steer_toward(own_pose_from_obs(obs, self.cfg), self.last_aim)
