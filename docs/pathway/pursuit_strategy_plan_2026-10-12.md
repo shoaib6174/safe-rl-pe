@@ -121,3 +121,27 @@ were captured by wall-cornering in every law. The diagnostic's decision (`MPC-H`
 mechanism attribution it was meant to provide moves entirely to **H-STRAT-2** (orbit episodes defined on
 the baseline). No corrected diagnostic is run: the round answers the question at N = 500 with three
 opponents. Recorded as D143.
+
+## Amendment A2 (2026-10-12, before the pre-registration is written; no round number exists)
+
+**§1's `MPC-H` cost was degenerate against the very opponent it targets.** The implementer measured it:
+with a faster evader fleeing radially, the minimum predicted distance over the horizon is attained at the
+FIRST step for every sampled sequence, so the cost carries no heading signal and the 0.01 × path term
+decides — the chosen action was a turn with no cost justification (direct 2.0900 vs winner 2.0842, won
+by 0.91 m less path). Predicted capture within H = 2 s occurred on zero law calls over three episodes.
+A planner whose choice is path-length noise is not "reasoning"; the construct would have been false.
+
+**Restated cost (binding):** `cost = predicted pursuer–evader distance at the END of the horizon`
+(terminal distance), with a capture bonus: if any step's predicted distance ≤ the capture distance the
+cost is `−(H − first_capture_step)` (earlier capture is strictly better than any non-capture), plus
+`0.01 × path length` as a tie-breaker only. Terminal distance has heading signal against a fleeing target
+— sequences that cut toward where the evader WILL be at H end closer — which is the quantity §1 meant.
+
+**Direct row (binding):** the always-included sequence is `PlannerInterceptLaw`'s own action
+(the grandparent, aim = current position) held for H — so "never worse than the parent on its own cost"
+means never worse than `PLAN`, the round's reference; `tau` plays no part in it.
+
+**Recorded limitation (not changed):** the velocity estimate needs consecutive-step sightings, and
+`SearchMDP` skips the law during a learner's hold span, so `v_est` is zero after every span and the
+MPC's exposure varies per episode (measured 0–61 non-direct choices per episode). H-STRAT is a per-episode
+outcome comparison and tolerates this; the pre-registration reports the per-episode planned-call count.

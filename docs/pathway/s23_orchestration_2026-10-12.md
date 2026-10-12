@@ -21,7 +21,7 @@ finish the current step, report, stop.
 | 1 | `LEAD-τ` + velocity estimate + CG-S1 identity test | opus / sonnet | 230 k | **228 k** (110 impl + 118 review) | DONE `8769115`; CG-S1 50/50 both τ; differs vs Greedy 42/50; review CLEAN |
 | 2 | §3 isolated-obstacle diagnostic (`PLAN`, `LEAD-0.5`, `LEAD-1.0`), reading written first | opus / sonnet | 180 k | **155 k** (impl+run; self-checked, no separate review) | DONE `5e7d22e`; LEAD +0.01/+0.02 → MPC built; §3 flaw recorded (plan A1, D143) |
 | — | **Decision:** build `MPC-H` only if the diagnostic says the orbit is not already broken by `LEAD` | me | — | — | **BUILD** (pre-written branch) |
-| 3 | `MPC-H` vectorised sampling planner + CG-S1 for it (conditional) | opus / opus | 500 k | | dispatched |
+| 3 | `MPC-H` vectorised sampling planner + CG-S1 for it (conditional) | opus / opus | 500 k | 158 k impl | `4fcf1b8`; CG-S1 50/50; 1.62 ms/call; **cost degenerate vs a fleeing evader → plan A2; fix round 1 of 2** |
 | 4 | CG-S2 (model error), CG-S3 seed rule, recorder `aim_point` | opus / sonnet | 210 k | | |
 | 5 | Pre-registration (me) | — | — | | |
 | 6 | S23 runner as a derivative of S19's; review + ≤ 2 fix rounds | opus / opus | 470 k | | |
@@ -35,3 +35,4 @@ finish the current step, report, stop.
 - Step 1 review CLEAN (118 k). Running total **228 k / 3.0 M**. Step 2 dispatched.
 - Step 2 landed (155 k): LEAD does not beat PLAN on the diagnostic → MPC-H built. Diagnostic's §3 design flaw (walls still corner the evader) recorded as plan A1 / D143; attribution moves to H-STRAT-2; no re-run. Ruling: no separate review for a once-run diagnostic whose 16 tests cover installation/seeds/min-distance and whose only decision was pre-written — self-check of seeds/provenance done. Running total **383 k / 3.0 M**. Step 3 dispatched.
 - Self-check of the diagnostic artefact executed (second attempt; first hit the wrong schema key): seeds 2 090 000–2 090 099, 100 unique, identical across the three laws; captures 61/62/63 as reported; the 3 contact steps per row coincide exactly with the 3 pursuer-start-inside-disc episodes; obstacle (0, 0, r 0.8). Top-level provenance.commit is None (the agent reported f7698c0 nested) — cosmetic, noted.
+- Step 3 landed (158 k). Implementer showed the pre-specified min-distance cost has no heading signal against a faster fleeing evader (only the path term decides). Plan A2: terminal-distance cost with earliest-capture bonus; direct row = PLAN's action. Fix round 1/2 dispatched. Running total **541 k / 3.0 M**.
