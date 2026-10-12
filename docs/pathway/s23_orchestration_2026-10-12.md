@@ -19,9 +19,9 @@ finish the current step, report, stop.
 | # | step | model (impl / review) | budget | actual | status |
 |---|---|---|---|---|---|
 | 1 | `LEAD-τ` + velocity estimate + CG-S1 identity test | opus / sonnet | 230 k | **228 k** (110 impl + 118 review) | DONE `8769115`; CG-S1 50/50 both τ; differs vs Greedy 42/50; review CLEAN |
-| 2 | §3 isolated-obstacle diagnostic (`PLAN`, `LEAD-0.5`, `LEAD-1.0`), reading written first | opus / sonnet | 180 k | | dispatched |
-| — | **Decision:** build `MPC-H` only if the diagnostic says the orbit is not already broken by `LEAD` | me | — | | |
-| 3 | `MPC-H` vectorised sampling planner + CG-S1 for it (conditional) | opus / opus | 500 k | | |
+| 2 | §3 isolated-obstacle diagnostic (`PLAN`, `LEAD-0.5`, `LEAD-1.0`), reading written first | opus / sonnet | 180 k | **155 k** (impl+run; self-checked, no separate review) | DONE `5e7d22e`; LEAD +0.01/+0.02 → MPC built; §3 flaw recorded (plan A1, D143) |
+| — | **Decision:** build `MPC-H` only if the diagnostic says the orbit is not already broken by `LEAD` | me | — | — | **BUILD** (pre-written branch) |
+| 3 | `MPC-H` vectorised sampling planner + CG-S1 for it (conditional) | opus / opus | 500 k | | dispatched |
 | 4 | CG-S2 (model error), CG-S3 seed rule, recorder `aim_point` | opus / sonnet | 210 k | | |
 | 5 | Pre-registration (me) | — | — | | |
 | 6 | S23 runner as a derivative of S19's; review + ≤ 2 fix rounds | opus / opus | 470 k | | |
@@ -33,3 +33,4 @@ finish the current step, report, stop.
 - 2026-10-12: ledger opened; Step 1 dispatched.
 - Step 1 landed (110 k). Accepted deviation: 'exactly zero' velocity uses the module's decoding-precision tolerance (9.54e-6 m/step; measured stationary jitter 2.2e-6) — without it CG-S1 fails in the last ulps. Step index from env.current_step (a call counter would invent velocity across a learner's hold span).
 - Step 1 review CLEAN (118 k). Running total **228 k / 3.0 M**. Step 2 dispatched.
+- Step 2 landed (155 k): LEAD does not beat PLAN on the diagnostic → MPC-H built. Diagnostic's §3 design flaw (walls still corner the evader) recorded as plan A1 / D143; attribution moves to H-STRAT-2; no re-run. Ruling: no separate review for a once-run diagnostic whose 16 tests cover installation/seeds/min-distance and whose only decision was pre-written — self-check of seeds/provenance done. Running total **383 k / 3.0 M**. Step 3 dispatched.

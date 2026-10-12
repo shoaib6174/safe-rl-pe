@@ -108,3 +108,16 @@ Implement the velocity estimate and `LEAD-τ` behind the same `law=` hook, with 
 and run the §3 diagnostic for `PLAN` and `LEAD` only. The diagnostic's reading decides whether `MPC-H`
 is built at all: if `LEAD` already breaks the orbit on an isolated obstacle, the sampling planner may be
 unnecessary and the round shrinks.
+
+
+---
+
+## Amendment A1 (2026-10-12, after the §3 diagnostic ran once; before any round number)
+
+**§3's design did not isolate the orbit.** "A single obstacle far from any wall" isolated the obstacle, not
+the evader: `GreedyEvader` flees radially and the 10 m arena's walls corner it, so 61 % of the 100 episodes
+were captured by wall-cornering in every law. The diagnostic's decision (`MPC-H` is built; LEAD +0.01/+0.02
+< 0.10) stands because the reading was written first and the bar is conservative in that direction. The
+mechanism attribution it was meant to provide moves entirely to **H-STRAT-2** (orbit episodes defined on
+the baseline). No corrected diagnostic is run: the round answers the question at N = 500 with three
+opponents. Recorded as D143.
