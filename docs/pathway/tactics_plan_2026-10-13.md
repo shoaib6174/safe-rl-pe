@@ -128,3 +128,13 @@ after-first-sighting split for the mode. If gate 2 fails, `LastSeenBelief` is th
 round and the particle belief is shelved with both numbers on record. One run; no other change.
 
 **Gate 2 result (D146): FAIL on both.** `LastSeenBelief` is S24's memory; `ParticleBelief` shelved. Steps 0.3/0.4 and the §1 memory row read "belief = last-seen dead-reckoning" from here on.
+
+## S24.0 Step 3 — recogniser gate FAILED (D147); rulings and gate 2 (2026-10-13, before gate 2 runs)
+- **No selector consumes recogniser labels.** The §1 memory row's "opponent tactic history via a
+  recogniser" is replaced by **opponent motion features** (the recogniser's dimensionless window features,
+  speed-agnostic, no label construct). v0 rule tables are written over features, not labels.
+- **Gate 2 (pursuer-tactic recogniser, full-state evader view), written now:** same 200/100 episodes and
+  bars (≥ 0.80 accuracy, UNKNOWN ≤ 0.30 at ratio 1.2), with the observer given the evader's full-state
+  view per L1.5. Pass → the evader's selector may consume pursuer-tactic labels. Fail → features only for
+  both roles. The evader-tactic recogniser remains FAILED; the pursuer is FOV-limited and that is the game.
+- `HOLD-HIDDEN` and the `INTERCEPT`/`LEAD` distinction are dropped from any label vocabulary.
