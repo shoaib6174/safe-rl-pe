@@ -100,3 +100,26 @@ measurable only at N = 500 on seed0 2 100 000; duplicates reject both (S19 A4/A5
 `s23_cg_s2.json`, `s23_cg_s3_seeds.json`. Frozen worktree at the commit that passes review. Launched
 through a wrapper with the S19 gates (CG assertion in the runner, records validated, no rate printed before
 the GIFs). Expected wall time ≈ 3–4 h (`MPC` row ≈ 1.6 ms/call).
+
+---
+
+## Amendment A1 (2026-10-12, before any round number exists) — runner readings
+
+**A1.1 — the NULL excludes the law-EXPOSURE counters.** §4's "logs and per-step trace `==`" is unsatisfiable
+by construction for `MPC-2s`: the law always exposes `last_feasible_count`, so the recorder writes
+`feasible_count == 0` on every MPC step and `None` on every `PLAN` step even when the two episodes are
+identical to the last ulp (measured: 50/50 seeds differed on those counters and on nothing else). The
+identity compares the log, every per-step record **excluding** `aim_point`, `v_est`, `feasible_count`,
+`chose_direct` and the three summary counters, and the executed trace — and additionally asserts
+`aim_point is None` on every step (the treated law never aimed). Holds at N = 50 on 2 090 000+.
+
+**A1.2 — `visible` is the visibility of the observation the action was computed from** (read before the
+step), since the orbit run is about what the law was acting on. Additive recorder field; CG-B's 20-episode
+S18 replay reproduces every `intervention_total` exactly with it present.
+
+**A1.3 — H-STRAT-2 with an empty non-orbit comparator is VACUOUS**, not satisfied. The non-orbit conversion
+is over baseline-LOST non-orbit episodes (the mirror of "baseline lost → law captured"); episodes a law
+loses that the baseline won are visible in H-STRAT-1's delta, not here.
+
+**A1.4 — runner size.** 1545 lines against a 600-line target; S19's is 1716. The copied parts are the
+record-validity trio, CG-B replay, four verdicts, the GIF pass and the CLI. Accepted rather than spent on.

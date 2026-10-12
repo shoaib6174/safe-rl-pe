@@ -24,7 +24,7 @@ finish the current step, report, stop.
 | 3 | `MPC-H` vectorised sampling planner + CG-S1 for it (conditional) | opus / opus | 500 k | **479 k** (158 + 202 + 119 review) | DONE `d2ffeae`; review CLEAN; 3 prereg notes folded into Step 4 |
 | 4 | CG-S2 (model error), CG-S3 seed rule, recorder `aim_point` (+ `last_feasible_count`, numeric RNG digest) | opus / sonnet | 210 k | **191 k** (impl + two runs; no separate review — ruling below) | DONE `dc04e63`; CG-S2 medians 0.82 / 2.48 / 2.43 m (HUG/ATK = full displacement, bar not crossed); CG-S3 seeds 2 090 000/5/6 |
 | 5 | Pre-registration (me) | — | — | — | DONE `pursuit_strategy_prereg_2026-10-12.md` |
-| 6 | S23 runner as a derivative of S19's; review + ≤ 2 fix rounds | opus / opus | 470 k | | dispatched |
+| 6 | S23 runner as a derivative of S19's; review + ≤ 2 fix rounds | opus / opus | 470 k | 281 k impl | `3f57fa5`; 92 tests; NULL exclusion → prereg A1; review pending (fix rounds 0/2) |
 | 7 | Freeze, launch via gated wrapper, CG-S3 watched, `--summarize`, D-entry (me) | — | — | | |
 | | reserve | | 500 k | | |
 | | **total** | | **2.09 M + 0.5 M** | | |
@@ -39,3 +39,4 @@ finish the current step, report, stop.
 - Step 3 fix round 1 landed (202 k): terminal-distance cost orders headings by 2.7 m; direct row = PLAN's action; 24 tests. Running total **743 k / 3.0 M**. Scoped review dispatched (opus).
 - Step 3 review CLEAN (119 k). Notes for the prereg: wall-adjacent states can leave 0/64 feasible rows (law silently = PLAN; observable via last_feasible_count, logged by CG-S4); hash the numeric RNG state not its repr (folded into Step 4, additive); the round's CG-S1 record is produced on 2 090 000+ by the runner. Running total **862 k / 3.0 M**. Step 4 dispatched.
 - Step 4 landed (191 k). Ruling: no separate review for Step 4 — additive recorder fields are covered by 24 tests and will be mechanically checked against S18 replays by the runner's cg_b_additive before any cell; CG-S2/S3 are once-run measurements with pre-written readings. Budget protected for the runner's review. CG-S2's honest caveat (HUG/ATK error = full displacement) written into the prereg as a stated expectation. Running total **1 053 k / 3.0 M**. Step 5 prereg committed; Step 6 dispatched.
+- Step 6 landed (281 k; 1545 lines, accepted per A1.4). Prereg A1 records the NULL exposure-counter exclusion and three readings. Running total **1 334 k / 3.0 M**. Review dispatched (opus).
