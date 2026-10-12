@@ -25,9 +25,9 @@ finish the current step, report, stop.
 | 4 | CG-S2 (model error), CG-S3 seed rule, recorder `aim_point` (+ `last_feasible_count`, numeric RNG digest) | opus / sonnet | 210 k | **191 k** (impl + two runs; no separate review — ruling below) | DONE `dc04e63`; CG-S2 medians 0.82 / 2.48 / 2.43 m (HUG/ATK = full displacement, bar not crossed); CG-S3 seeds 2 090 000/5/6 |
 | 5 | Pre-registration (me) | — | — | — | DONE `pursuit_strategy_prereg_2026-10-12.md` |
 | 6 | S23 runner as a derivative of S19's; review + ≤ 2 fix rounds | opus / opus | 470 k | **749 k** (281 + 173 + 295 fix) | DONE `90d2f73`; 98 tests; five fixes verified directly (no third review); overran its line by 279 k, absorbed by reserve |
-| 7 | Freeze, launch via gated wrapper, CG-S3 watched, `--summarize`, D-entry (me) | — | — | | |
-| | reserve | | 500 k | | |
-| | **total** | | **2.09 M + 0.5 M** | | |
+| 7 | Freeze, launch via gated wrapper, CG-S3 watched, `--summarize`, D-entry (me) | — | — | — | DONE — D144 |
+| | reserve | | 500 k | 279 k used (Step 6) | |
+| | **total** | | **2.09 M + 0.5 M** | **≈ 1.80 M** | **CLOSED under budget** |
 
 ## Log
 - 2026-10-12: ledger opened; Step 1 dispatched.
@@ -42,3 +42,4 @@ finish the current step, report, stop.
 - Step 6 landed (281 k; 1545 lines, accepted per A1.4). Prereg A1 records the NULL exposure-counter exclusion and three readings. Running total **1 334 k / 3.0 M**. Review dispatched (opus).
 - Step 6 review (173 k): CONFIRMED — n_planned_calls counts law-exposed steps (MPC: 1200 vs 238 true), exact 0/64 count not stored, per-step records discarded; fixable only before the round (stop rule). Plus VACUOUS label can mask a FAIL, cg_b missing from round provenance, two test gaps. Fix round 1/2 dispatched. Running total **1 507 k / 3.0 M** (Step 6 at 454 k of 470 k; the fix will draw on reserve).
 - Step 6 fix round 1 landed (295 k) and verified directly: exposure counts from step records, FAIL guard, cg_b in round provenance, two behavioural tests; 164 tests across the four files. Running total **1 802 k / 3.0 M**; reserve 221 k left. Worktree frozen at `90d2f73`. Launching via scripts/launch_s23.sh.
+- 2026-10-12: S23 complete. CG-S3 watched (prereg A2) before `--summarize`. H-STRAT-1 fails ×3, H-STRAT-2 passes ×3, H-SAFE/NULL hold → the pre-registered bound (D144). Final subagent spend ≈ 1.80 M of 3.0 M; no step needed a second fix round; the only line overrun (Step 6, +279 k) came from a 1545-line runner whose review found one confirmed defect that would have made two pre-registered quantities unrecoverable. Ledger closed.
