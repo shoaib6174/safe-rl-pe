@@ -240,8 +240,17 @@ class TestCellTable:
             # D131's recovery shield, fresh per episode, at the CBF defaults
             assert type(game.shield).__name__ == "RecoveryShieldV2"
             assert (game.shield.margin, game.shield.gamma) == (0.0, 0.2)
-            # the same five-tactic library in every row
-            assert len(game.law.tactics) == len(R.ROWS and game.law.tactics)
+            # the same library in every row, instance for instance: the five
+            # families, with COUNTER-ORBIT and AMBUSH per obstacle (reading 1)
+            assert [t.name for t in game.law.tactics] == [
+                "INTERCEPT",
+                "LEAD",
+                "COUNTER-ORBIT(0)",
+                "COUNTER-ORBIT(1)",
+                "AMBUSH(0)",
+                "AMBUSH(1)",
+                "SWEEP",
+            ]
             assert {t.name.split("(")[0] for t in game.law.tactics} == set(ACTIONS)
         # the learned rows are the SAME env class and observation width
         learned = [envs[r] for r in R.LEARNED_ROWS]
@@ -270,6 +279,25 @@ class TestCellTable:
         # ... and TACTIC-V0 keeps the assembly's own tactic adapter
         tv0 = R.build_cell_env(R.cell_name(SEL, "TACTIC-V0"))
         assert type(tv0.game.inner.opponent_factory()).__name__ == "TacticOpponent"
+
+    def test_the_built_library_is_capped_at_forty_and_sweep_carries_the_memory(self):
+        """T = 40 is `pe2.selectors._Capped`, the device the baseline ran under
+        (Step 1.1's reading 3), and `SWEEP` is the dead-reckoning tactic (D146):
+        both are properties of the BUILT env, not of this round's bookkeeping."""
+        from pe2.selectors import DECISION_PERIOD
+
+        env = R.build_cell_env(R.cell_name(SEL, "TACTIC-V0"))
+        tactics = env.game.law.tactics
+        assert DECISION_PERIOD == 40
+        assert [type(t).__name__ for t in tactics] == ["_Capped"] * len(tactics)
+        assert [t.limit for t in tactics] == [40] * len(tactics)
+        sweep = env.rules["pursuer"].sweep
+        assert sweep.name == "SWEEP"
+        assert type(sweep.inner.belief).__name__ == "LastSeenBelief"
+        assert type(sweep.inner.staleness).__name__ == "SearchStalenessTracker"
+        # and the comparator rows choose from the SAME instances
+        rules = R.build_cell_env(R.cell_name("RULES-V0", "TACTIC-V0"))
+        assert [t.limit for t in rules.law.tactics] == [40] * len(tactics)
 
     def test_unknown_cell_name_refuses(self):
         with pytest.raises(SystemExit, match="unknown cell"):
@@ -378,6 +406,96 @@ class TestRecordValidity:
         assert line == "[SEL-80_GREEDY] recorded, n_episodes 500"
         for forbidden in ("capture", "switch", "viol", "pick"):
             assert forbidden not in line
+
+
+# ----------------------------------------------------------------------------
+# A3.4 — the comparator's span accounting
+# ----------------------------------------------------------------------------
+# The reviewer's measured LEAD-1.0 episode: the span log sums to 329 law-call
+# steps while the game's own per-env-step usage counter attributes 231 to
+# tactics. `TacticLaw.act` advances `step_index` even when a re-entered tactic
+# returns None, so ~98 of those are phantom.
+LEAD_USAGE = {"LEAD": 231, "(search policy)": 969}
+RULES_USAGE = {"SWEEP": 120, "INTERCEPT": 60, "LEAD": 51}
+
+
+def _spans(total: int, n: int = 4) -> list[dict]:
+    """`n` spans of equal length summing to `total`, as `spans_with_length`
+    returns them."""
+    each, rest = divmod(total, n)
+    out, start = [], 0
+    for i in range(n):
+        length = each + (1 if i < rest else 0)
+        out.append(
+            {
+                "name": "LEAD",
+                "start": start,
+                "end": start + length,
+                "length": length,
+                "zero_length": length == 0,
+            }
+        )
+        start += length
+    return out
+
+
+class TestSpanAccounting:
+    def test_the_law_step_count_excludes_the_search_policy(self):
+        assert R.law_step_count(LEAD_USAGE) == 231
+        assert R.law_step_count(RULES_USAGE) == 231
+        assert R.SEARCH_KEY == "(search policy)"
+
+    def test_agreement_reads_none_and_leaves_the_count_an_integer(self):
+        assert R.span_accounting(_spans(231), RULES_USAGE) is None
+
+    def test_the_comparators_phantom_steps_make_the_count_unreadable(self):
+        got = R.span_accounting(_spans(329), LEAD_USAGE)
+        assert got == {
+            "spans_sum": 329,
+            "law_steps": 231,
+            "note": "law-call index over-counts on DONE-on-entry rows (A3.4)",
+        }
+
+    def test_run_cell_reports_none_never_zero_when_they_disagree(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        log = {
+            "outcome": "timeout",
+            "steps": 1200,
+            "violations": 0,
+            "n_switches": 0,
+            "n_zero_length_spans": None,
+            "span_accounting": R.span_accounting(_spans(329), LEAD_USAGE),
+            "n_decisions": 4,
+            "inapplicable_picks": 0,
+            "picks": dict.fromkeys(ACTIONS, 0) | {"LEAD": 4},
+            "usage": {"pursuer": LEAD_USAGE, "evader": {}},
+            "tactics": {"evader": [], "pursuer": []},
+            "branch": {},
+        }
+        monkeypatch.setattr(R, "scripted_log", lambda *a, **k: dict(log))
+        rec = R.run_cell("LEAD-1.0_GREEDY", n_episodes=2)
+        assert rec["n_zero_length_spans"] == [None, None]
+        assert rec["n_episodes_span_mismatch"] == 2
+        assert rec["span_accounting"]["spans_sum"] == 329
+        assert rec["aggregate"]["mean_zero_length_spans"] is None
+        # ... and an agreeing row keeps an integer and no note
+        monkeypatch.setattr(
+            R,
+            "scripted_log",
+            lambda *a, **k: dict(log, n_zero_length_spans=0, span_accounting=None),
+        )
+        rec2 = R.run_cell("RULES-V0_GREEDY", n_episodes=2)
+        assert rec2["n_zero_length_spans"] == [0, 0]
+        assert rec2["span_accounting"] is None
+        assert rec2["n_episodes_span_mismatch"] == 0
+        assert rec2["aggregate"]["mean_zero_length_spans"] == 0.0
+
+    def test_n_switches_is_still_count_switches_of_the_same_log(self):
+        """The coordinator's ruling: the switch count is not recomputed from the
+        usage counter, and the note travels with the record instead."""
+        src = _PATH.read_text()
+        assert '"n_switches": int(count_switches(spans))' in src
+        assert "it too is in law-call" in src
 
 
 # ----------------------------------------------------------------------------
@@ -530,6 +648,18 @@ class TestHTac2:
         v = R.h_tac_2(recs, 80)
         assert v["vs_rules_v0"]["HUG"]["verdict"] == "FAIL"
         assert (v["n_pass_vs_rules"], v["verdict"]) == (2, "PASS")
+
+    def test_the_over_opponents_reading_is_in_the_modules_readings_block(self):
+        """A3.2: the runner's bar is stricter than section 4's text — per seed,
+        >= 2/3 OPPONENTS — and the module says so where its readings are."""
+        doc = R.__doc__
+        assert "A3.2" in doc
+        assert "quantified over OPPONENTS within a seed" in doc
+        assert "per-opponent p-values are" in doc
+        assert all(
+            b["p"] is not None
+            for b in R.h_tac_2(_pass_round(), 80)["vs_rules_v0"].values()
+        )
 
     def test_it_reads_picks_and_never_usage_steps(self):
         """A2.2, asserted on the source as well as on the behaviour: a
@@ -710,6 +840,117 @@ class TestConstructGates:
 
 
 # ----------------------------------------------------------------------------
+# A3.1 — absent training evidence is an offender, never a zero
+# ----------------------------------------------------------------------------
+# The reviewer's three tables, each of which read PASS/HOLDS before A3.1:
+#   (a) no probe file at all        -> read_probes marks every arm missing
+#   (b) a probe file with `checkpoints: []`
+#   (c) a `probes` dict that does not cover the six learned rows (here, empty)
+def _probes_absent() -> dict:
+    """(a) every probe file missing, as `read_probes` reports it."""
+    return {
+        row: {"path": f"p_{row}.json", "missing": True, "rows": []}
+        for row in R.LEARNED_ROWS
+    }
+
+
+def _probes_empty() -> dict:
+    """(b) every probe file present and readable, with no rows in it."""
+    return {
+        row: {"path": f"p_{row}.json", "missing": False, "rows": []}
+        for row in R.LEARNED_ROWS
+    }
+
+
+ABSENT_TABLES = {
+    "files missing": _probes_absent,
+    "checkpoints empty": _probes_empty,
+    "probes dict empty": dict,
+    "probes None": lambda: None,
+}
+
+
+class TestAbsentTrainingEvidence:
+    def test_read_probes_reports_a_missing_file_as_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        got = R.read_probes()
+        assert set(got) == set(R.LEARNED_ROWS)
+        assert all(b["missing"] and b["rows"] == [] for b in got.values())
+
+    def test_read_probes_reports_an_unreadable_file_as_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        R.probe_file("SEL-80").write_text("{not json")
+        block = R.read_probes()["SEL-80"]
+        assert block["missing"] is True and "error" in block
+
+    def test_the_probes_dict_must_cover_exactly_the_six_learned_rows(self):
+        assert R.probe_coverage(_probes())["covers_learned_rows"] is True
+        short = {k: v for k, v in _probes().items() if k != "NOMEM-82"}
+        cov = R.probe_coverage(short)
+        assert cov["covers_learned_rows"] is False
+        assert cov["evidence_absent"] == ["NOMEM-82"]
+        assert cov["expected_rows"] == list(R.LEARNED_ROWS)
+
+    @pytest.mark.parametrize("table", list(ABSENT_TABLES))
+    def test_cg_t1_refuses_rather_than_passing(self, table):
+        v = R.cg_t1(_pass_round(), ABSENT_TABLES[table]())
+        assert v["verdict"] == "REFUSE"
+        assert v["absent_training_evidence"] == sorted(R.LEARNED_ROWS)
+        assert v["non_zero_offenders"] == []  # not a count: an ABSENCE
+        assert all(b["train_inapplicable_picks_max"] is None for b in v["training"].values())
+
+    @pytest.mark.parametrize("table", list(ABSENT_TABLES))
+    def test_h_safe_is_incomplete_rather_than_holds(self, table):
+        v = R.h_safe(_pass_round(), ABSENT_TABLES[table]())
+        assert v["verdict"] == "INCOMPLETE"
+        assert v["missing_training"] == sorted(R.LEARNED_ROWS)
+        assert v["training_offenders"] == []
+        assert all(b["train_violations_max"] is None for b in v["training"].values())
+
+    def test_rows_without_the_counter_are_absent_evidence_too(self):
+        """A probe row that carries no `train_violations` key is not a zero."""
+        probes = {
+            row: {"path": "p", "missing": False, "rows": [{"mark": 250_000}]}
+            for row in R.LEARNED_ROWS
+        }
+        assert R.h_safe(_pass_round(), probes)["missing_training"] == sorted(R.LEARNED_ROWS)
+        assert R.cg_t1(_pass_round(), probes)["verdict"] == "REFUSE"
+
+    @pytest.mark.parametrize("table", list(ABSENT_TABLES))
+    def test_summarize_refuses_on_every_absent_table(self, tmp_path, monkeypatch, table):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        monkeypatch.setattr(R, "read_probes", ABSENT_TABLES[table])
+        _on_disk(tmp_path, _measurable("SEL-80_GREEDY"))
+        monkeypatch.setattr(
+            R, "write_figure", lambda *a, **k: pytest.fail("a table was written")
+        )
+        with pytest.raises(SystemExit, match="CG-T1|H-SAFE"):
+            R.summarize()
+        assert not (tmp_path / "s24_1_round.json").exists()
+
+    def test_an_undetermined_learned_cell_is_named_by_cg_t1(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        _on_disk(tmp_path, R.undetermined_record("SEL-81_HUG", RuntimeError("boom")))
+        _on_disk(tmp_path, R.undetermined_record("RULES-V0_HUG", RuntimeError("boom")))
+        _measurable_rejected = R.scan_records()[1]
+        v = R.cg_t1(_pass_round(), _probes(), _measurable_rejected)
+        assert v["undetermined_learned_cells"] == ["SEL-81_HUG"]  # not the scripted row
+        assert R.undetermined_learned_cells(_measurable_rejected) == ["SEL-81_HUG"]
+        # named, not treated as a mask failure: the stop rule and `missing` own it
+        assert v["verdict"] == "PASS"
+        text = R.direction(R.verdicts(_pass_round(), _probes(), _measurable_rejected))
+        assert "H-TAC-1 PASSES" in text
+
+    def test_the_direction_names_the_absence_instead_of_a_verdict(self):
+        text = R.direction(R.verdicts(_pass_round(), _probes_absent()))
+        assert text.startswith("CG-T1 REFUSES")
+        assert "NO training evidence" in text
+        assert "absent evidence is an offender, never a zero" in text
+        assert "H-TAC-1 PASSES" not in text
+
+
+# ----------------------------------------------------------------------------
 # direction() — section 4's refutation paragraph
 # ----------------------------------------------------------------------------
 class TestDirection:
@@ -747,6 +988,29 @@ class TestDirection:
         assert "in-distribution" in text  # TACTIC-V0 is labelled in every table
         assert "AMBUSH" in text  # section 2's expectation rides along
 
+    def test_the_comparators_search_share_rides_with_its_number(self):
+        """A3.4: LEAD-1.0 is a law + search hybrid and the sentence says so."""
+        text = R.direction(R.verdicts(_pass_round(), _probes()))
+        assert "law + SEARCH hybrid" in text
+        assert "~86 % of steps in OrbitSearch" in text
+        assert "the learned rows spend 0" in text
+
+    def test_section_4s_sentence_is_emitted_only_at_zero_of_three(self):
+        """A3.3: at 1/3 the round still is not licensed, but 'does not beat the
+        best fixed law' is not what the evidence says."""
+        recs = _pass_round()
+        for seed in (81, 82):
+            for o in ALL:
+                name = R.cell_name(f"SEL-{seed}", o)
+                recs[name] = _cell(name, _caps(0.05), LEAN[o])
+        t1 = R.h_tac_1_round(recs)
+        assert (t1["n_pass"], t1["verdict"]) == (1, "FAIL")
+        text = R.direction(R.verdicts(recs, _probes()))
+        assert "H-TAC-1 fails the >= 2/3 bar (1/3 seeds passed)" in text
+        assert "S24.2 is not licensed" in text
+        assert "does not beat the best fixed law" not in text
+        assert "FAILS on ALL 3 seeds" not in text
+
     def test_h_tac_1_failing_everywhere_blocks_s24_2(self):
         recs = _pass_round()
         for s in R.SEEDS:
@@ -754,7 +1018,8 @@ class TestDirection:
                 name = R.cell_name(f"SEL-{s}", o)
                 recs[name] = _cell(name, _caps(0.05), LEAN[o])
         text = R.direction(R.verdicts(recs, _probes()))
-        assert "H-TAC-1 FAILS" in text
+        assert R.h_tac_1_round(recs)["n_pass"] == 0
+        assert "H-TAC-1 FAILS on ALL 3 seeds" in text
         assert "does not beat the best fixed law" in text
         assert "S24.2 IS NOT LICENSED" in text
 

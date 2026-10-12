@@ -62,6 +62,24 @@ Readings this module fixes, because the text can be read two ways:
    rows reach the search policy whenever their law is DONE on entry (S23's
    `LEAD-1.0` did too), which is the comparator working as measured; only the
    learned cells carry A2.1's invariant and `summarize` refuses without it.
+6. **H-TAC-2(b) is quantified over OPPONENTS within a seed** (A3.2, stricter
+   than section 4's text, by choice): per seed the learned profile must differ
+   from `RULES-V0`'s on >= 2/3 opponents, and then >= 2/3 seeds. Section 4 wrote
+   both clauses over seeds; a selector that differs from the rule table on one
+   opponent only has not shown that it chooses. The per-opponent p-values are
+   recorded, so the section-4-literal reading stays readable off the record.
+7. **Absent training evidence is an OFFENDER, never a zero** (A3.1). A missing,
+   unreadable or empty probe file makes CG-T1 refuse and H-SAFE `INCOMPLETE`;
+   `summarize` cannot print `PASS`/`HOLDS` without the rows, and CG-T1 names any
+   learned cell whose record is UNDETERMINED.
+8. **The comparator's span log over-counts** (A3.4). `TacticLaw` advances its
+   law-call index even when a re-entered tactic returns `None`, so
+   `spans_with_length` reads ~98 phantom steps per `LEAD-1.0` episode. Where the
+   span sum and the law-driven env-step count disagree, `n_zero_length_spans` is
+   `None` with a note — never 0. The learned rows are unaffected (A2.1's mask
+   removes that path). `n_switches` is kept as `count_switches` of the same log
+   (the coordinator's ruling), so on a mismatching row it too is in law-call
+   units; the note travels with the record and CG-T2 reads the label beside it.
 
 Usage:
   ./venv/bin/python scripts/derisk_s24_1_gate.py --cells         (all missing)
@@ -453,28 +471,61 @@ def load_policy(row: str, device: str = "cpu"):
 # ----------------------------------------------------------------------------
 # one episode, one cell
 # ----------------------------------------------------------------------------
+def law_step_count(usage: dict) -> int:
+    """Env steps a row's TACTICS drove, from the game's own per-env-step usage
+    counter — the search policy's steps excluded. A3.4's cross-check against the
+    span log, whose unit is the law-call index and not the env step."""
+    return int(sum(v for k, v in usage.items() if k != SEARCH_KEY))
+
+
+def span_accounting(spans: list[dict], usage: dict) -> dict | None:
+    """A3.4: `None` when the two accountings agree, else the pair and the note.
+
+    `TacticLaw.act` advances `step_index` even when a re-entered tactic returns
+    `None` and no env step is taken, so a row whose law can be DONE on entry
+    (`LEAD-1.0`) reads phantom span steps — ~98 per episode. Where that happens
+    `n_zero_length_spans` is reported as `None` rather than as a 0 that would
+    read as A1.2's invariant holding."""
+    spans_sum = int(sum(s["length"] for s in spans))
+    law_steps = law_step_count(usage)
+    if spans_sum == law_steps:
+        return None
+    return {
+        "spans_sum": spans_sum,
+        "law_steps": law_steps,
+        "note": "law-call index over-counts on DONE-on-entry rows (A3.4)",
+    }
+
+
 def scripted_log(game, cfg: EnvConfig, seed: int) -> dict:
     """One scripted-row episode, in `SelectorMDP.play_episode`'s log schema.
 
     The search policy is `OrbitSearch` (`SWEEP`'s own primitive, as S19/S23 and
     the v0b game), reached whenever the pursuer's law is DONE on entry. `picks`
     and `n_switches` come from the span log (readings 3 and A1.2's own
-    `count_switches`), so the two row types are counted by the same functions.
+    `count_switches`), so the two row types are counted by the same functions;
+    A3.4's cross-check (reading 8) decides whether the span LENGTHS may be read.
     """
     log = game.play_episode(OrbitSearch(cfg).predict, seed)
     spans = spans_with_length(game.law.history, game.law.step_index)
     picks = Counter(tactic_family(s["name"]) for s in spans)
+    usage = {role: dict(counts) for role, counts in game.usage.items()}
+    accounting = span_accounting(spans, usage["pursuer"])
     return log | {
         "tactics": {
             "evader": GAME._history(game.evader),
             "pursuer": GAME._history(game.law),
         },
-        "usage": {role: dict(counts) for role, counts in game.usage.items()},
+        "usage": usage,
         "branch": game.branch_summary(),
         "n_decisions": len(spans),
         "picks": {name: int(picks.get(name, 0)) for name in ACTIONS},
         "pursuer_spans": spans,
-        "n_zero_length_spans": sum(s["zero_length"] for s in spans),
+        # A3.4: `None`, never 0, when the span log's unit is not the env step.
+        "n_zero_length_spans": (
+            None if accounting else sum(s["zero_length"] for s in spans)
+        ),
+        "span_accounting": accounting,
         "n_switches": int(count_switches(spans)),
         "inapplicable_picks": 0,  # a fixed or scripted selector cannot mis-pick
         "recovery": {
@@ -501,7 +552,8 @@ def run_cell(name: str, device: str = "cpu", n_episodes: int | None = None) -> d
     ep_steps: list[int] = []
     violations: list[int] = []
     switches: list[int] = []
-    zero_spans: list[int] = []
+    zero_spans: list[int | None] = []
+    accounting: list[dict] = []
     decisions: list[int] = []
     bad_picks: list[int] = []
     tactics: list[dict] = []
@@ -521,7 +573,12 @@ def run_cell(name: str, device: str = "cpu", n_episodes: int | None = None) -> d
         ep_steps.append(int(log["steps"]))
         violations.append(int(log["violations"]))
         switches.append(int(log["n_switches"]))
-        zero_spans.append(int(log["n_zero_length_spans"]))
+        # A3.4: `None` where the span log's unit is not the env step; the pair
+        # and the note travel with the record instead of a misleading 0.
+        zeros = log["n_zero_length_spans"]
+        zero_spans.append(None if zeros is None else int(zeros))
+        if log.get("span_accounting"):
+            accounting.append(log["span_accounting"])
         decisions.append(int(log["n_decisions"]))
         # `inapplicable_picks` is CUMULATIVE on the env (CG-T1's counter has no
         # episode hook), so the per-episode figure is its increment.
@@ -554,6 +611,8 @@ def run_cell(name: str, device: str = "cpu", n_episodes: int | None = None) -> d
         "violation_steps": int(sum(violations)),
         "n_switches": switches,
         "n_zero_length_spans": zero_spans,
+        "span_accounting": accounting[0] if accounting else None,  # A3.4
+        "n_episodes_span_mismatch": len(accounting),
         "n_decisions": decisions,
         "inapplicable_picks_per_episode": bad_picks,
         "inapplicable_picks": int(seen_bad),  # CG-T1
@@ -575,9 +634,10 @@ def run_cell(name: str, device: str = "cpu", n_episodes: int | None = None) -> d
             "mean_switches": float(statistics.fmean(switches)) if switches else float("nan"),
             "switches_p90": _q(switches, 0.90),
             "mean_decisions": float(statistics.fmean(decisions)) if decisions else float("nan"),
-            "mean_zero_length_spans": float(statistics.fmean(zero_spans))
-            if zero_spans
-            else float("nan"),
+            # A3.4: unreadable, not zero, when any episode's accountings disagree
+            "mean_zero_length_spans": None
+            if (accounting or not zero_spans)
+            else float(statistics.fmean(zero_spans)),
             "picks_share": {
                 a: picks.get(a, 0) / max(1, sum(picks.values())) for a in ACTIONS
             },
@@ -689,6 +749,36 @@ def read_probes() -> dict:
             continue
         out[row] = {"path": str(path), "missing": False, "rows": rows}
     return out
+
+
+def probe_block(probes: dict | None, row: str) -> dict:
+    """One arm's probe block, with A3.1's own vocabulary: `rows`, and whether
+    the EVIDENCE is absent (no file, unreadable, or no rows in it). A block
+    that is not in `probes` at all is absent too — `probes` must cover exactly
+    `LEARNED_ROWS`, and a short dict is missing evidence, not clean evidence."""
+    block = (probes or {}).get(row) or {"missing": True, "rows": [], "absent_key": True}
+    rows = block.get("rows") or []
+    return {
+        "n_probe_rows": len(rows),
+        "rows": rows,
+        # A3.1: absent evidence is an offender, never a zero.
+        "evidence_absent": bool(block.get("missing")) or not rows,
+        "path": block.get("path"),
+        "error": block.get("error"),
+    }
+
+
+def probe_coverage(probes: dict | None) -> dict:
+    """A3.1: the arms whose training evidence is absent, and whether `probes`
+    covers exactly the six learned rows."""
+    blocks = {row: probe_block(probes, row) for row in LEARNED_ROWS}
+    return {
+        "blocks": blocks,
+        "evidence_absent": sorted(r for r, b in blocks.items() if b["evidence_absent"]),
+        "covers_learned_rows": set(probes or {}) == set(LEARNED_ROWS),
+        "expected_rows": list(LEARNED_ROWS),
+        "got_rows": sorted(probes or {}),
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -952,74 +1042,144 @@ def h_tac_3_round(records: dict) -> dict:
 def h_safe(records: dict, probes: dict | None = None) -> dict:
     """H-SAFE: 0 contact steps in all 24 cells AND 0 in training (A2.4: every
     probe row carries the training env's `train_violations`, so a crashed arm
-    still carries the evidence)."""
+    still carries the evidence).
+
+    A3.1: an arm whose probe rows are absent — or whose `train_violations` is
+    not even present in them — is `missing_training` and the verdict is
+    `INCOMPLETE`. It is NOT a zero: "no evidence of contact" and "evidence of no
+    contact" are the same number only if the rows were read."""
     have = {n: records[n] for n in CELL_ORDER if n in records}
     offenders = sorted(n for n, r in have.items() if int(r.get("violation_steps", 0)))
     steps = sum(int(r.get("violation_steps", 0)) for r in have.values())
+    coverage = probe_coverage(probes)
     train: dict = {}
-    for row, block in (probes or {}).items():
-        rows = block.get("rows") or []
+    for row, block in coverage["blocks"].items():
+        rows = block["rows"]
         train[row] = {
-            "n_probe_rows": len(rows),
+            "n_probe_rows": block["n_probe_rows"],
             "train_violations_max": max(
-                (int(r.get("train_violations", 0)) for r in rows), default=None
+                (int(r["train_violations"]) for r in rows if "train_violations" in r),
+                default=None,
             ),
             "probe_violations_total": sum(int(r.get("violations", 0)) for r in rows),
-            "missing": bool(block.get("missing")),
+            "evidence_absent": block["evidence_absent"],
+            "path": block["path"],
         }
     train_offenders = sorted(
-        r for r, b in train.items() if (b["train_violations_max"] or 0) or b["probe_violations_total"]
+        r
+        for r, b in train.items()
+        if (b["train_violations_max"] or 0) or b["probe_violations_total"]
+    )
+    # A3.1: no rows, or rows that do not carry the counter, is absent evidence.
+    missing_training = sorted(
+        r
+        for r, b in train.items()
+        if b["evidence_absent"] or b["train_violations_max"] is None
     )
     missing = _missing(records)
     return {
         "hypothesis": "H-SAFE",
         "verdict": "FAILS"
         if (steps or train_offenders)
-        else ("INCOMPLETE" if missing else "HOLDS"),
+        else ("INCOMPLETE" if (missing or missing_training) else "HOLDS"),
         "violation_steps": int(steps),
         "offenders": offenders,
         "training": train,
         "training_offenders": train_offenders,
+        "missing_training": missing_training,
+        "probe_coverage": {
+            k: coverage[k] for k in ("covers_learned_rows", "expected_rows", "got_rows")
+        },
         "gated_cells": list(CELL_ORDER),
         "missing": missing,
     }
 
 
-def cg_t1(records: dict, probes: dict | None = None) -> dict:
+def undetermined_learned_cells(rejected: dict | None) -> list[str]:
+    """The LEARNED cells whose record on disk is UNDETERMINED, from
+    `scan_records()`'s rejected map (A3.1, named by CG-T1).
+
+    The map is keyed by FILE NAME, which `run_cells` writes as `{cell}.json`; a
+    file named anything else is not resolvable to a cell and is left to the
+    duplicate/validity refusal that already covers it."""
+    out = []
+    for fname, why in (rejected or {}).items():
+        cell = str(fname).removesuffix(".json")
+        if UNDETERMINED in str(why) and CELLS.get(cell, {}).get("kind") == "learned":
+            out.append(cell)
+    return out
+
+
+def cg_t1(
+    records: dict, probes: dict | None = None, rejected: dict | None = None
+) -> dict:
     """CG-T1 (section 5): 0 inapplicable picks over all learned cells and all
     training probes. A failure REFUSES the summary — the mask is what makes an
     inapplicable pick impossible, so a non-zero count means the action space the
-    round measured is not the one it registered."""
+    round measured is not the one it registered.
+
+    A3.1: ABSENT evidence refuses too. An arm with no probe rows, an unreadable
+    probe file, or rows that do not carry `train_inapplicable_picks` cannot
+    witness "0 inapplicable picks over all training decisions", and a `probes`
+    dict that does not cover the six learned rows is itself a refusal. Any
+    learned cell whose record is UNDETERMINED is NAMED here from
+    `scan_records()`'s rejected set — it is not an offender of the mask (the
+    crash is reported by the stop rule and by `missing`), but a reader of this
+    gate must see that the cell's own decisions were never counted."""
     cells = {
         n: int(records[n].get("inapplicable_picks", 0))
         for n in CELL_ORDER
         if n in records and CELLS[n]["kind"] == "learned"
     }
+    coverage = probe_coverage(probes)
     train = {}
-    for row, block in (probes or {}).items():
-        rows = block.get("rows") or []
+    for row, block in coverage["blocks"].items():
+        rows = block["rows"]
         train[row] = {
             "train_inapplicable_picks_max": max(
-                (int(r.get("train_inapplicable_picks", 0)) for r in rows), default=None
+                (
+                    int(r["train_inapplicable_picks"])
+                    for r in rows
+                    if "train_inapplicable_picks" in r
+                ),
+                default=None,
             ),
             "probe_inapplicable_picks_max": max(
-                (int(r.get("inapplicable_picks", 0)) for r in rows), default=None
+                (int(r["inapplicable_picks"]) for r in rows if "inapplicable_picks" in r),
+                default=None,
             ),
-            "n_probe_rows": len(rows),
-            "missing": bool(block.get("missing")),
+            "n_probe_rows": block["n_probe_rows"],
+            "evidence_absent": block["evidence_absent"],
+            "path": block["path"],
         }
-    offenders = sorted(n for n, v in cells.items() if v) + sorted(
+    non_zero = sorted(n for n, v in cells.items() if v) + sorted(
         row
         for row, b in train.items()
         if (b["train_inapplicable_picks_max"] or 0)
         or (b["probe_inapplicable_picks_max"] or 0)
     )
+    absent = sorted(
+        row
+        for row, b in train.items()
+        if b["evidence_absent"]
+        or b["train_inapplicable_picks_max"] is None
+        or b["probe_inapplicable_picks_max"] is None
+    )
+    if not coverage["covers_learned_rows"]:
+        absent = sorted(set(absent) | set(LEARNED_ROWS))
+    undetermined = sorted(undetermined_learned_cells(rejected))
     return {
         "gate": "CG-T1 (the mask holds), prereg section 5",
-        "verdict": "REFUSE" if offenders else "PASS",
+        "verdict": "REFUSE" if (non_zero or absent) else "PASS",
         "cells": cells,
         "training": train,
-        "offenders": offenders,
+        "offenders": non_zero + absent,
+        "non_zero_offenders": non_zero,
+        "absent_training_evidence": absent,  # A3.1
+        "undetermined_learned_cells": undetermined,  # A3.1, named not gated
+        "probe_coverage": {
+            k: coverage[k] for k in ("covers_learned_rows", "expected_rows", "got_rows")
+        },
     }
 
 
@@ -1117,11 +1277,30 @@ def direction(v: dict) -> str:
             "round and nothing else is read."
         )
     if gate1["verdict"] == "REFUSE":
+        why = []
+        if gate1["non_zero_offenders"]:
+            why.append(
+                f"inapplicable picks in {', '.join(gate1['non_zero_offenders'])}"
+            )
+        if gate1["absent_training_evidence"]:
+            why.append(
+                "NO training evidence for "
+                f"{', '.join(gate1['absent_training_evidence'])} (A3.1: absent "
+                "evidence is an offender, never a zero)"
+            )
         return (
-            f"CG-T1 REFUSES: inapplicable picks in {', '.join(gate1['offenders'])}. "
-            "The mask is what makes an inapplicable pick impossible (prereg "
-            "section 5), so the action space measured is not the one registered "
-            "and no capture rate here is read."
+            f"CG-T1 REFUSES: {'; '.join(why)}. The mask is what makes an "
+            "inapplicable pick impossible (prereg section 5), so until every "
+            "learned cell AND every arm's probe rows read 0 the action space "
+            "measured is not demonstrably the one registered and no capture rate "
+            "here is read."
+            + (
+                " UNDETERMINED learned cell(s): "
+                + ", ".join(gate1["undetermined_learned_cells"])
+                + " — their decisions were never counted."
+                if gate1["undetermined_learned_cells"]
+                else ""
+            )
         )
     if a21["verdict"] == "REFUSE":
         return (
@@ -1134,9 +1313,18 @@ def direction(v: dict) -> str:
     if "INCOMPLETE" in (t1["verdict"], t2["verdict"], t3["verdict"], safe["verdict"]):
         return (
             f"incomplete: {len(v['missing'])} of {v['n_cells']} cells have no "
-            "record. Every row x opponent must run on the one stream before a "
-            "verdict is read (prereg section 6: a crashed cell is UNDETERMINED, "
-            "never re-run after a number is seen)."
+            "record"
+            + (
+                " and there is NO training evidence for "
+                + ", ".join(safe["missing_training"])
+                + " (A3.1)"
+                if safe["missing_training"]
+                else ""
+            )
+            + ". Every row x opponent must run on the one stream, and every "
+            "arm's probe rows must be read, before a verdict is read (prereg "
+            "section 6: a crashed cell is UNDETERMINED, never re-run after a "
+            "number is seen)."
         )
     parts = []
     for s in SEEDS:
@@ -1150,11 +1338,20 @@ def direction(v: dict) -> str:
             f"SEL-{s}: H-TAC-1 {b['verdict']} "
             f"({b['n_pass']}/{b['n_opponents']} opponents vs {BASELINE_ROW}; {dirs})."
         )
-    if t1["verdict"] != "PASS":
+    if t1["n_pass"] == 0:
+        # A3.3: section 4's own sentence belongs to 0/3 and nowhere else.
         parts.append(
-            f"H-TAC-1 FAILS ({t1['n_pass']}/{len(SEEDS)} seeds): the discrete "
-            "semi-MDP selector does not beat the best fixed law under the shield. "
-            "Reported, and S24.2 IS NOT LICENSED (section 4's refutation)."
+            "H-TAC-1 FAILS on ALL 3 seeds: the discrete semi-MDP selector does "
+            "not beat the best fixed law under the shield. Reported, and S24.2 IS "
+            "NOT LICENSED (section 4's refutation)."
+        )
+    elif t1["verdict"] != "PASS":
+        parts.append(
+            f"H-TAC-1 fails the >= {PASS_MIN}/{len(SEEDS)} bar "
+            f"({t1['n_pass']}/{len(SEEDS)} seeds passed); S24.2 is not licensed. "
+            f"Section 4's stronger sentence belongs to 0/{len(SEEDS)} and is NOT "
+            "emitted here: a seed that passed is not nothing, and the seeds "
+            f"{', '.join(t1['passing_seeds'])} did pass (A3.3)."
         )
     else:
         parts.append(
@@ -1162,6 +1359,15 @@ def direction(v: dict) -> str:
             "among the five tactics captures more under the shield than the best "
             "fixed law, so the selector was a binding constraint."
         )
+    # A3.4, stated wherever the comparator's number is: LEAD-1.0 is not a pure
+    # law under this shield.
+    parts.append(
+        f"What {BASELINE_ROW} is, stated with its number: a law + SEARCH hybrid "
+        "— it spends ~86 % of steps in OrbitSearch when the evader is unseen "
+        "(exactly as S23 measured it), while the learned rows spend 0 (A2.1's "
+        "mask removes that path). The comparison is to the best available fixed "
+        "pursuer, not to a law that drives every step."
+    )
     for s in SEEDS:
         b = t2["seeds"][str(s)]
         a = b["across_opponents"]
@@ -1224,9 +1430,12 @@ def direction(v: dict) -> str:
     return " ".join(parts)
 
 
-def verdicts(records: dict, probes: dict | None = None) -> dict:
-    """Every verdict of the round — a pure function of the records and the probe
-    rows, so a test can state a round rather than run one."""
+def verdicts(
+    records: dict, probes: dict | None = None, rejected: dict | None = None
+) -> dict:
+    """Every verdict of the round — a pure function of the records, the probe
+    rows and the rejected map, so a test can state a round rather than run
+    one."""
     missing = _missing(records)
     cg2 = cg_t2(records)
     return {
@@ -1235,7 +1444,7 @@ def verdicts(records: dict, probes: dict | None = None) -> dict:
         "h_tac_2": h_tac_2_round(records),
         "h_tac_3": h_tac_3_round(records),
         "h_safe": h_safe(records, probes),
-        "cg_t1": cg_t1(records, probes),
+        "cg_t1": cg_t1(records, probes, rejected),
         "cg_a2_1": cg_a2_1(records),
         "cg_t2": cg2,
         "labels": {r: row_label(cg2, r) for r in ROWS},
@@ -1331,11 +1540,13 @@ def write_figure(records: dict, path: pathlib.Path, cg2: dict | None = None) -> 
 def summarize(device: str = "cpu") -> dict:
     """The round's only reader of numbers, run after `--gifs` (CG-T3).
 
-    CG-T1 and A2.1 REFUSE here (section 5: before any capture rate is read)."""
+    CG-T1 and A2.1 REFUSE here (section 5: before any capture rate is read),
+    and so does absent training evidence (A3.1) — `HOLDS`/`PASS` may not be
+    printed from rows that were never read."""
     records = load_records()
     _measurable, rejected, _by_cell = scan_records()
     probes = read_probes()
-    v = verdicts(records, probes)
+    v = verdicts(records, probes, rejected)
     for gate in (v["cg_t1"], v["cg_a2_1"]):
         if gate["verdict"] == "REFUSE":
             raise SystemExit(
@@ -1343,6 +1554,13 @@ def summarize(device: str = "cpu") -> dict:
                 "Section 5 puts the construct gates before any capture rate, so "
                 "no table is written while this stands."
             )
+    if v["h_safe"]["missing_training"]:
+        raise SystemExit(
+            "H-SAFE REFUSES the summary: no training evidence for "
+            f"{v['h_safe']['missing_training']} (probe rows absent or without "
+            "`train_violations`). A3.1: absent evidence is an offender, never a "
+            "zero, so H-SAFE stays INCOMPLETE and no table is written."
+        )
     blob = {
         "verdicts": v,
         "direction": direction(v),
