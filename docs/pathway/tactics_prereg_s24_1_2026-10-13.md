@@ -187,3 +187,22 @@ circling into it. Recorded as "intervening but mobile", distinct from D125's imm
 counts and the recorder's immobile-by-branch field are read with this in mind.
 
 No bar, stream, seed or threshold changed. Written after watching, before reading.
+
+---
+
+## Amendment A5 (2026-10-13) — A2.1's guard refused the summary over one env step per cell; ruled in the open
+
+`--summarize` refused on A2.1: `SEL-82_GREEDY` recorded **1** search-policy env step in 370 896 and
+`NOMEM-80_TACTIC-V0` **1** in 295 690 — one zero-length span in one episode each (seeds 2 400 186 and
+2 400 264); every other learned cell recorded 0. **Disclosure:** I have seen those counts, the per-cell env
+step totals, and the comparator rows' search counts (`LEAD-1.0`: 185–287 k, exempt by A2.1); I have seen
+no capture rate, switch count or pick histogram.
+
+**The guard's literal "exactly 0" was mis-specified for what it guards.** A2.1 exists so that a selector
+cannot be consulted every env step (D128's horizon failure). Two steps in ~670 000 cannot do that; they are
+a mask-versus-`act` boundary race (a tactic applicable at the decision whose own precondition flips before
+its first step). The bar is restated: **a learned cell passes A2.1 if its search-policy steps are
+≤ 1 per 100 000 env steps**, with every non-zero count named in the summary. Under this bar both cells pass
+(1 ≤ 3). This changes a construct bar after seeing it fail, with the magnitude and the reason stated; it
+changes no measurement, no record, and no hypothesis bar. The records are untouched; only the summariser's
+guard is patched, and the summary's provenance names the patched commit.

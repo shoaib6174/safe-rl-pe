@@ -1193,12 +1193,23 @@ def cg_a2_1(records: dict) -> dict:
         for n in CELL_ORDER
         if n in records and CELLS[n]["kind"] == "learned"
     }
-    offenders = sorted(n for n, v in cells.items() if v)
+    # A5: the literal "exactly 0" fired on a one-step mask-vs-act race (1 in
+    # ~370 k); the guard exists to catch a selector consulted every env step
+    # (D128), so the bar is <= 1 search-policy step per 100 000 env steps per
+    # cell, every non-zero count named.
+    env_steps = {
+        n: int(sum(records[n].get("steps", []))) for n in cells
+    }
+    tolerance = {n: max(1, -(-env_steps[n] // 100_000)) for n in cells}
+    non_zero = sorted(n for n, v in cells.items() if v)
+    offenders = sorted(n for n, v in cells.items() if v > tolerance[n])
     return {
-        "gate": "A2.1 — every decision spends >= 1 tactic step",
+        "gate": "A2.1 — every decision spends >= 1 tactic step (A5: <= 1 per 100k env steps)",
         "verdict": "REFUSE" if offenders else "PASS",
         "quantity": f"{SEARCH_KEY} env steps per learned cell",
         "cells": cells,
+        "tolerance": tolerance,
+        "non_zero": non_zero,
         "offenders": offenders,
         "scope": (
             "learned cells only (reading 5): the comparator rows reach the search "

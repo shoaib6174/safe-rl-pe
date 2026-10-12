@@ -1374,3 +1374,29 @@ class TestSmoke:
         assert sum(rec["picks"].values()) == sum(rec["n_decisions"]) > 0
         assert rec["aggregate"]["evader_tactics_recorded"] is False
         assert all(s >= 0 for s in rec["n_switches"])
+
+
+
+class TestA5Tolerance:
+    """A5: one search-policy step in ~370 k env steps is a boundary race, not
+    a selector consulted every step; the guard tolerates <= 1 per 100 000 env
+    steps per cell and names every non-zero count."""
+
+    def _rec(self, search_steps, n_steps_total, n_eps=500):
+        per = [n_steps_total // n_eps] * n_eps
+        return {"search_policy_steps": search_steps, "steps": per, "n_episodes": n_eps, "seed0": R.GATE_SEED0}
+
+    def test_one_step_in_370k_passes_and_is_named(self):
+        name = "SEL-82_GREEDY"
+        g = R.cg_a2_1({name: self._rec(1, 370_000)})
+        assert g["verdict"] == "PASS" and g["non_zero"] == [name] and g["offenders"] == []
+        assert g["tolerance"][name] == 4
+
+    def test_a_selector_consulted_every_step_still_refuses(self):
+        name = "SEL-80_GREEDY"
+        g = R.cg_a2_1({name: self._rec(5_000, 370_000)})
+        assert g["verdict"] == "REFUSE" and g["offenders"] == [name]
+
+    def test_zero_is_still_zero(self):
+        g = R.cg_a2_1({"SEL-81_HUG": self._rec(0, 300_000)})
+        assert g["verdict"] == "PASS" and g["non_zero"] == []
