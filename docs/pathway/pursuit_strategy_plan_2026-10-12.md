@@ -145,3 +145,10 @@ means never worse than `PLAN`, the round's reference; `tau` plays no part in it.
 `SearchMDP` skips the law during a learner's hold span, so `v_est` is zero after every span and the
 MPC's exposure varies per episode (measured 0–61 non-direct choices per episode). H-STRAT is a per-episode
 outcome comparison and tolerates this; the pre-registration reports the per-episode planned-call count.
+
+**A2 notes from review (2026-10-12):** (i) sequences touching the inset arena bound are infeasible, so
+wall-adjacent states can leave 0/64 feasible rows and the law returns `PLAN`'s action — observable as
+`last_feasible_count == 0`; the recorder logs it, and the pre-registration states that "finds the
+wall-cornering by itself" is bounded by this. (ii) The episode RNG digest hashes the numeric generator
+state, not its `repr`, for cross-version reproducibility. (iii) Predicted capture within H = 2 s is rare
+against a 1.2× evader; selection is by terminal distance throughout — stated in the pre-registration.
