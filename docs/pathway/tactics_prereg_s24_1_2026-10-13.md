@@ -128,3 +128,5 @@ span scope is live. **Recorded, not changed:** episode 0 of each arm runs on the
 declared stream begins at `seed·1000 + 1` (S17's behaviour); span `start`/`end` are law-call indices (the
 GIF labeller must not index frames by them); a crash record blocks resume (stop rule); A1.4's wall time is
 a floor — six concurrent arms at `OMP_NUM_THREADS=3` are planned at ≈ 6 h.
+
+**A2.1 clarification (commit `1f9eab2`):** `AMBUSH` is also masked when the evader is visible inside `AMBUSH_CLOSE` (v0's own guard lifted into the mask); without it the zero-length-span invariant did not hold. 400-decision roll: 0 zero-length spans, 0 search-policy steps, 0 refused picks. 352 env steps/s.
