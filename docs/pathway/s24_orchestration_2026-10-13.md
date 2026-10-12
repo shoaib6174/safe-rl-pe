@@ -23,3 +23,4 @@ Plan: `tactics_plan_2026-10-13.md`. Started 2026-10-13. Budget 4.0 M (hard stop 
 - Step 0.3 closed (240 k): both recogniser gates fail; separability, not observability, is the residual. Features only. Running total **790 k / 4.0 M**. Step 0.4 dispatched.
 - Step 0.4 landed (272 k) and the three GIFs were watched before any reading. Two construct failures ruled (RecoveryShieldV2; coverage SWEEP; HOLD-HIDDEN guard). Fix round 1/2 dispatched; re-run once. Running total **1 062 k / 4.0 M** (S24.0 line 1.2 M).
 - S24.0 closed (D150): ≈ 1 107 k of its 1.2 M line. S24.1 pre-registered (`tactics_prereg_s24_1_2026-10-13.md`) with the v0b baseline quoted. Step 1.1 dispatched. Running total **1 107 k / 4.0 M**.
+- Step 1.1 landed (198 k): SelectorMDP (OBS 50) + masked-PPO trainer; 340 steps/s. Prereg A1: shield/escape features added (OBS 55), n_switches excludes zero-length spans. Fix round 1/2 dispatched. Running total **1 305 k / 4.0 M**.

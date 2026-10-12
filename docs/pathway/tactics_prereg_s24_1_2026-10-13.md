@@ -80,3 +80,25 @@ stated.
 As S23: nothing re-run after a number is seen; amendments only before the number they touch; UNDETERMINED
 on crash; records measurable only at N = 500 on seed0 2 400 000; duplicates reject both; `--cells` prints no
 rate; captions carry no rate; frozen worktree; gated launch wrapper. Artefacts `results/derisk/s24_1_*`.
+
+---
+
+## Amendment A1 (2026-10-13, before any arm trains) — Step 1.1 rulings
+
+**A1.1 — shield-state and escape features are added to the observation.** §3 omitted them; D113/D131
+found they are what lets a learner recover the shield's capture cost. Added: the recovery shield's last
+intervention flag, min clearance (clipped), stall run / 40 (the `shield_obs` triple) and the admissible
+ω range at v = 0 (the `escape_obs` pair) — observable, not memory, so `NOMEM` keeps them. `OBS_LEN` 50 → 55.
+
+**A1.2 — `n_switches` counts spans of ≥ 1 env step only.** `INTERCEPT`/`LEAD` are always applicable but
+can be DONE on entry when the evader is unseen; the zero-length spans they leave are not switches and must
+not satisfy CG-T2.
+
+**A1.3 — readings accepted:** `COUNTER-ORBIT`/`AMBUSH` resolve to the obstacle nearest the evader's
+*estimate* (observed → dead-reckoned → own pose), never the true pose; `COUNTER-ORBIT` is masked out while
+the evader is invisible (the literal `applicable()` would leak truth); the current-tactic block describes
+the span that is ending (the learner also sees its last three); training stream `seed·1000`, disjoint
+from probe/gate streams; resume is arm-granular and recorded.
+
+**A1.4 — launch plan:** 340 env steps/s per arm ⇒ ≈ 3.8 h per arm incl. probes; six arms in parallel at
+`OMP_NUM_THREADS=3` (18 of 24 cores), ≈ 4–5 h wall.
