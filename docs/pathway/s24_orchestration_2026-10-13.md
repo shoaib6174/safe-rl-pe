@@ -7,7 +7,7 @@ Plan: `tactics_plan_2026-10-13.md`. Started 2026-10-13. Budget 4.0 M (hard stop 
 | 0.1 | tactic library (both roles), termination predicates, behavioural tests | opus / sonnet | 350 k | **382 k** (241 + 141 review) | DONE `e5e16b4`; review CLEAN; watch item for S24.1: selectors must only return applicable tactics (adapters do not check) |
 | 0.2 | memory: occlusion-aware belief (particle filter) vs dead-reckoning gate | opus / opus | 350 k | **168 k** | DONE `a76cb2e`; gates 1 AND 2 FAIL (D145/D146) → memory = LastSeenBelief; PF shelved |
 | 0.3 | recogniser + accuracy gate on self-play ground truth | opus / sonnet | 250 k | **240 k** | DONE `73dd182`; gates 1 AND 2 FAIL (D147/D148) → features only, both roles; `features(t)` is the product |
-| 0.4 | scripted selectors v0 (over features) + labelled GIF harness; watch | opus / sonnet | 250 k | | dispatched |
+| 0.4 | scripted selectors v0 (over features) + labelled GIF harness; watch | opus / sonnet | 250 k | 272 k impl | `231a362`; game plays (0.79/0.49/0.37); WATCHED: D125 pin + unseen-never-found → rulings (D149); fix round 1/2 |
 | 1 | S24.1 prereg → learned pursuer selector → run → watch → read | opus / opus | 1.2 M | | |
 | 2 | S24.2 | | 1.0 M | | |
 | 3 | S24.3 speed sweep | | 0.6 M | | |
@@ -21,3 +21,4 @@ Plan: `tactics_plan_2026-10-13.md`. Started 2026-10-13. Budget 4.0 M (hard stop 
 - Step 0.2 closed (168 k): both belief gates fail; dead-reckoning is the memory (D146). No review needed — a failed construct gate is its own verdict and the artefact carries both tables. Running total **550 k / 4.0 M**. Step 0.3 dispatched.
 - Step 0.3 landed (194 k): recogniser gate fails both roles (D147). Ruling: selectors consume motion FEATURES, never labels. Gate 2 for the pursuer-role recogniser under the evader's full-state view pre-registered; fix round 1/2. Running total **744 k / 4.0 M**.
 - Step 0.3 closed (240 k): both recogniser gates fail; separability, not observability, is the residual. Features only. Running total **790 k / 4.0 M**. Step 0.4 dispatched.
+- Step 0.4 landed (272 k) and the three GIFs were watched before any reading. Two construct failures ruled (RecoveryShieldV2; coverage SWEEP; HOLD-HIDDEN guard). Fix round 1/2 dispatched; re-run once. Running total **1 062 k / 4.0 M** (S24.0 line 1.2 M).
