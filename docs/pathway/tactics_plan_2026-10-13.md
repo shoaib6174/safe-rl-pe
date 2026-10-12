@@ -138,3 +138,5 @@ round and the particle belief is shelved with both numbers on record. One run; n
   view per L1.5. Pass → the evader's selector may consume pursuer-tactic labels. Fail → features only for
   both roles. The evader-tactic recogniser remains FAILED; the pursuer is FOV-limited and that is the game.
 - `HOLD-HIDDEN` and the `INTERCEPT`/`LEAD` distinction are dropped from any label vocabulary.
+
+**Gate 2 result (D148): FAIL (0.551; UNKNOWN 0.013).** Features only, both roles. The §1 memory row now reads: *opponent motion features over a 40-step window (observable, speed-agnostic), not labels.*
