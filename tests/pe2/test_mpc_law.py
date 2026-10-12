@@ -19,12 +19,7 @@ import pytest
 from pe2.config import EnvConfig
 from pe2.env import PursuitEvasionEnv, pursuer_step, pursuer_step_batch
 from pe2.obs import full_state_observation, opponent_world_from_obs, own_pose_from_obs
-from pe2.planner import (
-    MPC_PATH_WEIGHT,
-    LeadPlannerInterceptLaw,
-    MpcInterceptLaw,
-    PlannerInterceptLaw,
-)
+from pe2.planner import MPC_PATH_WEIGHT, MpcInterceptLaw, PlannerInterceptLaw
 from pe2.scripted import GreedyEvader, StationaryEvader
 from pe2.structured import OrbitSearch, SearchMDP
 
@@ -85,6 +80,20 @@ def _moving(cfg, law, own_pose, a_xy, b_xy, env):
     return law.act(o), own_pose_from_obs(o, cfg), opponent_world_from_obs(o, cfg)
 
 
+def _scalar_roll(cfg, law, own, v, w):
+    """Roll ONE constant command over the horizon with the SCALAR
+    `pursuer_step`. Returns the terminal xy and the path length."""
+    pose = np.asarray(own, dtype=float)
+    path = 0.0
+    for _ in range(law.h_steps):
+        nxt, _wall, _obstacle = pursuer_step(
+            pose, v, w, cfg, law.obstacles, law._x_lim, law._y_lim
+        )
+        path += float(np.hypot(nxt[0] - pose[0], nxt[1] - pose[1]))
+        pose = nxt
+    return pose[:2], path
+
+
 def _held_cost(law, own, pos, v_est, action):
     """The cost of ONE action held for the whole horizon, scored by the law's
     own rollout. `(cost, capture step, predicted evader path)`."""
@@ -94,19 +103,17 @@ def _held_cost(law, own, pos, v_est, action):
 
 
 def _chosen_and_direct(cfg, own_pose, a_xy, b_xy, obstacles=()):
-    """Run MPC on two consecutive sightings a -> b, and recompute the DIRECT
-    action (the parent's own) independently on the same inputs by calling the
-    parent's `act` on a twin. Returns (law, chosen, direct, own, pos)."""
+    """Run MPC on two consecutive sightings a -> b, and take the DIRECT row
+    independently from a standalone `PlannerInterceptLaw` on the same
+    observation (A2: the direct row is `PLAN`'s own action).
+    Returns (law, chosen, direct, own, pos)."""
     law = MpcInterceptLaw(cfg)
     env = _StubEnv(obstacles=obstacles)
     law.reset(env=env)
     chosen, own, pos = _moving(cfg, law, own_pose, a_xy, b_xy, env)
-    twin = MpcInterceptLaw(cfg)
-    twin_env = _StubEnv(obstacles=obstacles)
-    twin.reset(env=twin_env)
-    twin.act(_obs(cfg, own_pose, a_xy))
-    twin_env.current_step += 1
-    direct = LeadPlannerInterceptLaw.act(twin, _obs(cfg, own_pose, b_xy))
+    plan = PlannerInterceptLaw(cfg)
+    plan.reset(env=_StubEnv(obstacles=obstacles))
+    direct = plan.act(_obs(cfg, own_pose, b_xy))
     return law, chosen, direct, own, pos
 
 
@@ -177,10 +184,24 @@ class TestSequences:
 
 
 class TestSelection:
+    def test_the_direct_row_is_plans_own_action(self):
+        """A2: the always-included sequence is the GRANDPARENT's action, aimed
+        at the evader's CURRENT position -- not the lead aim point."""
+        d = 1.2 * OPEN_CFG.dt
+        law, chosen, direct, _own, _pos = _chosen_and_direct(
+            OPEN_CFG, (0.0, 0.0, 0.0), (2.0, 0.0), (2.0 + d, 0.0)
+        )
+        assert law.tau == 0.0  # tau plays no part in this law
+        assert law.last_chose_direct is True
+        assert np.array_equal(chosen, direct)
+        rng = np.random.default_rng((law._ep_seed, 1))
+        acts = law._sequences(direct, rng)
+        assert np.array_equal(acts[0], np.tile(direct, (law.n_seg, 1)))
+
     def test_the_direct_sequence_wins_when_it_is_min_cost(self):
         """An evader 1.0 m ahead fleeing at 0.6 m/s: capture inside H needs
-        essentially full speed on the bearing, which is exactly the parent's
-        own action, so no sampled sequence can beat it."""
+        essentially full speed on the bearing, which is exactly `PLAN`'s own
+        action, so no sampled sequence can beat it."""
         d = 0.6 * OPEN_CFG.dt
         law, chosen, direct, own, pos = _chosen_and_direct(
             OPEN_CFG, (0.0, 0.0, 0.0), (1.0, 0.0), (1.0 + d, 0.0)
@@ -188,29 +209,76 @@ class TestSelection:
         assert law.last_v_est[0] == pytest.approx(0.6, abs=1e-4)
         assert law.last_chose_direct is True
         assert np.array_equal(chosen, direct)
-        cost, _cap, _e = _held_cost(law, own, pos, law.last_v_est, direct)
+        cost, cap, _e = _held_cost(law, own, pos, law.last_v_est, direct)
         assert law.last_cost == cost
-        assert law.last_cost < OPEN_CFG.capture_distance  # i.e. it captures
+        assert np.isfinite(cap)
+        assert law.last_cost < 0.0  # A2: a capture is negative
 
-    def test_an_earlier_capture_beats_the_direct_sequence(self):
-        """A head-on closing evader: the parent's tau = 2 s lead aims BEHIND the
-        pursuer, so holding its action captures only late in the horizon; a
-        sampled sequence that lets the evader come captures far earlier."""
-        d = 1.2 * OPEN_CFG.dt
+    def test_a_capturing_sample_beats_a_non_capturing_direct(self):
+        """A2's ordering, end to end: an evader crossing at 0.3 m/s that `PLAN`
+        never reaches inside H (its held action ends 1.66 m away), while a
+        sampled sequence cuts it off -- so the sampled one is chosen."""
         law, _chosen, direct, own, pos = _chosen_and_direct(
-            OPEN_CFG, (0.0, 0.0, 0.0), (2.0 + d, 0.0), (2.0, 0.0)
+            OPEN_CFG, (0.0, 0.0, 0.0), (1.0, 0.5 + 0.3 * OPEN_CFG.dt), (1.0, 0.5)
         )
-        assert law.last_v_est[0] < 0.0  # closing
-        assert law.last_chose_direct is False
-        assert law.last_cost < OPEN_CFG.capture_distance  # the plan captures
         cost_d, cap_d, e_pred = _held_cost(law, own, pos, law.last_v_est, direct)
-        assert np.isfinite(cap_d)  # the direct sequence captures too ...
+        assert not np.isfinite(cap_d)  # PLAN's held action never captures ...
+        assert cost_d > 0.0
+        assert law.last_chose_direct is False
+        assert law.last_cost < 0.0  # ... the chosen one does
         assert law.last_cost < cost_d
-        # `last_aim` is the predicted evader position at the capture step, so
-        # the step it was taken from says when the chosen plan captures.
+        # `last_aim` is the predicted evader position at the capture step.
         hits = np.flatnonzero((e_pred == law.last_aim).all(axis=1))
         assert len(hits) == 1
-        assert hits[0] < cap_d  # ... and later than the chosen sequence
+        # cost = -(H - capture step) + 0.01 x path, and the path term is in
+        # [0, 0.01 x v_max x H] = [0, 0.02].
+        assert 0.0 <= law.last_cost - (hits[0] - law.h_steps) <= 0.021
+
+    def test_an_earlier_capture_costs_strictly_less_than_a_later_one(self):
+        """A2's capture bonus, read off three held sequences in a head-on
+        closing geometry: slower means a later predicted capture means a
+        strictly higher cost, and all three beat every non-capture."""
+        law = MpcInterceptLaw(OPEN_CFG)
+        law.reset(env=_StubEnv())
+        own = np.array([0.0, 0.0, 0.0])
+        pos = np.array([2.0, 0.0])
+        v_est = np.array([-1.2, 0.0])  # closing head-on
+        acts = np.array(
+            [
+                [[1.0, 0.0]] * law.n_seg,  # v = v_max: the earliest capture
+                [[0.0, 0.0]] * law.n_seg,  # v = v_max / 2
+                [[-1.0, 0.0]] * law.n_seg,  # v = 0: the evader arrives alone
+            ],
+            dtype=np.float32,
+        )
+        cost, cap, _e = law._rollout(own, pos, v_est, acts)
+        assert list(cap) == sorted(cap)  # later and later captures
+        assert cost[0] < cost[1] < cost[2] < 0.0
+        for i in range(3):
+            # cost = -(H - capture step) + 0.01 x path
+            assert cost[i] == pytest.approx(cap[i] - law.h_steps, abs=0.021)
+
+    def test_the_terminal_cost_is_not_flat_across_headings(self):
+        """The A2 amendment's reason to exist: against a radially fleeing evader
+        the cost must still discriminate between headings, which the original
+        minimum-over-the-horizon cost did not (it was decided by the 0.01 x path
+        tie-breaker, i.e. by noise)."""
+        d = 1.2 * OPEN_CFG.dt
+        law, chosen, direct, own, pos = _chosen_and_direct(
+            OPEN_CFG, (0.0, 0.0, 0.0), (2.0, 0.0), (2.0 + d, 0.0)
+        )
+        rng = np.random.default_rng((law._ep_seed, 1))
+        cost, cap, e_pred = law._rollout(
+            own, pos, law.last_v_est, law._sequences(direct, rng)
+        )
+        assert np.isfinite(cost).all()  # open arena: nothing is infeasible
+        assert not np.isfinite(cap).any()  # a faster evader fleeing: no capture
+        assert float(cost.max() - cost.min()) > 0.05
+        # And the winner is the one that ends nearest the predicted TERMINAL
+        # position -- which here is straight ahead, so `PLAN`'s own action.
+        assert law.last_chose_direct is True
+        assert np.array_equal(law.last_aim, e_pred[-1])
+        assert float(chosen[0]) == 1.0 and float(chosen[1]) == 0.0
 
     @pytest.mark.parametrize(
         ("a_xy", "b_xy"),
@@ -223,7 +291,7 @@ class TestSelection:
     def test_the_parents_own_cost_is_an_upper_bound_on_the_chosen_cost(
         self, a_xy, b_xy
     ):
-        """Row 0 is the parent's action, so the plan can never cost more."""
+        """Row 0 is `PLAN`'s action, so the plan can never cost more (A2)."""
         law, _chosen, direct, own, pos = _chosen_and_direct(
             OPEN_CFG, (0.0, 0.0, 0.0), a_xy, b_xy
         )
@@ -274,34 +342,36 @@ class TestFeasibility:
 
 
 class TestCost:
-    def test_the_cost_is_the_min_distance_plus_the_weighted_path(self):
-        """v = 0 held for the horizon: the path is zero and the cost is exactly
-        the minimum predicted distance -- the cost formula, read off."""
+    """A2's formula, read off against the SCALAR dynamics rolled by hand."""
+
+    def test_a_standing_sequence_costs_exactly_the_terminal_distance(self):
         law = MpcInterceptLaw(OPEN_CFG)
         law.reset(env=_StubEnv())
         own = np.array([0.0, 0.0, 0.0])
         pos = np.array([2.0, 0.0])
-        v_est = np.array([1.2, 0.0])  # fleeing: the minimum is the first step
-        acts = np.array([[[-1.0, 0.0]] * law.n_seg], dtype=np.float32)
+        v_est = np.array([1.2, 0.0])  # fleeing, and faster: no capture
+        acts = np.array([[[-1.0, 0.0]] * law.n_seg], dtype=np.float32)  # v = 0
         cost, cap, e_pred = law._rollout(own, pos, v_est, acts)
-        assert not np.isfinite(cap[0])
-        assert cost[0] == pytest.approx(float(np.hypot(*e_pred[0])), abs=1e-12)
         assert len(e_pred) == law.h_steps
+        assert not np.isfinite(cap[0])
+        assert cost[0] == pytest.approx(float(np.hypot(*e_pred[-1])), abs=1e-12)
+        # NOT the minimum over the horizon, which is the first step (A2).
+        assert cost[0] > float(np.hypot(*e_pred[0]))
 
-    def test_the_path_term_is_the_predicted_path_length(self):
+    def test_the_cost_is_the_terminal_distance_plus_the_weighted_path(self):
         law = MpcInterceptLaw(OPEN_CFG)
         law.reset(env=_StubEnv())
         own = np.array([0.0, 0.0, 0.0])
         pos = np.array([-4.0, 0.0])  # behind, and fleeing: no capture
         v_est = np.array([-1.2, 0.0])
         acts = np.array([[[1.0, 0.0]] * law.n_seg], dtype=np.float32)
-        cost, _cap, e_pred = law._rollout(own, pos, v_est, acts)
-        travelled = OPEN_CFG.v_max * OPEN_CFG.dt * law.h_steps
-        min_d = min(
-            float(np.hypot(e[0] - OPEN_CFG.v_max * OPEN_CFG.dt * (t + 1), e[1]))
-            for t, e in enumerate(e_pred)
+        cost, cap, e_pred = law._rollout(own, pos, v_est, acts)
+        end, path = _scalar_roll(OPEN_CFG, law, own, OPEN_CFG.v_max, 0.0)
+        assert not np.isfinite(cap[0])
+        assert e_pred[-1][0] == pytest.approx(-law._lim)  # the prediction clips
+        assert cost[0] == pytest.approx(
+            float(np.hypot(*(end - e_pred[-1]))) + MPC_PATH_WEIGHT * path, abs=1e-9
         )
-        assert cost[0] == pytest.approx(min_d + MPC_PATH_WEIGHT * travelled, abs=1e-9)
 
 
 class TestBatchDynamics:

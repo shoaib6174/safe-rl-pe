@@ -452,22 +452,29 @@ class MpcInterceptLaw(LeadPlannerInterceptLaw):
     inherited estimate, clipped into the inset arena.
 
     Per call: K action sequences of `n_seg` segments of `hold` constant steps,
-    K - 1 drawn uniformly from the action box and one -- row 0 -- the parent's
-    own action held throughout, so the plan can never cost more than the
-    parent's on its own cost and exact ties resolve to the parent. Cost is the
-    minimum predicted pursuer-evader distance over the horizon, zeroed at
-    capture and tie-broken by the earliest capture step, plus
-    MPC_PATH_WEIGHT x path length; +inf if any predicted state contacts a wall
-    or an inflated obstacle. The first segment of the winner is executed for
-    THIS step only -- replanned every call, no commitment.
+    K - 1 drawn uniformly from the action box and one -- row 0 -- `PLAN`'s own
+    action held throughout, so the plan can never cost more than `PLAN`'s on
+    its own cost and exact ties resolve to `PLAN`. The first segment of the
+    winner is executed for THIS step only -- replanned every call, no
+    commitment.
+
+    Cost (amendment A2): the predicted pursuer-evader distance at the END of
+    the horizon, or `-(h_steps - first capture step)` when some predicted step
+    is inside the capture distance, plus MPC_PATH_WEIGHT x path length as a
+    tie-breaker; +inf if any predicted state contacts a wall or an inflated
+    obstacle. A2 replaced the original minimum-over-the-horizon distance, which
+    this implementer measured to be degenerate against the very opponent the
+    row targets: against a faster evader fleeing radially the minimum is
+    attained at the FIRST step for every sequence, so the cost carried no
+    heading signal and the path term decided. Terminal distance does carry it
+    -- a sequence that cuts toward where the evader WILL be at H ends closer --
+    and a capture is strictly better than any non-capture because `cost < 0`.
 
     ONE variable (CG-S1): when the evader is not visible, or the inherited
     velocity estimate reads as zero under the module's decoding tolerance,
-    the call is the parent's -- which is `PlannerInterceptLaw`'s -- so the
-    action is bit-identical to `PLAN`. The sampling runs only when `v_est` is
-    nonzero. Since the path term is at most MPC_PATH_WEIGHT x v_max x H = 0.02
-    and a non-capturing cost is at least the 0.30 m capture distance,
-    `last_cost < cfg.capture_distance` iff the chosen plan captures.
+    the call IS `PlannerInterceptLaw.act` -- the same code path, called once --
+    so the action is bit-identical to `PLAN`. The sampling runs only when
+    `v_est` is nonzero.
     """
 
     def __init__(
@@ -477,10 +484,11 @@ class MpcInterceptLaw(LeadPlannerInterceptLaw):
         k: int = MPC_K,
         hold: int = MPC_HOLD,
     ) -> None:
-        # tau = the horizon: row 0 is the parent's lead action, and the lead a
-        # constant-velocity plan is implicitly compared against is the one over
-        # the same H. `_aim_point` is otherwise unused by this law.
-        super().__init__(cfg, tau=horizon)
+        # A2: `tau` plays no part -- the direct row is the GRANDPARENT's action
+        # (aim = the evader's current position), so neither the lead aim point
+        # nor `tau` is used by this law. The inherited velocity estimate, step
+        # index and sighting memory are.
+        super().__init__(cfg, tau=0.0)
         self.k = int(k)
         self.hold = int(hold)
         self.h_steps = round(float(horizon) / cfg.dt)
@@ -511,7 +519,7 @@ class MpcInterceptLaw(LeadPlannerInterceptLaw):
     # -- the plan --------------------------------------------------------
     def _sequences(self, a_direct, rng) -> np.ndarray:
         """(K, n_seg, 2) Box actions: K - 1 uniform over the action box, plus
-        the parent's own action held for every segment at row 0."""
+        `PLAN`'s own action held for every segment at row 0 (A2)."""
         acts = rng.uniform(-1.0, 1.0, size=(self.k, self.n_seg, 2)).astype(np.float32)
         acts[0] = np.asarray(a_direct, dtype=np.float32)
         return acts
@@ -519,11 +527,11 @@ class MpcInterceptLaw(LeadPlannerInterceptLaw):
     def _rollout(self, own, pos, v_est, acts: np.ndarray):
         """Roll `acts` over the horizon through `pursuer_step_batch`.
 
-        Returns the per-sequence cost (+inf on any wall or obstacle contact),
-        the first predicted capture step (+inf when there is none) and the
-        (h_steps, 2) predicted evader path. Commands are decoded from the Box
-        exactly as `SingleAgentWrapper._scale_action` decodes them, so what is
-        planned is what the harness executes.
+        Returns the per-sequence A2 cost (+inf on any wall or obstacle
+        contact), the first predicted capture step (+inf when there is none)
+        and the (h_steps, 2) predicted evader path. Commands are decoded from
+        the Box exactly as `SingleAgentWrapper._scale_action` decodes them, so
+        what is planned is what the harness executes.
         """
         cfg = self.cfg
         k = acts.shape[0]
@@ -562,28 +570,37 @@ class MpcInterceptLaw(LeadPlannerInterceptLaw):
         captured = d <= cfg.capture_distance
         any_cap = captured.any(axis=0)
         cap = np.where(any_cap, captured.argmax(axis=0), np.inf)  # first such step
-        cost = np.where(any_cap, 0.0, d.min(axis=0))
+        # A2: terminal distance, or -(h_steps - capture step) so that ANY
+        # capture is negative and an earlier one strictly better.
+        cost = np.where(any_cap, cap - self.h_steps, d[-1])
         cost = np.where(bad, np.inf, cost + MPC_PATH_WEIGHT * path)
         return cost, np.where(bad, np.inf, cap), e_pred
 
     def act(self, obs: np.ndarray) -> np.ndarray | None:
-        # The parent owns the step index, the velocity estimate, `last_seen`
-        # and both non-sampling branches; its return is also the direct
-        # sequence. Calling it is therefore the CG-S1 delegation AND the
-        # baseline the plan is scored against -- one code path, not two.
-        a_direct = super().act(obs)
-        if self.last_aim is None:  # not visible, or v_est zero: this IS `PLAN`
+        # The parent's dispatch, with the lead aim point taken out (A2) and the
+        # GRANDPARENT called for the direct row -- exactly once per call, so
+        # `n_unreachable` and `last_seen` move as `PLAN`'s do and the two
+        # non-sampling branches are `PLAN` bit for bit. The inherited parts are
+        # the step index, the velocity estimate and the sighting memory.
+        step = self._step_index()
+        if obs[6] <= 0.5:  # not visible: nothing to plan against
+            self.last_aim = None
+            self.last_v_est = np.zeros(2)
+            self._clear_plan_records()
+            return PlannerInterceptLaw.act(self, obs)
+        pos = opponent_world_from_obs(obs, self.cfg)
+        self.last_v_est = v_est = self._velocity(pos, step)
+        a_direct = PlannerInterceptLaw.act(self, obs)  # aim = current position
+        if v_est[0] == 0.0 and v_est[1] == 0.0:  # CG-S1: the SAME code path
+            self.last_aim = None
             self._clear_plan_records()
             return a_direct
         own = own_pose_from_obs(obs, self.cfg)
-        pos = opponent_world_from_obs(obs, self.cfg)
-        # `_velocity` just recorded this call's env step index there.
-        step = self._prev[1]
         rng = np.random.default_rng((self._ep_seed, int(step)))
         acts = self._sequences(a_direct, rng)
-        cost, cap, e_pred = self._rollout(own, pos, self.last_v_est, acts)
+        cost, cap, e_pred = self._rollout(own, pos, v_est, acts)
         # Keys last to first: cost, then earliest capture step, then the index
-        # -- so an exact tie goes to row 0, the parent's own action.
+        # -- so an exact tie goes to row 0, `PLAN`'s own action.
         best = int(np.lexsort((np.arange(self.k), cap, cost))[0])
         t_aim = int(cap[best]) if np.isfinite(cap[best]) else self.h_steps - 1
         self.last_aim = e_pred[t_aim]
