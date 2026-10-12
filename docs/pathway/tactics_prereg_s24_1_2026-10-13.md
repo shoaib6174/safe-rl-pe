@@ -154,3 +154,36 @@ path). Where the two accountings disagree, `n_zero_length_spans` is reported as 
 as 0. **Stated where quoted:** `LEAD-1.0` under the shield spends ~86 % of steps in `OrbitSearch` when the
 evader is unseen (exactly as S23 measured it); the learned rows spend 0 — the comparator is a law +
 search hybrid and H-TAC-1's sentence says so.
+
+---
+
+## Amendment A4 (2026-10-13) — CG-T3 watched; written BEFORE `--summarize`, no capture rate read
+
+24 cells MEASURED (N = 500, seed0 2 400 000, none UNDETERMINED). 30 episodes rendered on the first three
+gate seeds; six watched as contact sheets (the discriminating pairs by outcome). Findings:
+
+**(a) The learned selectors switch, and they choose `AMBUSH` where §2 said they should.** `SEL-80` vs the
+tactical evader (2 400 001): `ORBIT(0)`/`LEAD` → `HOLD-HIDDEN`/`SWEEP` → `HOLD-HIDDEN`/**`AMBUSH(0)`** → `HOP(1)`/`LEAD`
+→ capture at 239. `SEL-81` (2 400 000): a long legible game — `AMBUSH(0)` three times during hides,
+`COUNTER-ORBIT(1)` to finish at 454. The pre-registered expectation is visibly met on the training opponent.
+
+**(b) Against GREEDY the learned selectors over-apply the training opponent's answer.** On both watched
+GREEDY seeds (`SEL-80` 2 400 002, `SEL-82` 2 400 000) GREEDY orbits one obstacle tightly; the learned
+selector cycles `SWEEP` / `LEAD` / `AMBUSH(k)` — waiting at a gap the orbiting fleer never crosses — and
+never `COUNTER-ORBIT`s it; both time out. `NOMEM-80` on the same seed defaults to `COUNTER-ORBIT(1)` and
+captures at 525. **Registered reading:** this is in-distribution specialisation of the memory inputs (motion
+features and history learned on `TACTIC-V0`'s hop-and-hide rhythm misfire on a radial orbiter); if H-TAC-1
+fails on GREEDY while passing on `TACTIC-V0`, that is the mechanism to name, not "the selector cannot choose".
+
+**(c) `NOMEM` does NOT behave like a fixed law.** It switches (`AMBUSH` → `SWEEP` → `COUNTER-ORBIT`) and on
+these seeds captures the tactical evader *faster* than `SEL` (123 vs 239 on 2 400 001). H-TAC-3 may fail;
+if it does, the sentence is "the selector's memory inputs did not help at this ratio against this evader",
+read exactly as §4 pre-states.
+
+**(d) No frozen pin, but one near-pin crawl.** `NOMEM-80` vs GREEDY (2 400 002) spends ~300 steps in
+`COUNTER-ORBIT(1)` at clearance 0.003–0.007 with the recovery shield intervening continuously — the pursuer
+keeps moving along the obstacle (the D131 remedy working as designed), and the capture comes from GREEDY
+circling into it. Recorded as "intervening but mobile", distinct from D125's immobility; CG-T2's switch
+counts and the recorder's immobile-by-branch field are read with this in mind.
+
+No bar, stream, seed or threshold changed. Written after watching, before reading.
