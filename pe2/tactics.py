@@ -52,6 +52,10 @@ COUNTER_ORBIT_CLOSE = 1.5  # m — clear LOS inside this ends COUNTER-ORBIT
 AMBUSH_MAX_STEPS = 120
 AMBUSH_CLOSE = 2.0  # m — the evader walking into the gap ends AMBUSH
 AMBUSH_GAP_RANGE = 5.0  # m — only ambush a gap this close
+# S24.0 Step 4 (additive): `Sweep` steers at a dead-reckoned point this recent
+# (5 s at dt = 0.05) and falls back to `OrbitSearch` beyond it — the brief's
+# "while its age is < 100 steps, else OrbitSearch".
+BELIEF_FRESH_STEPS = 100
 
 
 # ---------------------------------------------------------------- geometry
@@ -671,13 +675,44 @@ class Ambush(PursuerTactic):
 
 class Sweep(PursuerTactic):
     """`OrbitSearch` — the teacher's orbit fallback as a search. Belief-driven
-    once the belief exists (plan section 1). DONE when the evader is visible."""
+    once the belief exists (plan section 1). DONE when the evader is visible.
+
+    S24.0 Step 4, ADDITIVE: the belief now exists and is dead reckoning
+    (`pe2.belief.LastSeenBelief`; D146 shelved the particle filter), so `belief`
+    is an optional constructor argument and, while its point estimate is
+    younger than `BELIEF_FRESH_STEPS`, the search STEERS AT that point —
+    through the planner, so the route round an obstacle is planned rather than
+    driven into. Older than that, or absent, and this is `OrbitSearch`
+    unchanged: with `belief=None` the class is bit-for-bit the Step 1 one
+    (`tests/pe2/test_tactics.py` holds it to `OrbitSearch` by identity).
+
+    The hook reads only the belief's own API (`seen`, `mean`, `t_since_seen`) —
+    no speed and no speed ratio, as every tactic here.
+    """
 
     name = "SWEEP"
 
-    def __init__(self, cfg: EnvConfig) -> None:
+    def __init__(self, cfg: EnvConfig, belief=None) -> None:
         super().__init__(cfg)
         self.search = OrbitSearch(cfg)
+        self.belief = belief
+        self.law = PlannerInterceptLaw(cfg)  # the planned route to the estimate
+        self.last_goal: np.ndarray | None = None
+
+    def reset(self, env=None) -> None:
+        super().reset(env)
+        self.law.reset(env)
+        self.last_goal = None
+
+    def _fresh_point(self) -> np.ndarray | None:
+        """The dead-reckoning estimate while it is fresh enough to steer at."""
+        belief = self.belief
+        if belief is None or not getattr(belief, "seen", False):
+            return None
+        age = getattr(belief, "t_since_seen", None)
+        if age is None or int(age) >= BELIEF_FRESH_STEPS:
+            return None
+        return np.asarray(belief.mean, dtype=float)[:2]
 
     def applicable(self, obs, env) -> bool:
         return obs[6] <= 0.5
@@ -686,7 +721,11 @@ class Sweep(PursuerTactic):
         if obs[6] > 0.5:
             return None
         self.steps += 1
-        return self.search.predict(obs)[0]
+        point = self._fresh_point()
+        self.last_goal = point
+        if point is None:
+            return self.search.predict(obs)[0]
+        return self.law._steer_toward(self.env.pursuer_pose, point)
 
 
 # ------------------------------------------------------------------ adapters
