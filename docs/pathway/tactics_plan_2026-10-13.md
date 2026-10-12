@@ -105,3 +105,15 @@ S24.1 ≈ 1.2 M, S24.2 ≈ 1.0 M, S24.3 ≈ 0.6 M); hard stop at 3.6 M.
 ## 5. First action (now)
 S24.0 Step 1: the tactic library for both roles as scripted controllers with termination predicates and
 behavioural tests — no selector, no learning, no numbers that gate anything.
+
+## S24.0 Step 1 rulings (2026-10-13, commit `3b28ca9`)
+- **COUNTER-ORBIT's briefed bar was mis-specified.** "Clear LOS within 1.5 m" asked a flank to also close.
+  Measured: direction committed and held 50/50 on the first segment, LOS cleared on 20/50 (at a median
+  6.9 m), within 1.5 m on 2/50 — recorded as an honest xfail. The tactic's job is the flank; closing is
+  `INTERCEPT`'s, reached by the selector's hand-off. No new bar is written after the number; S24.1's
+  pre-registration states that COUNTER-ORBIT contributes only through the hand-off and reports its use.
+- **`WALL_HUG_BAND` in `pe2/scripted.py` is NOT changed.** `ObstacleHuggingEvader` is a frozen gate
+  opponent (S17/S19/S23); altering it would silently change three rounds' opponents. `WallSlide` carries
+  its own band (0.10 m past the inset) inside `pe2/tactics.py`.
+- ORBIT's keeping rate is measured against the S19 `PLAN` chaser; the chaser is named in the test so it
+  cannot be swapped silently. Speed-agnostic assertion passed at 0.8 / 1.0 / 1.2.
