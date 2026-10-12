@@ -126,3 +126,5 @@ the same occluded steps, the error of the particle belief's `mode` to the true p
 LOWER median than dead-reckoning's point estimate on both opponents. Also reported, not gated: the
 after-first-sighting split for the mode. If gate 2 fails, `LastSeenBelief` is the memory for every S24
 round and the particle belief is shelved with both numbers on record. One run; no other change.
+
+**Gate 2 result (D146): FAIL on both.** `LastSeenBelief` is S24's memory; `ParticleBelief` shelved. Steps 0.3/0.4 and the §1 memory row read "belief = last-seen dead-reckoning" from here on.
