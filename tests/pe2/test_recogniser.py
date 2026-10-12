@@ -69,7 +69,7 @@ def feed(
 
 
 def named(rec: TacticRecogniser) -> dict:
-    return dict(zip(FEATURES, rec.features(), strict=True))
+    return dict(zip(FEATURES, rec.feature_vector(), strict=True))
 
 
 def arc(radius: float, dphi: float, n: int, centre=(0.0, 0.0)):
@@ -94,7 +94,7 @@ class TestFeatures:
         assert g["tortuosity"] < 0.70  # and it comes back on itself
         assert abs(g["obstacle_trend"]) < 0.05  # at a held radius
         assert g["obstacle_level"] == pytest.approx(0.03, abs=0.01)
-        assert g["visible_frac"] == 1.0
+        assert g["visible_fraction"] == 1.0
 
     def test_a_straight_run_is_tortuosity_one_and_no_sweep(self):
         g = named(feed(line((1.0, 1.0), (1.0, 1.0), 40), observer=lambda i: (-4.0, -4.0)))
@@ -108,11 +108,11 @@ class TestFeatures:
         hop = line((-2.0, 1.6), (1.0, 0.0), 40)
         g = named(feed(hop, visible=lambda i: i < 28))
         assert g["tortuosity"] == pytest.approx(1.0)
-        assert g["visible_frac"] == pytest.approx(28 / 40)
+        assert g["visible_fraction"] == pytest.approx(28 / 40)
         assert g["observer_trend"] < 0.35  # a transit, not a flight
         # Keep going unseen and the window empties out below MIN_VISIBLE.
         rec = feed(hop + line((2.0, 1.6), (1.0, 0.0), 30), visible=lambda i: i < 28)
-        assert rec.features() is None
+        assert rec.feature_vector() is None
         assert rec.label == UNKNOWN
 
     def test_a_hold_has_zero_speed_and_zero_trends(self):
@@ -157,15 +157,15 @@ class TestFeatures:
         seen = [i % 4 == 0 for i in range(40)]  # 10 visible steps in the window
         assert sum(seen) == MIN_VISIBLE
         rec = feed(line((-1.0, 1.6), (1.0, 0.0), 40), visible=lambda i: seen[i])
-        assert rec.features() is not None
+        assert rec.feature_vector() is not None
         rec = feed(line((-1.0, 1.6), (1.0, 0.0), 40), visible=lambda i: seen[i] and i > 0)
-        assert rec.features() is None  # one fewer: nine visible steps
+        assert rec.feature_vector() is None  # one fewer: nine visible steps
         assert rec.label == UNKNOWN
 
     def test_features_do_not_depend_on_the_speed_ratio_at_runtime(self):
         traj = arc(1.15, 0.08, 40)
         vectors = [
-            feed(traj, cfg=EnvConfig(evader_speed_ratio=r)).features() for r in RATIOS
+            feed(traj, cfg=EnvConfig(evader_speed_ratio=r)).feature_vector() for r in RATIOS
         ]
         for other in vectors[1:]:
             assert np.array_equal(vectors[0], other)
@@ -199,6 +199,67 @@ class TestFeatures:
             )
         )
         assert (g["sweep_ratio"], g["obstacle_trend"]) == (0.0, 0.0)
+
+
+# ------------------------------------------------------------ public product
+class TestFeaturesDict:
+    """`features()` is what a selector consumes (D147), so its contract is
+    checked directly: fixed keys, no None, no NaN, and `valid` flipping at
+    exactly `MIN_VISIBLE` visible steps in the window."""
+
+    def test_the_keys_are_fixed_and_the_values_are_floats(self):
+        rec = feed(arc(1.15, 0.08, 40))
+        product = rec.features()
+        assert set(product) == set(FEATURES) | {"n_visible_in_window", "valid"}
+        assert product["valid"] is True
+        assert product["n_visible_in_window"] == 40
+        numbers = [product[name] for name in FEATURES]
+        assert all(isinstance(v, float) for v in numbers)
+        assert not any(np.isnan(v) or np.isinf(v) for v in numbers)
+        assert numbers == [float(v) for v in rec.feature_vector()]
+
+    def test_an_invalid_window_is_zeros_and_not_none(self):
+        rec = feed(line((-1.0, 1.6), (1.0, 0.0), 40), visible=lambda i: i < 5)
+        product = rec.features()
+        assert product["valid"] is False
+        assert product["n_visible_in_window"] == 5
+        assert [product[name] for name in FEATURES] == [0.0] * len(FEATURES)
+        assert rec.feature_vector() is None
+
+    def test_valid_flips_at_exactly_min_visible_visible_steps(self):
+        """One visible step per window position, so the count IS the step index
+        plus one and the flip can be read off step by step."""
+        rec = TacticRecogniser(CFG, "evader", window=40)
+        flips = []
+        for i, point in enumerate(line((-1.2, 1.6), (1.0, 0.0), 2 * MIN_VISIBLE)):
+            rec.observe(np.array([0.0, -4.0, 0.0]), np.array(point), [OBSTACLE])
+            flips.append((i + 1, rec.features()["valid"]))
+        assert next(n for n, valid in flips if valid) == MIN_VISIBLE
+        assert all(not valid for n, valid in flips if n < MIN_VISIBLE)
+        assert all(valid for n, valid in flips if n >= MIN_VISIBLE)
+
+    def test_the_same_ground_traversed_at_three_speeds_reads_the_same(self):
+        """The speed-agnostic claim in its strongest form: ONE geometric path,
+        walked at the step of each ratio, with the window scaled so all three
+        windows cover the SAME ground. Every feature is dimensionless (a ratio
+        of lengths, or a rate per unit path), so all three must agree.
+
+        The sibling check in `TestFeatures` is the exact one (same trajectory,
+        three `EnvConfig` ratios, bit-identical); this one varies the thing the
+        ratio actually changes — how far the opponent moves per step.
+        """
+        total, radius = 1.6, 1.15  # rad of arc on the obstacle's hug circle
+        products = []
+        for ratio in RATIOS:
+            n = round(radius * total / (0.05 * ratio))
+            traj = arc(radius, total / (n - 1), n)
+            products.append(
+                feed(traj, cfg=EnvConfig(evader_speed_ratio=ratio), window=n).features()
+            )
+        assert len({p["n_visible_in_window"] for p in products}) == 3  # 3 speeds
+        for other in products[1:]:
+            for name in FEATURES:
+                assert other[name] == pytest.approx(products[0][name], abs=0.02)
 
 
 # ------------------------------------------------------------ rule classifier
@@ -307,7 +368,7 @@ class TestHistory:
         assert rec.v_ref > 0.0
         rec.reset()
         assert (rec.history, rec.label, rec.v_ref) == ([], UNKNOWN, 0.0)
-        assert rec.features() is None
+        assert rec.feature_vector() is None
 
 
 # -------------------------------------------------------------------- labels

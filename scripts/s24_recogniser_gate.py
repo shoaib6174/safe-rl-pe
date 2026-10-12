@@ -43,6 +43,26 @@ fitted one, and both 6x6 confusion matrices. The true-label UNKNOWN row is
 empty by construction (the generating tactic is always known) and is printed
 anyway so the matrix is the 6x6 the brief asks for.
 
+**GATE 1 FAILED for both roles (D147).** Its tables and verdicts are preserved
+verbatim in the record under `gate_1` and are reprinted here unchanged.
+
+**Gate 2, pre-registered in the plan after that failure and before it ran**
+(plan section "S24.0 Step 3 — recogniser gate FAILED (D147); rulings and gate
+2"): the PURSUER-tactic recogniser only, with its observer — the evader — given
+the FULL-STATE view of the pursuer that project convention L1.5 gives every
+scripted evader, i.e. visibility is always true for that observer. The pursuer
+stays FOV-limited and the evader-tactic recogniser stays FAILED; that asymmetry
+is the game, not a concession. Same bars, printed verbatim above the table. Two
+vocabulary rulings from the plan, printed in gate 2's header: `HOLD-HIDDEN` and
+the `INTERCEPT`/`LEAD` distinction leave any label vocabulary, so gate 2 scores
+four labels with `INTERCEPT` and `LEAD` merged into `CHASE`.
+
+Nothing is re-seeded and nothing about the GAME changes between the two gates:
+the libraries, the selector draws, the shield and the 500 episodes are the same
+and the third recogniser rides along the SAME pass, so gate 1's held-out
+accuracies reproduce bit-for-bit. They are asserted against the written record
+before anything is overwritten, and a mismatch STOPS the script.
+
 Usage:
   ./venv/bin/python scripts/s24_recogniser_gate.py
   ./venv/bin/python scripts/s24_recogniser_gate.py --summarize
@@ -115,6 +135,19 @@ GATE = (
 GATE_ACCURACY = 0.80
 GATE_UNKNOWN = 0.30
 ROLES = ("evader", "pursuer")  # the role of the OPPONENT being recognised
+# Gate 2: the pursuer-tactic recogniser, full-state observer, merged vocabulary.
+GATE_2_ROLE = "pursuer"
+GATE_2_STREAM = "pursuer_truth"
+GATE_2_LABELS = ("CHASE", "COUNTER-ORBIT", "AMBUSH", "SWEEP")
+GATE_2_MAP = {"INTERCEPT": "CHASE", "LEAD": "CHASE"}
+GATE_2_HEADER = (
+    "GATE 2 — the PURSUER-tactic recogniser with its observer (the evader) "
+    "given the full-state view L1.5 gives every scripted evader; the pursuer "
+    "stays FOV-limited and the evader-tactic recogniser stays FAILED.\n"
+    "Vocabulary rulings (plan, D147): HOLD-HIDDEN and the INTERCEPT/LEAD "
+    "distinction leave any label vocabulary, so this gate scores four labels "
+    "with INTERCEPT and LEAD merged into CHASE."
+)
 
 
 # ----------------------------------------------------------------------------
@@ -238,11 +271,18 @@ def play_episode(seed: int, cfg: EnvConfig) -> dict:
     evader.reset(env)
     law.reset(env)
     # The recogniser of the evader is carried by the PURSUER and vice versa.
+    # `pursuer_truth` is the THIRD recogniser: the same observer as `pursuer`
+    # (the evader) but with the full-state view of L1.5 — it is fed the pursuer
+    # position on every step instead of only the visible ones. It rides along
+    # passively and changes nothing about the episode, which is what makes
+    # gate 1's numbers reproduce bit-for-bit on this pass.
     rec = {
         "evader": TacticRecogniser(cfg, "evader", WINDOW),
         "pursuer": TacticRecogniser(cfg, "pursuer", WINDOW),
+        GATE_2_STREAM: TacticRecogniser(cfg, "pursuer", WINDOW),
     }
-    rows: dict[str, list] = {"evader": [], "pursuer": []}
+    streams = {"evader": "evader", "pursuer": "pursuer", GATE_2_STREAM: "pursuer"}
+    rows: dict[str, list] = {name: [] for name in rec}
 
     while True:
         action = law.act(obs["pursuer"])
@@ -260,14 +300,17 @@ def play_episode(seed: int, cfg: EnvConfig) -> dict:
         )
         obs, _, terminated, truncated, _ = env.step([v_p, w_p, v_e, w_e])
 
-        for role, (observer, target, seen) in {
+        for stream, (observer, target, seen) in {
             "evader": (env.pursuer_pose, env.evader_pose, obs["pursuer"][6] > 0.5),
             "pursuer": (env.evader_pose, env.pursuer_pose, obs["evader"][6] > 0.5),
+            GATE_2_STREAM: (env.evader_pose, env.pursuer_pose, True),
         }.items():
-            rec[role].observe(
+            rec[stream].observe(
                 observer, target[:2] if seen else None, env.obstacles
             )
-            rows[role].append((rec[role].features(), true[role]))
+            rows[stream].append(
+                (rec[stream].feature_vector(), true[streams[stream]])
+            )
         if terminated or truncated:
             break
 
@@ -283,39 +326,56 @@ def play_episode(seed: int, cfg: EnvConfig) -> dict:
     return out
 
 
+STREAMS = (*ROLES, GATE_2_STREAM)
+
+
 def play_block(seeds, ratio: float) -> dict:
-    """`play_episode` over a block of seeds, pooled per observed role."""
+    """`play_episode` over a block of seeds, pooled per observation stream."""
     cfg = EnvConfig(evader_speed_ratio=ratio)
     pooled = {
-        role: {"X": [], "y": [], "unknown_true": [], "n_steps": 0} for role in ROLES
+        name: {"X": [], "y": [], "unknown_true": [], "n_steps": 0}
+        for name in STREAMS
     }
     for seed in seeds:
         episode = play_episode(seed, cfg)
-        for role in ROLES:
-            pooled[role]["X"].append(episode[role]["X"])
-            pooled[role]["y"] += episode[role]["y"]
-            pooled[role]["unknown_true"] += episode[role]["unknown_true"]
-            pooled[role]["n_steps"] += episode[role]["n_steps"]
-    for role in ROLES:
-        pooled[role]["X"] = np.concatenate(pooled[role]["X"], axis=0)
+        for name in STREAMS:
+            pooled[name]["X"].append(episode[name]["X"])
+            pooled[name]["y"] += episode[name]["y"]
+            pooled[name]["unknown_true"] += episode[name]["unknown_true"]
+            pooled[name]["n_steps"] += episode[name]["n_steps"]
+    for name in STREAMS:
+        pooled[name]["X"] = np.concatenate(pooled[name]["X"], axis=0)
     return pooled
 
 
 # ----------------------------------------------------------------------------
 # scoring
 # ----------------------------------------------------------------------------
-def score(pooled_role: dict, role: str, model: SoftmaxModel | None) -> dict:
-    """Accuracy and the 6x6 confusion matrix for one classifier on one cell.
+def score(
+    pooled_role: dict,
+    role: str,
+    model: SoftmaxModel | None,
+    labels: tuple[str, ...] | None = None,
+    label_map: dict[str, str] | None = None,
+) -> dict:
+    """Accuracy and the confusion matrix for one classifier on one cell.
 
     UNKNOWN steps are excluded from the accuracy (the brief) and counted in the
     UNKNOWN column of the matrix; the UNKNOWN ROW stays empty because the
     generating tactic is always known.
+
+    `labels` is the label vocabulary (the role's library by default, gate 2's
+    merged four when given) and `label_map` is applied to BOTH the true and the
+    predicted label, so a merge is one substitution in one place and the rule
+    classifier needs no gate-specific variant.
     """
-    labels = library_of(role)
+    labels = library_of(role) if labels is None else labels
+    collapse = (lambda name: (label_map or {}).get(name, name))
     axis = list(labels) + [UNKNOWN]
     X, y = pooled_role["X"], pooled_role["y"]
+    y = [collapse(t) for t in y]
     if model is None:
-        predicted = [rule_label(x, role) for x in X]
+        predicted = [collapse(rule_label(x, role)) for x in X]
     else:
         predicted = model.predict(X) if len(X) else []
     matrix = np.zeros((len(axis), len(axis)), dtype=int)
@@ -323,7 +383,7 @@ def score(pooled_role: dict, role: str, model: SoftmaxModel | None) -> dict:
     for true, pred in zip(y, predicted, strict=True):
         matrix[index[true], index[pred]] += 1
     for true in pooled_role["unknown_true"]:
-        matrix[index[true], index[UNKNOWN]] += 1
+        matrix[index[collapse(true)], index[UNKNOWN]] += 1
     correct = int(np.trace(matrix[: len(labels), : len(labels)]))
     n_known = len(y)
     n_steps = pooled_role["n_steps"]
@@ -340,8 +400,88 @@ def score(pooled_role: dict, role: str, model: SoftmaxModel | None) -> dict:
     }
 
 
+def _verdict(cell: dict, proposed: str) -> dict:
+    return {
+        "classifier": proposed,
+        "accuracy": cell[proposed]["accuracy"],
+        "unknown_fraction": cell[proposed]["unknown_fraction"],
+        "passed": bool(
+            (cell[proposed]["accuracy"] or 0.0) >= GATE_ACCURACY
+            and (cell[proposed]["unknown_fraction"] or 1.0) <= GATE_UNKNOWN
+        ),
+    }
+
+
+def _better(cell: dict) -> str:
+    """The classifier PROPOSED FOR USE: the better held-out accuracy at the
+    training ratio. The gate's verdict is read on that one."""
+    return max(("fitted", "rule"), key=lambda c: cell[c]["accuracy"] or 0.0)
+
+
+def run_gate_2(train: dict, blocks: dict) -> dict:
+    """Gate 2 on the SAME pass: the `pursuer_truth` stream (observer = the
+    evader, full-state view) with `INTERCEPT` and `LEAD` merged into `CHASE`."""
+    role, stream = GATE_2_ROLE, GATE_2_STREAM
+    y_train = [GATE_2_MAP.get(t, t) for t in train[stream]["y"]]
+    model = SoftmaxModel.fit(train[stream]["X"], y_train, GATE_2_LABELS)
+    kw = {"labels": GATE_2_LABELS, "label_map": GATE_2_MAP}
+    cell = {
+        "train": {
+            "fitted": score(train[stream], role, model, **kw),
+            "rule": score(train[stream], role, None, **kw),
+        },
+        "heldout": {
+            str(ratio): {
+                "fitted": score(blocks[ratio][stream], role, model, **kw),
+                "rule": score(blocks[ratio][stream], role, None, **kw),
+            }
+            for ratio in blocks
+        },
+    }
+    proposed = _better(cell["heldout"][str(TRAIN_RATIO)])
+    return {
+        "gate": GATE,  # the same bars, verbatim
+        "header": GATE_2_HEADER,
+        "role_of_opponent": role,
+        "observer": "evader, FULL-STATE view (L1.5): visibility always true",
+        "labels": list(GATE_2_LABELS),
+        "label_map": GATE_2_MAP,
+        "dropped_from_any_vocabulary": ["HOLD-HIDDEN", "INTERCEPT/LEAD split"],
+        "cells": {role: cell},
+        "proposed_classifier": {role: proposed},
+        "verdict": {role: _verdict(cell["heldout"][str(TRAIN_RATIO)], proposed)},
+        "fitted_weights": {role: model.to_dict()},
+    }
+
+
+def check_gate_1_reproduction(stored: dict, fresh: dict) -> dict:
+    """Gate 1's held-out numbers, re-derived on this pass, against the written
+    record. Nothing about the game changed, so these must be IDENTICAL; a
+    mismatch stops the script instead of overwriting a published number."""
+    checked, mismatches = [], []
+    for role in ROLES:
+        for ratio in (TRAIN_RATIO, *OTHER_RATIOS):
+            for clf in ("fitted", "rule"):
+                was = stored["cells"][role]["heldout"][str(ratio)][clf]
+                now = fresh[role]["heldout"][str(ratio)][clf]
+                checked.append(f"{role}/{ratio}/{clf}")
+                for key in ("accuracy", "unknown_fraction", "n_known", "confusion"):
+                    if was[key] != now[key]:
+                        mismatches.append(
+                            f"{role}/{ratio}/{clf}/{key}: {was[key]} -> {now[key]}"
+                        )
+    if mismatches:
+        raise SystemExit(
+            "gate 1 did NOT reproduce; nothing written. "
+            + "; ".join(mismatches[:6])
+        )
+    return {"exact": True, "checked_cells": checked}
+
+
 def run() -> dict:
     t0 = time.time()
+    stored = json.loads(OUT.read_text())
+    gate_1 = stored.get("gate_1", stored)
     train_seeds = range(CONSTRUCT_SEED0, CONSTRUCT_SEED0 + N_TRAIN)
     heldout_seeds = range(
         CONSTRUCT_SEED0 + N_TRAIN, CONSTRUCT_SEED0 + N_TRAIN + N_HELDOUT
@@ -355,7 +495,7 @@ def run() -> dict:
         role: SoftmaxModel.fit(train[role]["X"], train[role]["y"], library_of(role))
         for role in ROLES
     }
-    cells = {}
+    cells: dict[str, dict] = {}
     for role in ROLES:
         cells[role] = {
             "train": {
@@ -370,25 +510,15 @@ def run() -> dict:
                 for ratio in blocks
             },
         }
-    # The classifier PROPOSED FOR USE: the better held-out accuracy at the
-    # training ratio. The gate's verdict is read on that one.
-    proposed = {}
-    verdict = {}
-    for role in ROLES:
-        gated = cells[role]["heldout"][str(TRAIN_RATIO)]
-        use = max(("fitted", "rule"), key=lambda c: gated[c]["accuracy"] or 0.0)
-        proposed[role] = use
-        verdict[role] = {
-            "classifier": use,
-            "accuracy": gated[use]["accuracy"],
-            "unknown_fraction": gated[use]["unknown_fraction"],
-            "passed": bool(
-                (gated[use]["accuracy"] or 0.0) >= GATE_ACCURACY
-                and (gated[use]["unknown_fraction"] or 1.0) <= GATE_UNKNOWN
-            ),
-        }
+    reproduction = check_gate_1_reproduction(gate_1, cells)
+    gate_2 = run_gate_2(train, blocks)
 
-    record = {
+    proposed = {role: _better(cells[role]["heldout"][str(TRAIN_RATIO)])
+                for role in ROLES}
+    verdict = {role: _verdict(cells[role]["heldout"][str(TRAIN_RATIO)],
+                              proposed[role]) for role in ROLES}
+
+    rerun = {
         "round": "S24.0 Step 3 — opponent-tactic recogniser construct gate",
         "gate": GATE,
         "gate_thresholds": {
@@ -413,6 +543,14 @@ def run() -> dict:
         "proposed_classifier": proposed,
         "verdict": verdict,
         "fitted_weights": {role: models[role].to_dict() for role in ROLES},
+    }
+    record = {
+        # Gate 1 VERBATIM, as it was written when it ran and failed (D147).
+        "gate_1": gate_1,
+        "gate_1_reproduction": reproduction,
+        "gate_1_rerun": rerun,
+        "gate_2": gate_2,
+        "features": list(FEATURES),
         "wall_clock_s": round(time.time() - t0, 1),
         "provenance": provenance(),
     }
@@ -469,9 +607,10 @@ def confusion_text(cell: dict) -> list[str]:
     return lines
 
 
-def table(record: dict) -> str:
-    lines = [record["round"], "", GATE, ""]
-    for role in ROLES:
+def gate_table(record: dict, roles: tuple[str, ...], ratios=(1.2, 0.8, 1.0)) -> str:
+    """One gate's verdict lines FIRST, then the table they rest on."""
+    lines = []
+    for role in roles:
         v = record["verdict"][role]
         lines.append(
             f"GATE [{role:<7}] {'PASS' if v['passed'] else 'FAIL'}: "
@@ -486,20 +625,20 @@ def table(record: dict) -> str:
         f"{'steps 1.2':>10}"
     )
     lines += [head, "-" * len(head)]
-    for role in ROLES:
+    for role in roles:
         cell = record["cells"][role]
         for clf in ("fitted", "rule"):
-            held = {r: cell["heldout"][str(r)][clf] for r in (1.2, 0.8, 1.0)}
+            held = {r: cell["heldout"][str(r)][clf] for r in ratios}
             lines.append(
                 f"{role:<8} {clf:<7} "
-                + "".join(f"{_f(held[r]['accuracy']):>9}" for r in (1.2, 0.8, 1.0))
+                + "".join(f"{_f(held[r]['accuracy']):>9}" for r in ratios)
                 + "".join(
-                    f"{_f(held[r]['unknown_fraction']):>9}" for r in (1.2, 0.8, 1.0)
+                    f"{_f(held[r]['unknown_fraction']):>9}" for r in ratios
                 )
                 + f"{_f(cell['train'][clf]['accuracy']):>10}"
-                + f"{held[1.2]['n_steps']:>11}"
+                + f"{held[TRAIN_RATIO]['n_steps']:>11}"
             )
-    for role in ROLES:
+    for role in roles:
         use = record["proposed_classifier"][role]
         cell = record["cells"][role]["heldout"][str(TRAIN_RATIO)][use]
         lines += [
@@ -510,6 +649,32 @@ def table(record: dict) -> str:
             ),
         ]
         lines += confusion_text(cell)
+    return "\n".join(lines)
+
+
+def table(record: dict) -> str:
+    gate_1, gate_2 = record["gate_1"], record["gate_2"]
+    rep = record["gate_1_reproduction"]
+    lines = [
+        gate_1["round"],
+        "",
+        "GATE 1 (D147) — unchanged, as it ran:",
+        "",
+        gate_1["gate"],
+        "",
+        gate_table(gate_1, ROLES),
+        "",
+        "",
+        "gate 1 reproduction on this pass: "
+        + ("EXACT (bit-for-bit)" if rep.get("exact") else "MISMATCH")
+        + f" over {len(rep.get('checked_cells', []))} cells",
+        "",
+        gate_2["header"],
+        "",
+        gate_2["gate"],
+        "",
+        gate_table(gate_2, (GATE_2_ROLE,)),
+    ]
     return "\n".join(lines)
 
 

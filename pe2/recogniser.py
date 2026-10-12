@@ -12,7 +12,15 @@ holds fewer than `MIN_VISIBLE` visible steps. It sees what any agent in this
 game sees — the opponent's position on the steps it was visible, its own pose
 and the static map (`pe2/obs.py`: obstacle features are never masked).
 
-Two classifiers over the SAME features, both measured by the gate; its verdict
+**What a selector consumes is `features()`, not a label** (D147: the Step 3
+gate failed for both roles, so the plan's §1 memory row is now "opponent MOTION
+FEATURES"). `features()` is therefore the public product: the dimensionless
+window quantities as a dict, zero-filled and NaN-free, with `valid` False and
+`n_visible_in_window` below `MIN_VISIBLE` so a consumer can branch on it without
+ever seeing `None`. `feature_vector()` is the same numbers as the array the two
+classifiers are defined on.
+
+Two classifiers over those features, both measured by the gate; its verdict
 applies to the one proposed for use.
 - `rule_label` — one readable rule per tactic, thresholds written down here.
 - `SoftmaxModel` — multinomial logistic regression fitted on labelled self-play
@@ -54,7 +62,7 @@ FEATURES = (
     "obstacle_trend",  # d(surface distance to obstacle k)/dstep / step length
     "observer_trend",  # d(distance to the observer)/dstep / step length
     "wall_trend",  # d(distance to the nearest wall)/dstep / step length
-    "visible_frac",  # visible steps in the window / window
+    "visible_fraction",  # visible steps in the window / window
     "obstacle_level",  # mean surface distance to obstacle k / half arena
     "observer_level",  # mean distance to the observer / half arena
     "wall_level",  # mean distance to the nearest wall / half arena
@@ -344,8 +352,30 @@ class TacticRecogniser:
         self._record(self.label)
         return self.label
 
-    def features(self) -> np.ndarray | None:
+    def feature_vector(self) -> np.ndarray | None:
+        """The window's features as the array the classifiers are defined on,
+        or None when the window is below `MIN_VISIBLE` visible steps."""
         return self._features
+
+    def features(self) -> dict:
+        """The PUBLIC product (D147): the window ending at the latest observed
+        step, as a dict a selector can read directly.
+
+        Always the same keys, never `None` and never NaN: an invalid window
+        (fewer than `MIN_VISIBLE` visible steps) reports every feature as 0.0
+        with `valid` False, so a consumer branches on `valid` rather than on a
+        missing value. `n_visible_in_window` is the count the validity rests on.
+        """
+        vector = (
+            np.zeros(len(FEATURES)) if self._features is None else self._features
+        )
+        out = {
+            name: float(np.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0))
+            for name, value in zip(FEATURES, vector, strict=True)
+        }
+        out["n_visible_in_window"] = len(self._samples)
+        out["valid"] = self._features is not None
+        return out
 
     def _record(self, label: str) -> None:
         if self.history and self.history[-1][0] == label:
