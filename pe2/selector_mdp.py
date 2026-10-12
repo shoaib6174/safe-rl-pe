@@ -1,7 +1,14 @@
 """S24.1 Step 1.1 — the pursuer's TACTIC-SELECTION semi-MDP.
 
 Spec: `docs/pathway/tactics_prereg_s24_1_2026-10-13.md` sections 2, 3 and 5
-(CG-T1/CG-T2). One variable changes against S24.0: the pursuer's `select`.
+(CG-T1/CG-T2) INCLUDING Amendment A1. One variable changes against S24.0: the
+pursuer's `select`.
+
+Amendment A1 (before any arm trains) rules this step: **A1.1** adds the
+`shield_obs` triple and the `escape_obs` pair to the observation (`OBS_LEN`
+50 -> 55), observable and so NOT zeroed by `NOMEM`; **A1.2** counts a switch
+only between spans of >= 1 env step; **A1.3** accepts readings 1, 2 and 5
+below. Where A1 and the brief differ, A1 wins.
 
 The game is NOT re-assembled here. `scripts/s24_tactic_game.py::build_game` is
 the frozen v0b assembly (D149/D150) — `RecoveryShieldV2` fresh per episode at
@@ -89,6 +96,14 @@ OBS_LAYOUT: tuple[tuple[str, int, bool], ...] = (
     ("current_tactic", N_ACTIONS + 1, True),  # one-hot, then time-in-tactic / T
     ("last_tactics", N_ACTIONS * N_LAST_TACTICS, True),  # most recent first
     ("speed_ratio", 1, False),
+    # A1.1: `SearchMDP.shield_features()` — the last executed step's
+    # intervention flag, min clearance clipped to [-0.5, 2] m, stall run /
+    # `DEADLOCK_STEPS` (= 40) clipped to [0, 2]. Observable, not memory
+    # (D113/D131: these are what let a learner recover the shield's cost).
+    ("shield", 3, False),
+    # A1.1: `SearchMDP.escape_features()` — the admissible omega range at
+    # v = 0 at the CURRENT true pose, over omega_max, clipped to [-1, 1].
+    ("escape", 2, False),
 )
 OBS_LEN = sum(width for _name, width, _mem in OBS_LAYOUT)
 
@@ -103,6 +118,41 @@ def _block_slices() -> dict[str, slice]:
 
 OBS_SLICES = _block_slices()
 MEMORY_SLICES = tuple(OBS_SLICES[name] for name, _w, mem in OBS_LAYOUT if mem)
+
+
+def spans_with_length(history, step_index: int) -> list[dict]:
+    """A span log `(name, start, end)` as dicts carrying the span's length in
+    env steps and A1.2's `zero_length` flag. The OPEN span (`end` None) is
+    closed at `step_index`, the convention the v0b record's `_history` uses.
+
+    A free function so A1.2's rule can be tested on a hand-built history
+    without an episode.
+    """
+    out = []
+    for name, start, end in history:
+        stop = int(step_index if end is None else end)
+        out.append(
+            {
+                "name": str(name),
+                "start": int(start),
+                "end": stop,
+                "length": stop - int(start),
+                "zero_length": stop - int(start) == 0,
+            }
+        )
+    return out
+
+
+def count_switches(spans: list[dict]) -> int:
+    """A1.2: transitions between consecutive pursuer spans of >= 1 env step.
+
+    `INTERCEPT` / `LEAD` are always applicable but are DONE on their first call
+    when the evader is unseen and the law's last-seen point is exhausted; the
+    zero-length spans they leave behind are not switches and must not satisfy
+    CG-T2. They stay in the log, flagged.
+    """
+    families = [tactic_family(s["name"]) for s in spans if not s["zero_length"]]
+    return sum(int(a != b) for a, b in itertools.pairwise(families))
 
 
 class _NeedDecision(Exception):  # a control signal, not an error
@@ -292,7 +342,11 @@ class SelectorMDP(gym.Env):
             if span is not None:
                 out[start + N_ACTIONS * back + ACTIONS.index(span[0])] = 1.0
         out[OBS_SLICES["speed_ratio"]] = float(cfg.evader_speed_ratio)
-        if not self.memory:
+        # A1.1: read off the game's own `SearchMDP` methods, so the definitions
+        # and the clipping are S16/S17's and not a second copy of them.
+        out[OBS_SLICES["shield"]] = self.game.shield_features()
+        out[OBS_SLICES["escape"]] = self.game.escape_features()
+        if not self.memory:  # A1.1: the five new entries are NOT memory
             for block in MEMORY_SLICES:
                 out[block] = 0.0
         return out
@@ -360,10 +414,15 @@ class SelectorMDP(gym.Env):
         return self._observe(obs), float(reward), term, trunc, info
 
     # -- evaluation -------------------------------------------------------
+    def spans(self) -> list[dict]:
+        """The pursuer's span log with each span's length in env steps and
+        A1.2's `zero_length` flag. The OPEN span is closed at `step_index`,
+        as the v0b record's `_history` does."""
+        return spans_with_length(self.game.law.history, self.game.law.step_index)
+
     def n_switches(self) -> int:
-        """Consecutive pursuer spans whose FAMILY differs (CG-T2's quantity)."""
-        families = [tactic_family(name) for name, _s, _e in self.game.law.history]
-        return sum(int(a != b) for a, b in itertools.pairwise(families))
+        """CG-T2's quantity, under A1.2."""
+        return count_switches(self.spans())
 
     def play_episode(self, predict, seed: int) -> dict:
         """One seeded episode, `predict(obs, deterministic=True,
@@ -395,6 +454,10 @@ class SelectorMDP(gym.Env):
             "usage": {role: dict(counts) for role, counts in game.usage.items()},
             "n_decisions": int(self.n_decisions),
             "picks": dict(self.picks),
+            # A1.2: the flagged span log, and the switch count over the spans
+            # of >= 1 env step only.
+            "pursuer_spans": self.spans(),
+            "n_zero_length_spans": sum(s["zero_length"] for s in self.spans()),
             "n_switches": int(self.n_switches()),
             "inapplicable_picks": int(self.inapplicable_picks),
             "recovery": {

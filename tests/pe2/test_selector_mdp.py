@@ -1,6 +1,8 @@
 """`pe2/selector_mdp.py` + `scripts/derisk_s24_1_train.py` — S24.1 Step 1.1.
 
-Spec: `docs/pathway/tactics_prereg_s24_1_2026-10-13.md` sections 2, 3, 5.
+Spec: `docs/pathway/tactics_prereg_s24_1_2026-10-13.md` sections 2, 3, 5 AND
+Amendment A1 (A1.1 `OBS_LEN` 55 with the shield/escape features kept by NOMEM;
+A1.2 a switch needs both spans to be >= 1 env step).
 
 Everything here is either a constant the pre-registration fixes or one of the
 properties the round's construct gates rest on:
@@ -42,6 +44,8 @@ from pe2.selector_mdp import (
     OBS_LEN,
     OBS_SLICES,
     SelectorMDP,
+    count_switches,
+    spans_with_length,
 )
 from pe2.selectors import DECISION_PERIOD
 
@@ -91,10 +95,10 @@ def _roll(env, n_decisions, rng):
 # the observation layout
 # ----------------------------------------------------------------------------
 def test_observation_length_is_pinned():
-    """50 = 1 visible + 2 range/bearing + 3 dead reckoning + 4 own pose
+    """A1.1: 55 = 1 visible + 2 range/bearing + 3 dead reckoning + 4 own pose
     + 6 two obstacles + 1 wall + 11 features/valid + 6 current tactic
-    + 15 last three + 1 speed ratio."""
-    assert OBS_LEN == 50
+    + 15 last three + 1 speed ratio + 3 shield + 2 escape."""
+    assert OBS_LEN == 55
     env = SelectorMDP(1.2)
     assert env.observation_space.shape == (OBS_LEN,)
     obs, _info = env.reset(seed=SEED)
@@ -110,6 +114,28 @@ def test_layout_tiles_the_vector_exactly():
     assert (covered == 1).all()  # no gap, no overlap
     assert OBS_SLICES["features"].stop - OBS_SLICES["features"].start == len(FEATURES) + 1
     assert OBS_SLICES["last_tactics"].stop - OBS_SLICES["last_tactics"].start == 3 * N_ACTIONS
+
+
+def test_shield_and_escape_blocks_are_the_games_own_features():
+    """A1.1: read off `SearchMDP.shield_features()` / `escape_features()`, so
+    the definitions and the clipping are S16/S17's, not a second copy."""
+    env = SelectorMDP(1.2)
+    obs, _ = env.reset(seed=SEED)
+    assert (obs[OBS_SLICES["shield"]] == env.game.shield_features()).all()
+    assert (obs[OBS_SLICES["escape"]] == env.game.escape_features()).all()
+    # (0, 2, 0) is `shield_features`'s "no shield acted" default, and the
+    # escape pair is a real admissible range, never the unshielded (-1, 1)
+    # sentinel unless the filter truly admits every turn.
+    assert obs[OBS_SLICES["shield"]].tolist() == [0.0, pytest.approx(2.0), 0.0]
+    rng = np.random.default_rng(6)
+    seen = set()
+    for step in _roll(env, 60, rng):
+        shield = step[0][OBS_SLICES["shield"]]
+        assert -0.5 <= shield[1] <= 2.0 and 0.0 <= shield[2] <= 2.0
+        escape = step[0][OBS_SLICES["escape"]]
+        assert (escape >= -1.0).all() and (escape <= 1.0).all()
+        seen.add(tuple(np.round(shield, 6)))
+    assert len(seen) > 1, "the shield block never moved: it is not live"
 
 
 def test_action_space_is_the_preregistered_order():
@@ -273,6 +299,9 @@ def test_nomem_zeroes_exactly_the_memory_block():
     for block in MEMORY_SLICES:
         memory[block] = True
     assert memory.sum() == 35  # 3 dead reckoning + 11 features + 6 + 15
+    # A1.1: the shield and escape blocks are observable, not memory.
+    for name in ("shield", "escape"):
+        assert not memory[OBS_SLICES[name]].any()
     rng = np.random.default_rng(5)
     moved = False
     for _ in range(60):
@@ -288,6 +317,53 @@ def test_nomem_zeroes_exactly_the_memory_block():
         if ta or tra:
             break
     assert moved, "the full selector's memory block never became non-zero"
+    # A1.1 again, on the live vector: NOMEM keeps the five new entries, and they
+    # are not all zero by accident.
+    kept = np.concatenate([b[OBS_SLICES["shield"]], b[OBS_SLICES["escape"]]])
+    assert (kept != 0.0).any()
+
+
+# ----------------------------------------------------------------------------
+# A1.2: the switch count
+# ----------------------------------------------------------------------------
+def test_spans_with_length_flags_zero_length_spans():
+    history = [("LEAD", 0, 40), ("INTERCEPT", 40, 40), ("SWEEP", 40, None)]
+    spans = spans_with_length(history, step_index=55)
+    assert [s["length"] for s in spans] == [40, 0, 15]
+    assert [s["zero_length"] for s in spans] == [False, True, False]
+    assert spans[-1]["end"] == 55  # the OPEN span is closed at `step_index`
+
+
+def test_zero_length_spans_are_not_switches():
+    """A1.2: `LEAD` -> (0-step `INTERCEPT`) -> `LEAD` is NOT two switches; it is
+    none. Without the rule CG-T2's bar of 2 would be met by the DONE-on-entry
+    spans alone."""
+    history = [
+        ("LEAD", 0, 40),
+        ("INTERCEPT", 40, 40),
+        ("INTERCEPT", 40, 40),
+        ("LEAD", 40, 80),
+    ]
+    assert count_switches(spans_with_length(history, 80)) == 0
+    naive = [("LEAD", 0, 40), ("INTERCEPT", 40, 41), ("LEAD", 41, 81)]
+    assert count_switches(spans_with_length(naive, 81)) == 2  # real spans count
+    # the family, not the instance: `COUNTER-ORBIT(0)` -> `COUNTER-ORBIT(1)`
+    same = [("COUNTER-ORBIT(0)", 0, 20), ("COUNTER-ORBIT(1)", 20, 40)]
+    assert count_switches(spans_with_length(same, 40)) == 0
+    assert count_switches([]) == 0
+
+
+def test_the_env_switch_count_uses_the_a1_2_rule():
+    env = SelectorMDP(1.2)
+    env.reset(seed=SEED)
+    rng = np.random.default_rng(7)
+    _roll(env, 60, rng)
+    spans = env.spans()
+    assert env.n_switches() == count_switches(spans)
+    naive = count_switches([dict(s, zero_length=False) for s in spans])
+    assert env.n_switches() <= naive
+    if any(s["zero_length"] for s in spans):
+        assert env.n_switches() < naive, "the rule made no difference to measure"
 
 
 # ----------------------------------------------------------------------------
@@ -313,8 +389,14 @@ def test_play_episode_is_deterministic_and_carries_the_gate_fields():
         "n_switches",
         "inapplicable_picks",
         "picks",
+        "pursuer_spans",
+        "n_zero_length_spans",
     ):
         assert key in first, key
+    assert first["n_zero_length_spans"] == sum(
+        s["zero_length"] for s in first["pursuer_spans"]
+    )
+    assert first["n_switches"] == count_switches(first["pursuer_spans"])
     assert set(first["tactics"]) == {"evader", "pursuer"}
     assert first["inapplicable_picks"] == 0
     assert sum(first["picks"].values()) == first["n_decisions"]
@@ -446,6 +528,7 @@ def test_maskable_ppo_smoke_learns_and_writes_the_probe_schema(tmp_path, monkeyp
         "k",
         "capture_rate",
         "n_switches_mean",
+        "n_zero_length_spans_mean",
         "usage_steps",
         "picks",
         "inapplicable_picks",

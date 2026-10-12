@@ -4,7 +4,10 @@ Pre-registration: `docs/pathway/tactics_prereg_s24_1_2026-10-13.md` section 3
 ("PPO (SB3) with the S17 BASE hyper-parameters apart from the discrete head; 3
 seeds (80, 81, 82); budget 3 M env steps each; probe every 250 k on 2 350 000+
 (N = 200, scripted evader only)" and the `NOMEM` negative control) and section 5
-(CG-T1: "0 inapplicable picks over all training decisions (logged)").
+(CG-T1: "0 inapplicable picks over all training decisions (logged)"), INCLUDING
+Amendment A1: the observation carries the `shield_obs` triple and the
+`escape_obs` pair (A1.1, `OBS_LEN` 55) and `n_switches` counts spans of >= 1 env
+step only (A1.2). The readings below are the ones A1.3 accepts.
 
 THIS SCRIPT PRINTS NO CAPTURE RATE. Every measured quantity goes to the per-arm
 JSON and nothing else; the gate runner reads those files. The prereg's stop rule
@@ -201,7 +204,13 @@ def probe(model, arm: str, n: int = PROBE_N, seed0: int = PROBE_SEED0) -> dict:
         "k": int(k),
         "capture_rate": k / total,
         "mean_steps": sum(log["steps"] for log in logs) / total,
+        # A1.2: `n_switches` already excludes the zero-length DONE-on-entry
+        # spans; their count is carried beside it so the exclusion is visible.
         "n_switches_mean": sum(log["n_switches"] for log in logs) / total,
+        "n_zero_length_spans_mean": sum(
+            log["n_zero_length_spans"] for log in logs
+        )
+        / total,
         "n_decisions_mean": sum(log["n_decisions"] for log in logs) / total,
         "usage_steps": dict(usage),  # per env step, by family (the v0b table's unit)
         "picks": {name: int(picks.get(name, 0)) for name in ACTIONS},  # per decision
