@@ -676,6 +676,28 @@ class TestHStrat2:
         assert (v["n_pass"], v["n_vacuous"]) == (2, 1)
         assert v["verdict"] == "PASS"
 
+    def test_a_single_failing_opponent_keeps_the_verdict_fail(self):
+        """1 PASS + 1 VACUOUS + 1 FAIL is a FAIL: the bar is out of reach
+        partly because an opponent ACTUALLY failed, which is evidence, not an
+        absent phenomenon."""
+        recs = _pass_round()
+        # ATK: no orbit phenomenon at all -> VACUOUS
+        for row in ("PLAN", "LEAD-1.0"):
+            name = R.cell_name(row, "SHIELD", "ATK")
+            caps = BASE_CAPS if row == "PLAN" else _law_caps(30, 3)
+            recs[name] = _cell(name, list(caps), [150] * 10 + [0] * 90)
+        # HUG: the gain lands outside the orbit episodes -> FAIL
+        name = R.cell_name("LEAD-1.0", "SHIELD", "HUG")
+        recs[name] = _cell(name, _law_caps(2, 25), BASE_RUNS)
+        v = R.h_strat_2(recs, "LEAD-1.0")
+        assert [b["verdict"] for b in v["opponents"].values()] == [
+            "PASS",
+            "FAIL",
+            "VACUOUS",
+        ]
+        assert (v["n_pass"], v["n_vacuous"]) == (1, 1)
+        assert v["verdict"] == "FAIL"  # NOT VACUOUS
+
     def test_an_empty_non_orbit_comparator_is_vacuous(self):
         """Stated reading: with every baseline loss an orbit loss there is no
         comparator, so "exceeds" is undefined rather than satisfied."""
@@ -1000,6 +1022,36 @@ class TestGifs:
         assert rec.caption("law") == ("[law] MPC-2s · episode 2090000 · unreachable 0")
         assert "capture" not in rec.caption("CAPTURE @ 12")
 
+    def test_the_aim_overlay_plots_the_point_and_nothing_without_one(self):
+        """The marker must be the law's CURRENT aim point, and absent — not a
+        stale point, not a zero — when the law aimed nowhere on this step."""
+
+        class _StubAx:
+            def __init__(self):
+                self.plotted = []
+
+            def plot(self, xs, ys, **kw):
+                self.plotted.append((list(xs), list(ys), kw))
+
+        class _Law:
+            last_aim = None
+
+        law = _Law()
+        ov = R.AimOverlay(law)
+        ax = _StubAx()
+        ov(ax, None)  # no aim point: nothing drawn, and the env is never read
+        assert ax.plotted == []
+        law.last_aim = np.array([1.0, 2.0])
+        ov(ax, None)
+        assert len(ax.plotted) == 1
+        xs, ys, kw = ax.plotted[0]
+        assert (xs, ys) == ([1.0], [2.0])
+        assert kw["marker"] == "x"
+        # a law that does not expose the attribute at all draws nothing either
+        ax2 = _StubAx()
+        R.AimOverlay(object())(ax2, None)
+        assert ax2.plotted == []
+
     def test_the_recorder_is_s19s_plus_the_aim_marker(self, monkeypatch):
         """The branch tag, the FOV cone and the nominal-vs-executed arcs are
         S19's and unchanged; S23 adds the aim point and nothing else."""
@@ -1053,6 +1105,29 @@ class TestCli:
         )
         R.main()
         assert order == ["cells", "gifs", "summarize"]
+
+    def test_summarize_carries_the_cgb_tally_the_cells_were_measured_under(
+        self, tmp_path, monkeypatch
+    ):
+        """The gate runs in `run_cells`, before the first episode, and stamps
+        its tally into every cell record. `summarize` must report THAT tally
+        rather than `null` — and must not replay 20 S18 episodes to do it."""
+        monkeypatch.setattr(R, "OUT", tmp_path)
+        monkeypatch.setattr(R, "null_identity", lambda **k: dict(HOLDS))
+        monkeypatch.setattr(
+            R, "cgb_replay", lambda *a, **k: pytest.fail("summarize re-ran CG-B")
+        )
+        tally = R.cgb_status(_twenty(), _twenty())
+        rec = _measurable_record("PLAN-SHIELD_GREEDY")
+        rec["provenance"] = {"device": "cpu", "cg_b": tally}
+        _on_disk(tmp_path, rec)
+        blob = R.summarize()
+        assert blob["provenance"]["cg_b"]["verdict"] == "PASS"
+        assert blob["provenance"]["cg_b"]["n_exact"] == 20
+        assert (
+            json.loads((tmp_path / "s23_round.json").read_text())["provenance"]["cg_b"]
+            == tally
+        )
 
     def test_summarize_survives_a_round_with_no_records(self, tmp_path, monkeypatch):
         monkeypatch.setattr(R, "OUT", tmp_path)
@@ -1111,6 +1186,61 @@ class TestVisibleLawRun:
 
         assert "visible" in BranchTaggedSearchMDP.__doc__
 
+    def test_visible_is_the_pre_step_visibility_across_a_flip(self):
+        """The field must say what the component that COMMANDED the step could
+        see when it decided, not what the step revealed. Stepped by hand across
+        a visibility flip, with `_visible` read before and after each step."""
+        from pe2.structured import OrbitSearch
+
+        cfg = R.cell_config()
+        mdp = R.build_cell_env("PLAN-SHIELD_GREEDY", cfg)
+        policy = OrbitSearch(cfg)
+        obs = mdp._begin(R.CONSTRUCT_SEED0)
+        before, flips = [], 0
+        for _ in range(400):
+            pre = bool(mdp._visible)
+            a = mdp.law.act(obs)
+            branch = "law"
+            if a is None:  # the law has nothing to act on: the learner drives
+                a, _ = policy.predict(obs, deterministic=True)
+                branch = "search"
+            obs, _r, _onset, term, trunc = mdp._step_inner(a, branch)
+            before.append(pre)
+            flips += int(pre != bool(mdp._visible))
+            if term or trunc:
+                break
+        assert flips > 0, "this seed never flips visibility; it cannot test the field"
+        got = [s["visible"] for s in mdp.step_records]
+        assert got == before
+        # and the post-step value is NOT what was recorded, on at least the
+        # steps where the two differ
+        after = before[1:] + [bool(mdp._visible)]
+        assert got != after
+
+
+class TestExposureCounts:
+    def test_the_counts_come_from_the_per_step_records(self):
+        """Prereg section 5: the EXACT 0/K count is `feasible_count == 0` AND
+        `aim_point is not None`; a `feasible_count` of 0 on a step that never
+        sampled is the CG-S1 delegation, not a wall-adjacent state."""
+        steps = [
+            {"aim_point": [1.0, 2.0], "feasible_count": 64},  # sampled, feasible
+            {"aim_point": [1.0, 2.0], "feasible_count": 0},  # sampled, 0 of K
+            {"aim_point": None, "feasible_count": 0},  # delegated: not a 0/K
+            {"aim_point": None, "feasible_count": None},  # a law without the field
+            {"aim_point": [3.0, 4.0], "feasible_count": 0},  # sampled, 0 of K
+        ]
+        assert R.exposure_counts(steps) == (3, 2)
+        assert R.exposure_counts([]) == (0, 0)
+
+    def test_the_recorder_summary_counter_is_named_for_what_it_counts(self):
+        """`n_planned_calls` counts steps whose law EXPOSES the field at all —
+        every step of an MPC episode, sampled or delegated — so the record
+        carries it as `n_law_exposed_steps` and `n_aimed` beside it."""
+        src = _PATH.read_text()
+        assert '"n_law_exposed_steps": law_exposed' in src
+        assert '"n_planned_calls": ' not in src
+
 
 class TestSmoke:
     def test_a_three_episode_cell_carries_every_pre_registered_field(
@@ -1127,7 +1257,9 @@ class TestSmoke:
             "violation_steps",
             "intervention_total",
             "longest_visible_law_run",
-            "n_planned_calls",
+            "n_aimed",
+            "n_zero_feasible_exact",
+            "n_law_exposed_steps",
             "n_zero_feasible",
             "n_chose_direct",
             "branch",
@@ -1149,9 +1281,19 @@ class TestSmoke:
         assert R.record_status(rec)[0] == "INVALID"
         assert R.load_records(quiet=True) == {}
 
-    def test_the_mpc_row_records_its_planned_calls(self, tmp_path, monkeypatch):
+    def test_the_mpc_row_records_its_exposure(self, tmp_path, monkeypatch):
         monkeypatch.setattr(R, "OUT", tmp_path)
         rec = R.run_cell("MPC-2s-SHIELD_GREEDY", n_episodes=1)
-        assert rec["n_planned_calls"][0] > 0  # every step of an MPC episode
-        assert rec["n_zero_feasible"][0] >= 0
-        assert rec["aggregate"]["n_chose_direct_total"] >= 0
+        n_steps = rec["steps"][0]
+        # every step of an MPC episode exposes the field ...
+        assert rec["n_law_exposed_steps"][0] == n_steps
+        # ... but the law only AIMED on the steps where the sampling ran, which
+        # is strictly fewer: the invisible branch and the zero-v-hat delegation
+        # both take `PLAN`'s code path and aim nowhere.
+        assert 0 < rec["n_aimed"][0] < n_steps
+        assert 0 <= rec["n_zero_feasible_exact"][0] <= rec["n_aimed"][0]
+        assert rec["n_zero_feasible_exact"][0] <= rec["n_zero_feasible"][0]
+        agg = rec["aggregate"]
+        assert agg["n_aimed_total"] == rec["n_aimed"][0]
+        assert agg["n_zero_feasible_exact_total"] == rec["n_zero_feasible_exact"][0]
+        assert agg["n_chose_direct_total"] >= 0

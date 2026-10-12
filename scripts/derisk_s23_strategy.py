@@ -541,6 +541,29 @@ def longest_visible_law_run(steps: list[dict]) -> int:
     return best
 
 
+def exposure_counts(steps: list[dict]) -> tuple[int, int]:
+    """`(n_aimed, n_zero_feasible_exact)` for one episode, from the per-step
+    records (the same source `longest_visible_law_run` reads).
+
+    Prereg section 2 reports the treated laws' EXPOSURE per episode, and
+    section 5 fixes the exact 0/64 count as "`feasible_count == 0` and
+    `aim_point is not None`" — neither is recoverable from the recorder's own
+    summary. `n_planned_calls` counts the steps whose law EXPOSES the field at
+    all (every step of an MPC episode, whether or not the sampling ran), and
+    `n_zero_feasible` counts `feasible_count == 0`, which includes the CG-S1
+    delegation and is therefore only an upper bound. These two are the
+    quantities the prereg actually names:
+
+    - `n_aimed` — steps on which the law aimed somewhere of its own (LEAD's
+      lead point, MPC's predicted evader position), i.e. the planned calls;
+    - `n_zero_feasible_exact` — steps on which MPC sampled and 0 of K rows were
+      feasible, the wall-adjacent case of A2 note (i).
+    """
+    n_aimed = sum(s["aim_point"] is not None for s in steps)
+    n_zero = sum(s["feasible_count"] == 0 and s["aim_point"] is not None for s in steps)
+    return n_aimed, n_zero
+
+
 def run_cell(
     name: str,
     device: str = "cpu",
@@ -565,7 +588,9 @@ def run_cell(
     violations: list[int] = []
     intervention_total: list[float] = []
     vis_runs: list[int] = []
-    planned: list[int] = []
+    aimed: list[int] = []
+    zero_feasible_exact: list[int] = []
+    law_exposed: list[int] = []
     zero_feasible: list[int] = []
     chose_direct: list[int] = []
     branch: list[dict] = []
@@ -582,7 +607,12 @@ def run_cell(
         violations.append(int(mdp.episode_violations))
         intervention_total.append(float(b["intervention_total"]))  # all-step scope
         vis_runs.append(longest_visible_law_run(mdp.step_records))
-        planned.append(int(b["n_planned_calls"]))
+        n_aimed, n_zero_exact = exposure_counts(mdp.step_records)
+        aimed.append(n_aimed)
+        zero_feasible_exact.append(n_zero_exact)
+        # The recorder's own counter, kept under the name of what it counts:
+        # steps whose law EXPOSED `feasible_count` at all, not planned calls.
+        law_exposed.append(int(b["n_planned_calls"]))
         zero_feasible.append(int(b["n_zero_feasible"]))
         chose_direct.append(int(b["n_chose_direct"]))
         branch.append(b)
@@ -614,7 +644,11 @@ def run_cell(
         "intervention_total": intervention_total,
         "longest_visible_law_run": vis_runs,
         "orbit_ind": orbit,
-        "n_planned_calls": planned,
+        # Section 2's exposure, per episode, from the per-step records.
+        "n_aimed": aimed,
+        "n_zero_feasible_exact": zero_feasible_exact,
+        # The recorder's summary counters, kept as they are measured.
+        "n_law_exposed_steps": law_exposed,
         "n_zero_feasible": zero_feasible,
         "n_chose_direct": chose_direct,
         "branch": branch,
@@ -637,7 +671,9 @@ def run_cell(
             "intervention_scope": "all steps (S19 A1.2)",
             # Section 2's stated limitation: the treated laws' exposure varies
             # per episode, so the planned-call count is reported beside the rate.
-            "n_planned_calls_total": sum(planned),
+            "n_aimed_total": sum(aimed),
+            "n_zero_feasible_exact_total": sum(zero_feasible_exact),
+            "n_law_exposed_steps_total": sum(law_exposed),
             "n_zero_feasible_total": sum(zero_feasible),
             "n_chose_direct_total": sum(chose_direct),
         },
@@ -1041,9 +1077,11 @@ def h_strat_2(records: dict, row: str) -> dict:
         overall = "INCOMPLETE"
     elif n_pass >= PASS_MIN:
         overall = "PASS"
-    elif n_pass + n_vacuous >= PASS_MIN:
-        # The bar is out of reach only because some opponents have no orbit
-        # phenomenon. Not a failure of the law; not a pass either.
+    elif "FAIL" not in verdicts_ and n_pass + n_vacuous >= PASS_MIN:
+        # The bar is out of reach ONLY because some opponents have no orbit
+        # phenomenon. Not a failure of the law; not a pass either. A single
+        # opponent that actually FAILED is evidence and keeps the verdict FAIL:
+        # 1 PASS + 1 VACUOUS + 1 FAIL is a FAIL, not a vacuum.
         overall = "VACUOUS"
     else:
         overall = "FAIL"
@@ -1303,11 +1341,28 @@ _BULK_KEYS = (
     "intervention_total",
     "longest_visible_law_run",
     "orbit_ind",
-    "n_planned_calls",
+    "n_aimed",
+    "n_zero_feasible_exact",
+    "n_law_exposed_steps",
     "n_zero_feasible",
     "n_chose_direct",
     "branch",
 )
+
+
+def recorded_cgb(records: dict) -> dict | None:
+    """CG-B's tally as the CELLS recorded it.
+
+    The gate runs in `run_cells`, before the first episode, and its tally is
+    stamped into every cell record's provenance. `summarize` does not re-run it
+    (that would replay 20 S18 episodes to write a summary) and must not report
+    `null` either, so it reads the tally the measured cells were taken under.
+    """
+    for rec in records.values():
+        cgb = (rec.get("provenance") or {}).get("cg_b")
+        if cgb:
+            return cgb
+    return None
 
 
 def summarize(device: str = "cpu") -> dict:
@@ -1325,7 +1380,7 @@ def summarize(device: str = "cpu") -> dict:
             n: {k: val for k, val in r.items() if k not in _BULK_KEYS}
             for n, r in records.items()
         },
-        "provenance": provenance(device),
+        "provenance": provenance(device, recorded_cgb(records)),
     }
     _write_json(round_file("json"), blob)
     write_figure(records, round_file("png"), null)
