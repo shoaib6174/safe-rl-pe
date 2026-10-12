@@ -8,7 +8,7 @@
 # first episode, and refuses the summary if CG-T1 or A2.1 does not hold.
 set -u
 MAIN=/home/niro-1/Codes/safe-rl-pe
-WT=/home/niro-1/s24_1_worktree
+WT=/home/niro-1/s24_1_gate_worktree
 V=$MAIN/venv/bin/python
 ARMS=(SEL-80 SEL-81 SEL-82 NOMEM-80 NOMEM-81 NOMEM-82)
 if pgrep -f "derisk_s2[34]_\|replay_s18_branch_split\|s24_tactic_game\|derisk_s18_boundary" >/dev/null; then echo "REFUSED: another round is using the host (training arms included)"; exit 1; fi
