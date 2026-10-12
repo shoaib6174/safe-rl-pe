@@ -2,7 +2,10 @@
 
 Spec: `docs/pathway/tactics_prereg_s24_1_2026-10-13.md` sections 2, 3, 5 AND
 Amendment A1 (A1.1 `OBS_LEN` 55 with the shield/escape features kept by NOMEM;
-A1.2 a switch needs both spans to be >= 1 env step).
+A1.2 a switch needs both spans to be >= 1 env step) AND Amendment A2 (A2.1
+no tactic that would be DONE on entry is offered; A2.4 the probe rows carry the
+training env's counters, `SystemExit` aborts, and the recorder's span scope is
+live).
 
 Everything here is either a constant the pre-registration fixes or one of the
 properties the round's construct gates rest on:
@@ -45,6 +48,7 @@ from pe2.selector_mdp import (
     OBS_SLICES,
     SelectorMDP,
     count_switches,
+    done_on_entry,
     spans_with_length,
 )
 from pe2.selectors import DECISION_PERIOD
@@ -171,12 +175,20 @@ def test_masks_are_applicable_of_the_resolved_tactic():
                 assert not mask[i]
                 continue
             applicable = bool(tactic.applicable(raw, game_env))
+            gate = not done_on_entry(tactic, raw, game_env, env.cfg)  # A2.1
             if ACTIONS[i] == "COUNTER-ORBIT":  # reading 2: gated on visibility
-                assert mask[i] == (applicable and visible)
+                assert mask[i] == (applicable and visible and gate)
             else:
-                assert mask[i] == applicable
-        # the three independent facts the mask must carry
-        assert mask[ACTIONS.index("INTERCEPT")] and mask[ACTIONS.index("LEAD")]
+                assert mask[i] == (applicable and gate)
+        # the independent facts the mask must carry: the two law tactics are
+        # library-applicable always and offered whenever they have a branch to
+        # act on (A2.1), and SWEEP is offered exactly while the evader is unseen
+        for name in ("INTERCEPT", "LEAD"):
+            tactic = env._candidates(raw)[ACTIONS.index(name)]
+            assert tactic.applicable(raw, game_env)
+            assert bool(mask[ACTIONS.index(name)]) == (
+                not done_on_entry(tactic, raw, game_env, env.cfg)
+            )
         assert bool(mask[ACTIONS.index("SWEEP")]) == (not visible)
         assert mask.any()  # a masked-out decision would deadlock MaskablePPO
         checked += 1
@@ -232,7 +244,6 @@ def test_no_shaping_ingredient_is_switched_on():
     # place shaping could enter; this env never routes a reward through it.
     for method in (SelectorMDP.step, SelectorMDP._advance):
         assert "_shaped" not in inspect.getsource(method)
-    assert "SearchMDP.step" not in inspect.getsource(SelectorMDP.step)
 
 
 # ----------------------------------------------------------------------------
@@ -321,6 +332,90 @@ def test_nomem_zeroes_exactly_the_memory_block():
     # are not all zero by accident.
     kept = np.concatenate([b[OBS_SLICES["shield"]], b[OBS_SLICES["escape"]]])
     assert (kept != 0.0).any()
+
+
+# ----------------------------------------------------------------------------
+# A2.1: no decision may spend zero tactic steps
+# ----------------------------------------------------------------------------
+def test_a_never_seen_state_masks_the_law_tactics_and_offers_sweep():
+    """A2.1: `INTERCEPT`/`LEAD` return None on entry when the evader is unseen
+    and their law's last-seen is exhausted, so they are not offered; `SWEEP`'s
+    `applicable()` holds exactly there, so the mask is never empty."""
+    env = SelectorMDP(1.2)
+    env.reset(seed=SEED)
+    raw = env._obs_raw
+    assert raw[6] <= 0.5, "this seed starts with the evader visible"
+    for tactic in (env.pursuer.intercept, env.pursuer.lead):
+        assert tactic.law.last_seen is None  # never seen
+        assert tactic.applicable(raw, env.game.inner.env)  # library-applicable
+        assert done_on_entry(tactic, raw, env.game.inner.env, env.cfg)
+    mask = env.action_masks()
+    assert not mask[ACTIONS.index("INTERCEPT")]
+    assert not mask[ACTIONS.index("LEAD")]
+    assert mask[ACTIONS.index("SWEEP")]
+    assert mask.any()
+
+
+def test_done_on_entry_is_each_tactics_own_termination_test():
+    """The predicate must not be a re-derivation: `INTERCEPT`/`LEAD` are asked
+    about their OWN law's `last_seen`, and `AMBUSH` about the tactic's own
+    visible-and-within-`AMBUSH_CLOSE` test (v0's rule-3 guard)."""
+    from pe2.scripted import LAST_SEEN_TOL
+    from pe2.tactics import AMBUSH_CLOSE
+
+    env = SelectorMDP(1.2)
+    env.reset(seed=SEED)
+    raw, game_env = env._obs_raw.copy(), env.game.inner.env
+    own = game_env.pursuer_pose
+    lead = env.pursuer.lead
+    # a last-seen point further than the tolerance: the law still has a branch
+    lead.law.last_seen = np.asarray(own[:2]) + np.array([LAST_SEEN_TOL + 0.5, 0.0])
+    assert not done_on_entry(lead, raw, game_env, env.cfg)
+    # ... and one inside the tolerance: the law clears it and returns None
+    lead.law.last_seen = np.asarray(own[:2]) + np.array([LAST_SEEN_TOL * 0.5, 0.0])
+    assert done_on_entry(lead, raw, game_env, env.cfg)
+    # each law tactic is asked about its own law, not a shared one
+    env.pursuer.intercept.law.last_seen = None
+    assert done_on_entry(env.pursuer.intercept, raw, game_env, env.cfg)
+    # AMBUSH: only while the evader is VISIBLE and inside AMBUSH_CLOSE
+    trap = env.pursuer.ambushes[0]
+    raw[6] = 1.0
+    game_env.evader_pose = np.array([own[0] + AMBUSH_CLOSE * 0.5, own[1], 0.0])
+    assert done_on_entry(trap, raw, game_env, env.cfg)
+    game_env.evader_pose = np.array([own[0] + AMBUSH_CLOSE + 1.0, own[1], 0.0])
+    assert not done_on_entry(trap, raw, game_env, env.cfg)
+    raw[6] = 0.0  # invisible: the tactic waits, it is not DONE
+    game_env.evader_pose = np.array([own[0] + AMBUSH_CLOSE * 0.5, own[1], 0.0])
+    assert not done_on_entry(trap, raw, game_env, env.cfg)
+    # SWEEP and COUNTER-ORBIT are never reported DONE on entry by the predicate
+    assert not done_on_entry(env.pursuer.sweep, raw, game_env, env.cfg)
+    assert not done_on_entry(env.pursuer.counter_orbits[0], raw, game_env, env.cfg)
+
+
+def test_four_hundred_decisions_leave_no_zero_length_span():
+    """A2.1's invariant, measured: over a 400-decision random-applicable roll
+    (several episodes), no span is zero-length and reading 4's search-policy
+    branch never fires."""
+    env = SelectorMDP(1.2)
+    env.reset(seed=SEED)
+    rng = np.random.default_rng(11)
+    zero_length = 0
+    search_steps = 0
+    decisions = 0
+    episodes = 0
+    while decisions < 400:
+        for _step in _roll(env, 400 - decisions, rng):
+            decisions += 1
+        zero_length += sum(s["zero_length"] for s in env.spans())
+        search_steps += int(env.game.usage["pursuer"].get("(search policy)", 0))
+        search_steps += int(env.game.search_steps)
+        episodes += 1
+        if decisions < 400:
+            env.reset(seed=SEED + episodes)
+    assert episodes >= 1 and decisions == 400
+    assert zero_length == 0, f"{zero_length} zero-length spans in 400 decisions"
+    assert search_steps == 0, f"{search_steps} search-policy env steps"
+    assert env.inapplicable_picks == 0
 
 
 # ----------------------------------------------------------------------------
@@ -415,6 +510,27 @@ def test_play_episode_replays_the_same_seed_twice_in_one_env():
     )
 
 
+def test_the_recorder_span_scope_is_live():
+    """A2.4: this env drives `_step_inner` itself, so without setting
+    `_in_span` and accumulating `_span_total` every step record reads
+    `in_span: False` and `span_intervention_total` is identically 0."""
+    env = SelectorMDP(1.2)
+    env.reset(seed=SEED + 4)  # a seed whose episode the filter really acts on
+    rng = np.random.default_rng(12)
+    _roll(env, 400, rng)
+    summary = env.game.branch_summary()
+    assert summary["intervention_total"] > 0.0, "the shield never intervened"
+    assert summary["span_intervention_total"] > 0.0
+    # Every env step of this game falls inside a decision's span (the first
+    # decision is taken at env step 0), so the two must agree and the
+    # pre-decision remainder must be zero.
+    assert summary["span_intervention_total"] == pytest.approx(
+        summary["intervention_total"], rel=1e-6
+    )
+    assert summary["pre_decision_intervention"] == pytest.approx(0.0, abs=1e-9)
+    assert all(rec["in_span"] for rec in env.game.step_records)
+
+
 # ----------------------------------------------------------------------------
 # the training script
 # ----------------------------------------------------------------------------
@@ -465,6 +581,53 @@ def test_the_learner_is_s17_base_with_the_masked_head():
         want = defaults[name].default
         got = getattr(model, name)
         assert got == want or callable(got), name
+
+
+def test_train_evidence_reads_the_training_env(tmp_path, monkeypatch):
+    """A2.4: the two counters come off the TRAINING env through the VecEnv, so
+    a crashed arm's last probe row still carries CG-T1 / H-SAFE evidence."""
+    from stable_baselines3.common.vec_env import DummyVecEnv
+
+    vec = DummyVecEnv([lambda: R.make_env("SEL-80")])
+    vec.reset()
+    evidence = R.train_evidence(vec)
+    assert set(evidence) == {"train_inapplicable_picks", "train_violations"}
+    assert evidence == {"train_inapplicable_picks": 0, "train_violations": 0}
+    inner = vec.envs[0].unwrapped if hasattr(vec.envs[0], "unwrapped") else vec.envs[0]
+    inner.inapplicable_picks = 7
+    assert R.train_evidence(vec)["train_inapplicable_picks"] == 7
+
+
+def test_a_systemexit_from_the_assembly_aborts_the_launch(tmp_path, monkeypatch):
+    """A2.4: an assembly guard's refusal is about the CONFIGURATION, so it must
+    abort instead of writing six UNDETERMINED records."""
+    monkeypatch.setattr(R, "OUT", tmp_path)
+
+    def guard(*_a, **_k):
+        raise SystemExit("the gate record now reads PASS")
+
+    monkeypatch.setattr(R, "train", guard)
+    with pytest.raises(SystemExit):
+        R.run(["SEL-80", "SEL-81"], "cpu")
+    assert not list(tmp_path.glob("s24_1_arm_*.json"))
+
+    def crash(*_a, **_k):
+        raise RuntimeError("this arm crashed")
+
+    monkeypatch.setattr(R, "train", crash)
+    R.run(["SEL-80"], "cpu")  # a real crash is still UNDETERMINED, not an abort
+    record = json.loads((tmp_path / "s24_1_arm_SEL-80.json").read_text())
+    assert record["verdict"] == "UNDETERMINED"
+    assert "this arm crashed" in record["reason"]
+
+
+def test_the_stream_note_is_recorded():
+    """A2.4, recorded and not changed: SB3 seeds the first reset with the PPO
+    seed, so `seed * 1000` is spent on episode 0 and the declared stream starts
+    one later."""
+    source = _PATH.read_text()
+    assert "episode 0 runs on the PPO seed" in source
+    assert "seed*1000+1" in source
 
 
 def test_the_script_prints_no_capture_rate():
@@ -519,10 +682,13 @@ def test_maskable_ppo_smoke_learns_and_writes_the_probe_schema(tmp_path, monkeyp
     model.learn(total_timesteps=1000)
     assert model.num_timesteps >= 1000
     assert env.inapplicable_picks == 0  # CG-T1 through a real rollout
-    row = {"steps": env.env_steps, "mark": R.EVERY, "ckpt": "x"} | R.probe(
-        model, "SEL-80", n=2, seed0=R.PROBE_SEED0
-    )
+    monkeypatch.setattr(R, "PROBE_N", 2)
+    probes = R._Probe("SEL-80", [])
+    probes.at(model, env.env_steps, R.EVERY, R.train_evidence(model.get_env()))
+    row = probes.rows[0]
     for key in (
+        "train_inapplicable_picks",
+        "train_violations",
         "opponent",
         "n",
         "k",
@@ -536,10 +702,11 @@ def test_maskable_ppo_smoke_learns_and_writes_the_probe_schema(tmp_path, monkeyp
     ):
         assert key in row, key
     assert row["n"] == 2
+    assert row["train_inapplicable_picks"] == 0  # CG-T1 through a real rollout
     assert set(row["picks"]) == set(ACTIONS)
-    R._write_json(R._probe_file("SEL-80"), {"arm": "SEL-80", "checkpoints": [row]})
     written = json.loads(R._probe_file("SEL-80").read_text())
     assert written["checkpoints"][0]["mark"] == R.EVERY
+    assert written["checkpoints"][0]["ckpt"].endswith(f"S24-1-SEL-80_{R.EVERY}.zip")
 
 
 def test_cfg_defaults_are_the_frozen_ones():

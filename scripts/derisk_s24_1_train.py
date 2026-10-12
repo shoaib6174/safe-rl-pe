@@ -5,9 +5,12 @@ Pre-registration: `docs/pathway/tactics_prereg_s24_1_2026-10-13.md` section 3
 seeds (80, 81, 82); budget 3 M env steps each; probe every 250 k on 2 350 000+
 (N = 200, scripted evader only)" and the `NOMEM` negative control) and section 5
 (CG-T1: "0 inapplicable picks over all training decisions (logged)"), INCLUDING
-Amendment A1: the observation carries the `shield_obs` triple and the
-`escape_obs` pair (A1.1, `OBS_LEN` 55) and `n_switches` counts spans of >= 1 env
-step only (A1.2). The readings below are the ones A1.3 accepts.
+Amendments A1 and A2: the observation carries the `shield_obs` triple and the
+`escape_obs` pair (A1.1, `OBS_LEN` 55), `n_switches` counts spans of >= 1 env
+step only (A1.2), every probe row carries the training env's
+`inapplicable_picks` / `violations` and a `SystemExit` from an assembly guard
+aborts the launch rather than writing six UNDETERMINED records (A2.4). The
+readings below are the ones A1.3 accepts.
 
 THIS SCRIPT PRINTS NO CAPTURE RATE. Every measured quantity goes to the per-arm
 JSON and nothing else; the gate runner reads those files. The prereg's stop rule
@@ -182,13 +185,17 @@ def make_learner(arm: str, env, device: str = "cpu"):
     )
 
 
-def probe(model, arm: str, n: int = PROBE_N, seed0: int = PROBE_SEED0) -> dict:
+def probe(model, arm: str, n: int | None = None, seed0: int | None = None) -> dict:
     """`n` paired-seed episodes against `TACTIC-V0` only (prereg section 3).
 
     Builds its own `SelectorMDP` at the arm's own memory setting — the
     observation width must match the policy's — and drives the episodes one at a
     time through `play_episode`, which rebuilds the recovery shield per episode.
     """
+    # The module constants are read HERE, not bound as defaults, so a test can
+    # shrink the probe without the pre-registered value drifting.
+    n = PROBE_N if n is None else int(n)
+    seed0 = PROBE_SEED0 if seed0 is None else int(seed0)
     env = make_env(arm)
     logs = [env.play_episode(model.predict, seed0 + i) for i in range(n)]
     k, total = win_count(logs, "pursuer")
@@ -220,6 +227,16 @@ def probe(model, arm: str, n: int = PROBE_N, seed0: int = PROBE_SEED0) -> dict:
     }
 
 
+def train_evidence(vec_env) -> dict:
+    """A2.4: CG-T1's and H-SAFE's counters read off the TRAINING env, written
+    into every probe row so a crashed arm still carries them (the arm record
+    may never be written, but the probe file is flushed at every mark)."""
+    return {
+        "train_inapplicable_picks": int(vec_env.get_attr("inapplicable_picks")[0]),
+        "train_violations": int(vec_env.get_attr("violations_total")[0]),
+    }
+
+
 class _Probe:
     """Checkpoint + probe at every `EVERY` ENV steps, rows flushed atomically
     after each one, and `learn` STOPPED once `TOTAL` env steps are reached — so
@@ -235,13 +252,16 @@ class _Probe:
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         self.rows = rows
 
-        def at(model, env_steps: int, mark: int) -> None:
+        def at(model, env_steps: int, mark: int, train: dict | None = None) -> None:
             path = ckpt_dir / f"S24-1-{arm}_{mark}.zip"
             model.save(path)
             row = {
                 "steps": int(env_steps),
                 "mark": int(mark),
                 "ckpt": str(path),
+                # A2.4: CG-T1 / H-SAFE evidence from the TRAINING env, so a
+                # crashed arm's last probe row still carries it.
+                **(train or {}),
                 **probe(model, arm),
             }
             self.rows.append(row)
@@ -259,7 +279,7 @@ class _Probe:
                 assert len(counts) == 1, "the budget is in env steps: one env only"
                 env_steps = offset + int(counts[0])
                 while cb.next_mark <= TOTAL and env_steps >= cb.next_mark:
-                    at(cb.model, env_steps, cb.next_mark)
+                    at(cb.model, env_steps, cb.next_mark, train_evidence(cb.training_env))
                     cb.next_mark += EVERY
                 return env_steps < TOTAL
 
@@ -319,6 +339,11 @@ def train(arm: str, device: str = "cpu") -> dict:
         "obs_len": int(env.observation_space.shape[0]),
         "action_space": list(ACTIONS),
         "env_seed0": ARMS[arm]["seed"] * 1000,
+        # A2.4, recorded and not changed (S17's own behaviour):
+        "stream_note": (
+            "episode 0 runs on the PPO seed; declared stream begins at "
+            "seed*1000+1"
+        ),
         "resumed_from": None if resume_ckpt is None else str(resume_ckpt),
         "resume_caveat": (
             None
@@ -371,7 +396,11 @@ def run(arms: list[str], device: str) -> None:
         print(f"[{arm}] training {TOTAL} env steps, probes every {EVERY}", flush=True)
         try:
             record = train(arm, device)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, SystemExit):
+            # A2.4: the v0b assembly's guards (`build_shield`, `label_branch`)
+            # raise `SystemExit`. That is a launch-blocking refusal about the
+            # configuration, not a crash of this arm, and must abort instead of
+            # becoming six UNDETERMINED records.
             raise
         except BaseException as exc:  # noqa: BLE001 — a crashed arm is UNDETERMINED
             record = _crash_record(arm, exc, started)

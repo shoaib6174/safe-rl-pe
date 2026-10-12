@@ -1,14 +1,18 @@
 """S24.1 Step 1.1 — the pursuer's TACTIC-SELECTION semi-MDP.
 
 Spec: `docs/pathway/tactics_prereg_s24_1_2026-10-13.md` sections 2, 3 and 5
-(CG-T1/CG-T2) INCLUDING Amendment A1. One variable changes against S24.0: the
-pursuer's `select`.
+(CG-T1/CG-T2) INCLUDING Amendments A1 and A2. One variable changes against
+S24.0: the pursuer's `select`.
 
 Amendment A1 (before any arm trains) rules this step: **A1.1** adds the
 `shield_obs` triple and the `escape_obs` pair to the observation (`OBS_LEN`
 50 -> 55), observable and so NOT zeroed by `NOMEM`; **A1.2** counts a switch
 only between spans of >= 1 env step; **A1.3** accepts readings 1, 2 and 5
-below. Where A1 and the brief differ, A1 wins.
+below. Amendment A2 then rules: **A2.1** masks out any tactic that would be
+DONE on entry, so every decision spends >= 1 tactic step and reading 4's
+search-policy branch becomes a guard that must read 0; **A2.4** sets the
+recorder's `_in_span` scope. Where an amendment and the brief differ, the
+amendment wins.
 
 The game is NOT re-assembled here. `scripts/s24_tactic_game.py::build_game` is
 the frozen v0b assembly (D149/D150) — `RecoveryShieldV2` fresh per episode at
@@ -66,10 +70,12 @@ import numpy as np
 from gymnasium import spaces
 
 from pe2.config import EnvConfig
-from pe2.obs import opponent_world_from_obs
+from pe2.obs import opponent_world_from_obs, own_pose_from_obs
 from pe2.recogniser import FEATURES, PURSUER_TACTICS, tactic_family
+from pe2.scripted import LAST_SEEN_TOL
 from pe2.selectors import DECISION_PERIOD, _nearest_obstacle, _surface_distances
 from pe2.structured import OrbitSearch
+from pe2.tactics import AMBUSH_CLOSE
 
 PREREG = "docs/pathway/tactics_prereg_s24_1_2026-10-13.md"
 
@@ -118,6 +124,48 @@ def _block_slices() -> dict[str, slice]:
 
 OBS_SLICES = _block_slices()
 MEMORY_SLICES = tuple(OBS_SLICES[name] for name, _w, mem in OBS_LAYOUT if mem)
+
+
+def done_on_entry(tactic, obs, env, cfg: EnvConfig) -> bool:
+    """A2.1: would this tactic's `act` return None on its FIRST call?
+
+    Such a pick leaves a zero-length span and costs one search-policy env step,
+    so the selector would be consulted every env step — the reviewer measured
+    1 939 of 2 050 forced-`INTERCEPT` decisions this way, which is D128's
+    horizon failure. The env masks those actions out, so the question is
+    answered from each tactic's OWN termination test, never a re-derivation:
+
+    - `INTERCEPT` / `LEAD` delegate to `PlannerInterceptLaw.act`, which returns
+      None iff the evader is invisible AND its own `last_seen` is exhausted
+      (never set, or already within `LAST_SEEN_TOL` of the pursuer — the branch
+      that clears it). Each tactic owns a separate law, so each is asked about
+      its own.
+    - `AMBUSH` is DONE on entry when the evader is visible within
+      `AMBUSH_CLOSE`; this is `PursuerRulesV0`'s own rule-3 guard ("inside that
+      the ambush is DONE on entry and waiting is pointless"), lifted into the
+      mask so A2.1's invariant holds for the whole library and not only for the
+      two law tactics it names.
+    - `SWEEP` is DONE when the evader is visible, which is exactly where its
+      `applicable()` already masks it out, and `COUNTER-ORBIT` cannot be DONE
+      on entry while applicable (its DONE needs a clear line to the evader,
+      its precondition needs obstacle k to block that line, and both inflate
+      the disc by `agent_radius` with the planner's MARGIN at 0).
+    """
+    name = tactic_family(tactic.name)
+    visible = bool(obs[6] > 0.5)
+    if name in ("INTERCEPT", "LEAD"):
+        if visible:
+            return False
+        last_seen = tactic.law.last_seen
+        if last_seen is None:
+            return True
+        own = own_pose_from_obs(np.asarray(obs), cfg)
+        return float(np.hypot(*(np.asarray(last_seen)[:2] - own[:2]))) <= LAST_SEEN_TOL
+    if name == "AMBUSH":
+        own = np.asarray(env.pursuer_pose, dtype=float)
+        evader = np.asarray(env.evader_pose, dtype=float)
+        return visible and float(np.hypot(*(evader[:2] - own[:2]))) <= AMBUSH_CLOSE
+    return False
 
 
 def spans_with_length(history, step_index: int) -> list[dict]:
@@ -260,8 +308,15 @@ class SelectorMDP(gym.Env):
 
     def action_masks(self) -> np.ndarray:
         """`applicable()` of the tactic each action resolves to, at this
-        decision (the `sb3_contrib.MaskablePPO` contract). `COUNTER-ORBIT` is
-        additionally gated on visibility (reading 2)."""
+        decision (the `sb3_contrib.MaskablePPO` contract), minus the two
+        gates: `COUNTER-ORBIT` while the evader is invisible (reading 2) and
+        any tactic that would be DONE on entry (A2.1, `done_on_entry`).
+
+        The mask is never empty: `done_on_entry` for `INTERCEPT`/`LEAD`
+        requires the evader to be invisible, which is exactly where `SWEEP`'s
+        own `applicable()` holds, and `AMBUSH`'s clause requires it to be
+        visible, where `INTERCEPT`/`LEAD` are admitted.
+        """
         obs, env = self._obs_raw, self.game.inner.env
         visible = bool(obs[6] > 0.5)
         mask = np.zeros(N_ACTIONS, dtype=bool)
@@ -269,6 +324,8 @@ class SelectorMDP(gym.Env):
             if tactic is None:
                 continue
             if ACTIONS[i] == "COUNTER-ORBIT" and not visible:
+                continue
+            if done_on_entry(tactic, obs, env, self.cfg):  # A2.1
                 continue
             mask[i] = bool(tactic.applicable(obs, env))
         return mask
@@ -365,7 +422,11 @@ class SelectorMDP(gym.Env):
                 # The span just ended (`_close`d by the adapter) and no env
                 # step has been taken from this state.
                 self.game.law.current = None
-                if self._span_steps == 0:  # reading 4
+                if self._span_steps == 0:
+                    # Reading 4, kept as a GUARD only: A2.1 masks out every
+                    # tactic that would be DONE on entry, so this branch must
+                    # never fire and the `(search policy)` usage count must
+                    # read 0 over a whole round.
                     obs, r, _o, term, trunc = self.game._step_inner(
                         self._search.predict(obs)[0], "search"
                     )
@@ -402,7 +463,16 @@ class SelectorMDP(gym.Env):
         self._span_steps = 0
         self.n_decisions += 1
         self.picks[ACTIONS[index]] += 1
+        # A2.4: the span bookkeeping `SearchMDP.step` /
+        # `BranchTaggedSearchMDP.step` do, which this env bypasses by driving
+        # `_step_inner` itself. Without it every step record reads
+        # `in_span: False` and `span_intervention_total` is identically 0, so
+        # the recorder's split of the filter's work is dead.
+        self.game._in_span = True
+        self.game.span_intervention = 0.0
+        self.game.span_stalled = 0
         obs, reward, term, trunc = self._advance(self._obs_raw)
+        self.game._span_total += float(self.game.span_intervention)
         self._obs_raw = obs
         info = dict(
             self.game._info,
@@ -410,6 +480,8 @@ class SelectorMDP(gym.Env):
             span_steps=self._span_steps,
             inapplicable_picks=self.inapplicable_picks,
             violations=int(self.game.episode_violations),
+            stalled_steps=int(self.game.span_stalled),
+            intervention_magnitude=float(self.game.span_intervention),
         )
         return self._observe(obs), float(reward), term, trunc, info
 
