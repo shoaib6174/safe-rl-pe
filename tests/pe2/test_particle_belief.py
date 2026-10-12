@@ -308,6 +308,50 @@ class TestGateErrorComputation:
         assert st["episode_median"][0]["n_occluded"] == 3
         assert st["dr_median_after_sighting"] is None  # never seen on this path
 
+    def test_mode_error_on_a_multimodal_cloud_where_the_mean_is_wrong(self):
+        """Gate 2's statistic, on a cloud built so the two answers disagree.
+
+        100 particles in ONE 0.5 m cell at (-3.2, -3.2) — the strongest mode,
+        and the truth — plus 49 particles spread one-per-cell on a 0.6 m grid
+        around (-2.8, 1.9). The weighted mean is dragged off the truth by the
+        diffuse half; the mode is not. Every particle has x < 0, i.e. outside
+        the pursuer's 90-degree cone at the origin facing +x, so the occlusion
+        kill removes nothing and the cloud survives the update intact.
+        """
+        mode_xy = np.array([-3.2, -3.2])
+        grid = np.array(
+            [
+                [x, y]
+                for x in np.arange(-4.6, -0.9, 0.6)
+                for y in np.arange(0.1, 3.8, 0.6)
+            ]
+        )
+        cloud = np.vstack([np.repeat([mode_xy], 100, axis=0), grid])
+        env = stub_env(evader=(mode_xy[0], mode_xy[1], 0.0))
+        probe = BeliefProbe(CFG, V_OPP, n=len(cloud), seed=2)
+        probe.reset(env)
+        probe.pf.particles = cloud.copy()
+        probe.pf.headings = np.zeros(len(cloud))
+        probe.pf.weights = np.full(len(cloud), 1.0 / len(cloud))
+
+        probe.observe(make_obs(own=(0.0, 0.0, 0.0), visible=False), env)
+
+        s = probe.pf.summary()
+        # the mode is on the truth (only the <= 0.06 m predict jitter away)
+        assert probe.pf_mode_err[-1] == pytest.approx(
+            float(np.linalg.norm(s["mode"] - mode_xy))
+        )
+        assert probe.pf_mode_err[-1] < 0.1
+        # the mean is not, and the gate-1 statistic says so
+        assert probe.pf_err[-1] > 1.0
+        assert probe.pf_mode_err[-1] < probe.pf_err[-1]
+        st = probe.stats()
+        assert st["pf_mode_median"] == pytest.approx(probe.pf_mode_err[-1])
+        assert st["episode_median"][0]["pf_mode_median"] == pytest.approx(
+            probe.pf_mode_err[-1]
+        )
+        assert st["episode_pf_mode_better_frac"] == 1.0  # DR never saw it
+
     def test_each_episode_records_its_own_median(self):
         probe, env = self.probe_over_path()
         probe.reset(env)  # closes episode 1
