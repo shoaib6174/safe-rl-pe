@@ -25,3 +25,4 @@ Plan: `tactics_plan_2026-10-13.md`. Started 2026-10-13. Budget 4.0 M (hard stop 
 - S24.0 closed (D150): ≈ 1 107 k of its 1.2 M line. S24.1 pre-registered (`tactics_prereg_s24_1_2026-10-13.md`) with the v0b baseline quoted. Step 1.1 dispatched. Running total **1 107 k / 4.0 M**.
 - Step 1.1 landed (198 k): SelectorMDP (OBS 50) + masked-PPO trainer; 340 steps/s. Prereg A1: shield/escape features added (OBS 55), n_switches excludes zero-length spans. Fix round 1/2 dispatched. Running total **1 305 k / 4.0 M**.
 - Step 1.1 fix landed (26 k; cumulative 224 k): OBS 55, n_switches rule. Review dispatched (opus) — the training env gates five hours of compute. Running total **1 331 k / 4.0 M**.
+- Step 1.1 review (187 k): FIXES-REMAIN, none on the high-stakes axes. A2 rules the DONE-on-entry mask (D128's horizon failure), picks for H-TAC-2, NOMEM semantics, crash resilience. Fix round **2/2** dispatched. Running total **1 518 k / 4.0 M**.

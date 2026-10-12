@@ -102,3 +102,29 @@ from probe/gate streams; resume is arm-granular and recorded.
 
 **A1.4 — launch plan:** 340 env steps/s per arm ⇒ ≈ 3.8 h per arm incl. probes; six arms in parallel at
 `OMP_NUM_THREADS=3` (18 of 24 cores), ≈ 4–5 h wall.
+
+---
+
+## Amendment A2 (2026-10-13, before any arm trains) — review rulings on Step 1.1
+
+**A2.1 — every decision spends ≥ 1 tactic step.** `INTERCEPT` and `LEAD` are library-applicable
+unconditionally but are DONE on entry when the evader is unseen and the dead-reckoning point is exhausted;
+the reviewer measured 1 939 of 2 050 forced-`INTERCEPT` decisions as zero-length spans costing one search
+step each, so a selector defaulting to them would be consulted every env step with a γ = 0.99 horizon of
+~100 steps — D128's failure mode. **The env masks `INTERCEPT`/`LEAD` out whenever the law would return
+`None` on entry** (not visible AND last-seen exhausted); `SWEEP` is always applicable there. Zero-length
+spans then cannot occur at a decision; the `(search policy)` accounting stays as a guard and must read 0.
+
+**A2.2 — H-TAC-2 reads `picks`** (per-decision counts over the 5 tactics), not `usage_steps`.
+
+**A2.3 — H-TAC-3 tests memory as a selector INPUT.** `NOMEM` zeroes the selector's memory block; the
+system's dead-reckoning still drives `SWEEP` and resolves `COUNTER-ORBIT`/`AMBUSH`'s obstacle in both arms.
+§4's refutation sentence reads accordingly.
+
+**A2.4 — crash resilience of the gates:** training `inapplicable_picks` and `violations` are written into
+every probe row so a crashed arm still carries CG-T1 / H-SAFE evidence; `SystemExit` from the assembly
+guards aborts the launch instead of becoming six UNDETERMINED records; `_in_span` is set so the recorder's
+span scope is live. **Recorded, not changed:** episode 0 of each arm runs on the PPO seed (80/81/82), the
+declared stream begins at `seed·1000 + 1` (S17's behaviour); span `start`/`end` are law-call indices (the
+GIF labeller must not index frames by them); a crash record blocks resume (stop rule); A1.4's wall time is
+a floor — six concurrent arms at `OMP_NUM_THREADS=3` are planned at ≈ 6 h.
