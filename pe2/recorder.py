@@ -158,9 +158,14 @@ class BranchTaggedSearchMDP(SearchMDP):
 
     Per step (`self.step_records`, reset at every `_begin`):
     `branch`, `nominal` / `executed` normalised action, `intervention_magnitude`,
-    `stalled`, `immobile`, `intervention`, `min_clearance`, and `in_span`
+    `stalled`, `immobile`, `intervention`, `min_clearance`, `in_span`
     (whether the step falls inside a learner decision's span, i.e. at or after
-    the first decision -- the scope of S18's `intervention_magnitude`).
+    the first decision -- the scope of S18's `intervention_magnitude`), and
+    `visible` -- whether the evader was visible in the OBSERVATION this step's
+    action was computed from (S23's orbit statistic, prereg section 4, is the
+    longest run of consecutive law-branch steps with the evader visible, and the
+    `branch` tag alone cannot say it: the law also drives on a fresh last-seen
+    point with the evader out of sight).
 
     Plus, for S23's pursuit-strategy family (CG-S4, plan section 4 and
     amendment A2 note (i)), what the LAW decided, read off the law object with
@@ -216,11 +221,18 @@ class BranchTaggedSearchMDP(SearchMDP):
             raise ValueError(f"unknown branch {branch!r}; expected one of {BRANCHES}")
         nominal = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
         before = self.span_intervention
+        # Read BEFORE the step: `SearchMDP._step_inner` overwrites `_visible`
+        # with the post-step observation, and what this field must say is
+        # whether the component that commanded the step could SEE the evader
+        # when it decided (S23's orbit statistic is a run of law steps taken on
+        # a visible evader, not of steps that happened to end visible).
+        visible = self._visible
         out = super()._step_inner(action, branch)
         executed = self.trace[-1]
         sinfo = self._last_sinfo
         rec = {
             "branch": branch,
+            "visible": bool(visible),
             "in_span": self._in_span,
             "nominal": [float(nominal[0]), float(nominal[1])],
             "executed": [float(executed[2]), float(executed[3])],
