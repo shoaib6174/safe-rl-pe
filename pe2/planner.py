@@ -69,12 +69,21 @@ class PlannerInterceptLaw:
     `reset`): it counts the residual calls that still fall back to direct
     steering after goal-snapping (amendment A2.1), so CG-C can read how often
     it happens over a whole cell.
+
+    `n_planned_steps` is cumulative for the same reason and is S23's CG-S3 rule
+    (`pursuit_strategy_plan_2026-10-12.md` section 4): the calls on which the
+    law branch fired with the straight line TO THE EVADER obstructed, i.e. the
+    visible branch planning instead of steering. The last-seen branch's own
+    planning is NOT counted -- that rule is about the line to the evader, and
+    when the evader is invisible there is no such line. A caller reads the
+    per-episode count as a difference across the episode.
     """
 
     def __init__(self, cfg: EnvConfig) -> None:
         self.cfg = cfg
         self.last_seen: np.ndarray | None = None
         self.n_unreachable = 0
+        self.n_planned_steps = 0
         self._lim = cfg.arena_size / 2.0 - cfg.agent_radius
         self._bound_tol = _BOUND_REL_TOL * cfg.arena_size
         self._n = round(2.0 * self._lim / CELL)
@@ -307,6 +316,7 @@ class PlannerInterceptLaw:
                 # InterceptLaw: body-frame bearing, never via world coords.
                 bearing_b = np.arctan2(obs[4], obs[3])
                 return _normalize(cfg.v_max, _clip_omega(K_OMEGA * bearing_b, cfg), cfg)
+            self.n_planned_steps += 1  # CG-S3's rule, counted where it holds
             return self._steer_planned(own, self.last_seen)
         if self.last_seen is not None:  # go to last-seen
             own = own_pose_from_obs(obs, cfg)
@@ -421,6 +431,25 @@ MPC_K = 64  # sampled action sequences per call, INCLUDING the direct one
 MPC_PATH_WEIGHT = 0.01  # cost per metre of predicted path
 
 
+def _state_bytes(state: dict) -> bytes:
+    """The bit generator's NUMERIC state as canonical bytes: `key:ints` in key
+    order, arrays flattened, one `|` between keys.
+
+    Amendment A2 note (ii): the digest must not depend on `repr`, which is
+    formatting. `repr(np.random.default_rng(0).bit_generator.state)` prints the
+    same integers a numpy version could legally print differently (and prints
+    the generator's name as well), so hashing it would silently reseed every
+    `MPC` episode on a numpy upgrade. The integers under `state["state"]` ARE
+    the generator's state; `np.asarray(...).ravel().tolist()` covers both the
+    Python ints PCG64 keeps and the arrays other bit generators keep.
+    """
+    inner = state["state"]
+    return "|".join(
+        f"{key}:" + ",".join(str(int(v)) for v in np.asarray(inner[key]).ravel())
+        for key in sorted(inner)
+    ).encode()
+
+
 def _episode_entropy(env) -> int:
     """A 64-bit digest of the env's RNG state as `reset(env=...)` finds it.
 
@@ -435,7 +464,7 @@ def _episode_entropy(env) -> int:
     if rng is None:
         return 0
     digest = hashlib.blake2b(
-        repr(rng.bit_generator.state).encode(), digest_size=8
+        _state_bytes(rng.bit_generator.state), digest_size=8
     ).digest()
     return int.from_bytes(digest, "big")
 

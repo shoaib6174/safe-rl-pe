@@ -72,6 +72,12 @@ _NO_SHIELD = {
 }
 
 
+def _xy(v) -> list[float] | None:
+    """A law's remembered point as two plain floats, or None when the law does
+    not expose it (plain `InterceptLaw`) or exposed nothing on this call."""
+    return None if v is None else [float(v[0]), float(v[1])]
+
+
 def _runs(steps: list[dict], split_on_branch: bool) -> list[dict]:
     """Maximal runs of consecutive `immobile` steps, as
     `{"branch", "start", "length"}`. `start` is the 0-based index of the run's
@@ -100,6 +106,17 @@ def branch_summary(steps: list[dict], span_intervention_total: float) -> dict:
 
     A free function so the summary can be recomputed from a saved step record
     (and tested) without an env.
+
+    The three `MPC` counters (S23 CG-S4) are read with `.get`, so a step record
+    written before they existed — or hand-written in a test — summarises
+    unchanged. `n_planned_calls` counts the steps whose law exposed a
+    `feasible_count` at all, i.e. every step of an `MpcInterceptLaw` episode and
+    no step of any other law's. An MPC call that did NOT sample (the CG-S1
+    delegation: evader invisible, or the velocity estimate zero) also reads
+    `feasible_count == 0`, and is told apart by `aim_point is None` — so
+    `n_zero_feasible` is an UPPER BOUND on A2 note (i)'s 0/64-infeasible events
+    and their exact count is the steps with `feasible_count == 0` and
+    `aim_point is not None`, which the per-step record carries.
     """
     by_branch = {b: [s for s in steps if s["branch"] == b] for b in BRANCHES}
     split = _runs(steps, split_on_branch=True)
@@ -129,6 +146,9 @@ def branch_summary(steps: list[dict], span_intervention_total: float) -> dict:
         "intervention_total": total,
         "span_intervention_total": float(span_intervention_total),
         "pre_decision_intervention": total - float(span_intervention_total),
+        "n_planned_calls": sum(s.get("feasible_count") is not None for s in steps),
+        "n_zero_feasible": sum(s.get("feasible_count") == 0 for s in steps),
+        "n_chose_direct": sum(bool(s.get("chose_direct")) for s in steps),
     }
 
 
@@ -141,6 +161,29 @@ class BranchTaggedSearchMDP(SearchMDP):
     `stalled`, `immobile`, `intervention`, `min_clearance`, and `in_span`
     (whether the step falls inside a learner decision's span, i.e. at or after
     the first decision -- the scope of S18's `intervention_magnitude`).
+
+    Plus, for S23's pursuit-strategy family (CG-S4, plan section 4 and
+    amendment A2 note (i)), what the LAW decided, read off the law object with
+    `getattr` so a law that does not expose a field records None rather than
+    constraining every law to carry it:
+
+    - `aim_point` -- `law.last_aim`, the world point the law aimed at (`LEAD`'s
+      lead point, `MPC`'s predicted evader position at the chosen step), None on
+      a law that has no aim point and on a call where the sampling did not run;
+    - `v_est` -- `law.last_v_est`, the constant-velocity estimate the aim point
+      was built from ([0, 0] when there was no pair of consecutive sightings);
+    - `feasible_count` -- `law.last_feasible_count`, how many of `MPC`'s K
+      sampled sequences avoided every wall and obstacle. 0 is A2 note (i)'s
+      wall-adjacent case, where the law returns `PLAN`'s action;
+    - `chose_direct` -- `law.last_chose_direct`, whether the winner was the
+      direct row (`PLAN`'s own action held through the horizon).
+
+    These are properties of the law's LAST call, so they are recorded only
+    where that call is this step: `SearchMDP` consults the law once per law step
+    and not at all inside a learner's hold span, and the law's last call before
+    such a span is the one that returned None (the invisible branch, which
+    clears all four), so a search step records None / zeros rather than a stale
+    law decision.
 
     `intervention_magnitude` is NOT a second copy of `||a_nominal - a_safe||_2`
     computed here: it is the INCREMENT of `SearchMDP.span_intervention` across
@@ -193,6 +236,13 @@ class BranchTaggedSearchMDP(SearchMDP):
                 "intervention": bool(sinfo["intervention"]),
                 "min_clearance": float(sinfo["min_clearance"]),
             }
+        law = self.law
+        rec |= {
+            "aim_point": _xy(getattr(law, "last_aim", None)),
+            "v_est": _xy(getattr(law, "last_v_est", None)),
+            "feasible_count": getattr(law, "last_feasible_count", None),
+            "chose_direct": getattr(law, "last_chose_direct", None),
+        }
         self.step_records.append(rec)
         return out
 
