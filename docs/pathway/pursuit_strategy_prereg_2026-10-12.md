@@ -123,3 +123,42 @@ loses that the baseline won are visible in H-STRAT-1's delta, not here.
 
 **A1.4 — runner size.** 1545 lines against a 600-line target; S19's is 1716. The copied parts are the
 record-validity trio, CG-B replay, four verdicts, the GIF pass and the CLI. Accepted rather than spent on.
+
+---
+
+## Amendment A2 (2026-10-12) — CG-S3 watched; written BEFORE `--summarize`, no capture rate read
+
+12 cells MEASURED (N = 500, seed0 2 100 000). CG-S3 rendered 12 episodes on the rule-chosen seeds
+2 090 000 / 2 090 005 / 2 090 006 (`results/derisk/s23_gifs/`). Outcomes: 2 090 000 captured under all
+four laws at the same step (±5); 2 090 005 timed out under all four; **2 090 006 is the one discriminating
+episode: `LEAD-1.0` captures at step 246 where `PLAN`, `LEAD-0.5` and `MPC-2s` all time out.** From the
+frames:
+
+**(a) No MPC wandering distinct from `PLAN`.** On both timeouts `MPC-2s`'s trajectory largely coincides
+with `PLAN`'s. The one visible difference: on 2 090 005 `PLAN` ends pinned against the right obstacle at
+clearance 0.000 for the last ~200 steps; `MPC-2s` reaches the same pin at step ~984 and leaves it. No
+capture either way.
+
+**(b) No `LEAD` overshoot into a wall.** The aim markers sit ahead of the evader along its path; the
+pursuer tracks them without contact.
+
+**(c) The mechanism on the discriminating episode is "cut off before cover", not "break the orbit".**
+Under `PLAN` the evader reaches the right obstacle pair and the pursuer then alternates between losing
+sight (search-branch loops of ~3 m radius) and brief re-sightings — the loss mode is a search-and-lose
+cycle in which the LAW is driving only a minority of steps. Under `LEAD-1.0` the aim point ahead of the
+evader along the bottom wall lets the pursuer close *en route*, before the evader reaches cover; the chase
+stays in the law branch throughout and captures below the obstacle. `LEAD-0.5` aimed too little ahead and
+the evader reached cover.
+
+**(d) Interpretation guard for H-STRAT-2, registered now.** §4 defines an orbit episode on the baseline
+as ≥ 100 *consecutive law-branch steps with the evader visible* and no capture. Observation (c) says the
+baseline's dominant loss mode on these seeds is the search-and-lose cycle, in which visibility is
+repeatedly lost — so such episodes may NOT count as orbit episodes, and H-STRAT-2 may read a genuine
+strategy gain as "not concentrated in orbit episodes" or come out `VACUOUS` (< 20 orbit episodes).
+**H-STRAT-2 is read exactly as pre-registered.** Beside it the round reports, per law and opponent, the
+conversion rate on baseline-lost episodes whose longest visible law run is < 100 (the search-and-lose
+class), so a cut-off-before-cover gain is visible as what it is rather than as a mechanism failure.
+Hypothesis S's second clause ("concentrated in the episodes where the baseline was orbiting") is, on this
+evidence, too narrow a statement of the mechanism; the sentence is kept and the table is read against it.
+
+No bar, stream, seed or threshold changed. Written after watching, before reading.
