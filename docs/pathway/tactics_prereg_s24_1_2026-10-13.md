@@ -130,3 +130,27 @@ GIF labeller must not index frames by them); a crash record blocks resume (stop 
 a floor — six concurrent arms at `OMP_NUM_THREADS=3` are planned at ≈ 6 h.
 
 **A2.1 clarification (commit `1f9eab2`):** `AMBUSH` is also masked when the evader is visible inside `AMBUSH_CLOSE` (v0's own guard lifted into the mask); without it the zero-length-span invariant did not hold. 400-decision roll: 0 zero-length spans, 0 search-policy steps, 0 refused picks. 352 env steps/s.
+
+---
+
+## Amendment A3 (2026-10-13, before any gate number exists) — gate-runner review rulings
+
+**A3.1 — absent evidence is an offender, never a zero.** CG-T1 and H-SAFE read the training counters from
+every arm's probe rows; a missing or empty probe file makes the verdict `INCOMPLETE`/refused, and an
+UNDETERMINED learned cell is named by CG-T1. The summary cannot print `HOLDS`/`PASS` without the rows.
+
+**A3.2 — H-TAC-2(b) is quantified over opponents within a seed (stricter than §4's text), by choice.**
+§4 wrote both clauses over seeds; the runner requires, per seed, that the learned profile differ from
+`RULES-V0`'s on ≥ 2/3 opponents, then ≥ 2/3 seeds. A selector that differs from the rules on one opponent
+only has not shown it chooses. Per-opponent p-values are recorded so the §4-literal reading stays readable.
+
+**A3.3 — `direction()` wording:** §4's "does not beat the best fixed law" sentence is emitted only when
+H-TAC-1 passes on 0/3 seeds; at 1/3 it says "fails the ≥ 2/3 bar (1/3 passed); S24.2 not licensed".
+
+**A3.4 — comparator span accounting:** `TacticLaw` advances its law-call index even when a re-entered
+tactic returns `None`, so `spans_with_length` over-counts on rows whose law can be DONE on entry
+(`LEAD-1.0`: ~98 phantom steps per episode). Learned rows are unaffected (A2.1's mask removes that
+path). Where the two accountings disagree, `n_zero_length_spans` is reported as `None` with a note, never
+as 0. **Stated where quoted:** `LEAD-1.0` under the shield spends ~86 % of steps in `OrbitSearch` when the
+evader is unseen (exactly as S23 measured it); the learned rows spend 0 — the comparator is a law +
+search hybrid and H-TAC-1's sentence says so.
