@@ -344,7 +344,7 @@ def cg_z1(name: str, device: str = "cpu") -> dict:
 #   cell_name  render_cell, _rec (and so _paired)   gif_title  render_cell
 _BOUND_ALWAYS: tuple[str, ...] = (
     "CELLS", "CELL_ORDER", "cells_dir", "cell_file", "record_status",
-    "provenance", "run_cell", "write_cell",
+    "provenance", "run_cell", "write_cell", "undetermined_record",
 )
 _BOUND_PER_RATIO: tuple[str, ...] = ("cell_config", "cell_name", "gif_title")
 _BOUND_KEYS: tuple[str, ...] = (*_BOUND_ALWAYS, *_BOUND_PER_RATIO)
@@ -375,6 +375,11 @@ def _bound(ratio: float | None = None, cells: dict | None = None):
         "provenance": provenance,
         "run_cell": run_cell,
         "write_cell": write_cell,
+        # `run_cells` reaches for this when a cell raises: without it a crash
+        # would be filed in S24.1's record shape, with no `ratio` in it, and
+        # `record_status` would then call the crash INVALID instead of
+        # UNDETERMINED. `_ORIG` holds S24.1's, so the wrapper cannot recurse.
+        "undetermined_record": undetermined_record,
     }
     if ratio is not None:
         over |= {
@@ -451,6 +456,13 @@ def load_base_records() -> dict:
     """S24.1's 1.2 records for this round's rows, keyed by THIS round's cell
     names, or SystemExit (reading 2). Validated by S24.1's OWN `record_status`.
     Nothing here writes, moves or re-runs them."""
+    if not (S1.CELLS is _ORIG["CELLS"] and S1.cells_dir is _ORIG["cells_dir"]):
+        raise SystemExit(
+            "the 1.2 join may not run inside a binding: with S24.1's globals "
+            "rebound to this round's, `record_status` and `cell_file` would be "
+            "THIS round's and the column would be validated against the wrong "
+            "rule and read from the wrong directory."
+        )
     if _ORIG["cell_config"]().evader_speed_ratio != BASE_RATIO:
         raise SystemExit(
             "S24.1's gate refuses to run at anything but 1.2, so its records "
@@ -518,14 +530,19 @@ def run_cells(
 ) -> list[str]:
     """Every named cell with no record yet (default: all 36). Literal names only.
 
-    S24.1's refusal order unchanged — unknown names, then a file that is not a
-    measurable record of THIS round, then every learned row's checkpoint, all
-    before the first episode. CG-Z1 is then swept over the whole request, so a
-    chain refuses WHOLE rather than after its first cells have been measured."""
+    The refusal order, as it actually runs and all of it before the first
+    episode: (1) an unknown name here skips the sweep, so S24.1's own refusal
+    names it against this round's 36; (2) CG-Z1 is swept over the cells that
+    have NO measurable record yet — a chain therefore refuses WHOLE rather than
+    after its first cells have been measured, and a cell that is already
+    recorded is never rebuilt (the stop rule: never re-run); (3) S24.1's
+    `run_cells` then refuses a file that is not a measurable record of THIS
+    round and any learned row with no final checkpoint."""
     with _bound():
         wanted = list(CELL_ORDER) if names is None else list(names)
         if all(n in CELLS for n in wanted):
-            for n in wanted:
+            measurable, _rejected, _by_cell = _ORIG["scan_records"]()
+            for n in (c for c in wanted if c not in measurable):
                 cg_z1(n, device)
         return _ORIG["run_cells"](names, device, n_episodes)
 
@@ -666,7 +683,8 @@ def h_zs_2(records: dict, base: dict) -> dict:
         "verdict": "INCOMPLETE" if incomplete else ("FAIL" if violations else "PASS"),
         "gated": True,
         "rule": f"capture non-increasing over {list(ALL_RATIOS)}; each drop "
-        f"significant (unpaired Wilson) or within {TIE}",
+        "significant (unpaired Newcombe square-and-add interval for the "
+        f"difference) or within {TIE}",
         "n_violations": len(violations),
         "violations": violations,
         "incomplete": incomplete,
@@ -811,11 +829,18 @@ def cg_z1_round(records: dict, base: dict) -> dict:
 
 
 def cg_inherited(records: dict) -> dict:
-    """Reading 8 / section 6 ("as S24.1"): CG-T1's mask counter and A2.1's
-    search-policy guard on THIS round's learned cells, at S24.1's own A5
-    tolerance of <= 1 search-policy step per 100 000 env steps. Both REFUSE the
-    summary — the mask is computed from an observation whose ratio entry is out
-    of range, so if either broke here no rate in this round is readable."""
+    """Reading 8 / section 6 ("as S24.1"), on THIS round's learned cells only.
+
+    `cg_t1` is CG-T1's PER-CELL HALF ONLY — 0 inapplicable picks in every
+    learned cell. S24.1's CG-T1 also read the training probes; nothing trains in
+    this round, so there are no probe rows to read and that half is not
+    re-asserted here (the arms' training decisions were gated by S24.1's own
+    CG-T1, D151). `cg_a2_1` is A2.1's search-policy guard at S24.1's A5
+    tolerance of <= 1 search-policy step per 100 000 env steps per cell, every
+    non-zero count named. Each sub-block carries its own verdict and the
+    COMBINED verdict refuses the summary: the mask is computed from an
+    observation whose ratio entry is out of range, so if either broke here no
+    rate in this round is readable."""
     learned = {
         n: records[n]
         for n in CELL_ORDER
@@ -824,17 +849,32 @@ def cg_inherited(records: dict) -> dict:
     picks = {n: int(r.get("inapplicable_picks", 0)) for n, r in learned.items()}
     search = {n: int(r.get("search_policy_steps", 0)) for n, r in learned.items()}
     tol = {n: max(1, -(-int(sum(r.get("steps", []))) // 100_000)) for n, r in learned.items()}
-    bad = sorted(n for n, v in picks.items() if v) + sorted(
-        n for n, v in search.items() if v > tol[n]
-    )
-    return {
-        "gate": "CG-T1 + A2.1, inherited (prereg section 6: as S24.1)",
-        "verdict": "REFUSE" if bad else "PASS",
-        "offenders": bad,
+    bad_picks = sorted(n for n, v in picks.items() if v)
+    bad_search = sorted(n for n, v in search.items() if v > tol[n])
+    cg_t1 = {
+        "gate": "CG-T1 (the mask holds), per-cell half only — nothing trains here",
+        "verdict": "REFUSE" if bad_picks else "PASS",
+        "offenders": bad_picks,
         "inapplicable_picks": picks,
+        "training_probes": (
+            "not read: evaluation only; S24.1's CG-T1 gated the arms' training "
+            "decisions at 0 (D151) and the checkpoints are frozen"
+        ),
+    }
+    cg_a2_1 = {
+        "gate": "A2.1 — every decision spends >= 1 tactic step (A5: <= 1 per 100k env steps)",
+        "verdict": "REFUSE" if bad_search else "PASS",
+        "offenders": bad_search,
         "search_policy_steps": search,
         "tolerance": tol,
-        "non_zero_search": sorted(n for n, v in search.items() if v),
+        "non_zero": sorted(n for n, v in search.items() if v),
+    }
+    return {
+        "gate": "CG-T1 + A2.1, inherited (prereg section 6: as S24.1)",
+        "verdict": "REFUSE" if (bad_picks or bad_search) else "PASS",
+        "offenders": bad_picks + bad_search,
+        "cg_t1": cg_t1,
+        "cg_a2_1": cg_a2_1,
         "n_learned_cells": len(learned),
     }
 
@@ -901,25 +941,32 @@ def decision(v: dict) -> dict:
         out = (
             "INCOMPLETE",
             None,
+            "INCOMPLETE",
             (
                 "the decision rule is not read from a partial round: H-ZS-1 or "
                 "H-ZS-3 is INCOMPLETE, or the scripted row has no three numbers."
             ),
         )
     elif zs3["verdict"] != "SUGGESTIVE-PASS":
+        # The ratios are a LIST, as in every other branch, so a reader of the
+        # blob never has to type-switch on this field; `reason` is what makes
+        # this branch different from "H-ZS-1 failed at both".
         out = (
             "PER-RATIO TRAINING REGARDLESS",
-            "REGARDLESS",
+            list(RATIOS),
+            "REGARDLESS (H-ZS-3 fail)",
             (
                 "H-ZS-3 fails -> per-ratio training regardless, as the profile "
-                f"question's proper test (section 4). {tail} Reading 7 makes "
-                "this branch override H-ZS-1's."
+                f"question's proper test (section 4), at both of {list(RATIOS)}. "
+                f"{tail} Reading 7 makes this branch override H-ZS-1's, whose "
+                f"own failing ratios were {zs1['failing_ratios']}."
             ),
         )
     elif zs1["verdict"] != "PASS":
         out = (
             "PER-RATIO TRAINING AT " + ", ".join(zs1["failing_ratios"]),
             [float(r.removeprefix("r")) for r in zs1["failing_ratios"]],
+            "H-ZS-1 fail at a ratio",
             "H-ZS-1 fails at "
             + ", ".join(zs1["failing_ratios"])
             + f" -> per-ratio training at that ratio (3 seeds) before S24.2. {tail}",
@@ -928,6 +975,7 @@ def decision(v: dict) -> dict:
         out = (
             "NO PER-RATIO TRAINING",
             [],
+            "H-ZS-1 passes at both ratios",
             (
                 "H-ZS-1 passes at both ratios -> per-ratio training is NOT "
                 f"needed to claim graceful transfer; S24.2 runs at ratio "
@@ -939,8 +987,12 @@ def decision(v: dict) -> dict:
         "rule": "section 4, verbatim",
         "verdict": out[0],
         "per_ratio_training": out[1],
+        "reason": out[2],
+        # H-ZS-1's own failing ratios, kept in every branch: branch 3 overrides
+        # them but does not erase what they were.
+        "failing_ratios": zs1["failing_ratios"],
         "balanced_ratio": balanced,
-        "statement": out[2],
+        "statement": out[3],
     }
 
 
@@ -1005,8 +1057,10 @@ def direction(v: dict) -> str:
             if z2["violations"]
             else ""
         )
-        + "). The adjacent test is UNPAIRED (disjoint Wilson intervals): the "
-        "initial layouts are paired across ratios, the dynamics are not (reading 3)."
+        + "). The adjacent test is UNPAIRED — the Newcombe square-and-add "
+        "interval for the DIFFERENCE of the two rates, built from their Wilson "
+        "intervals: the initial layouts are paired across ratios, the dynamics "
+        "are not (reading 3)."
     )
     for row, b in z3["rows"].items():
         parts.append(

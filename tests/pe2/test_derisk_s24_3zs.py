@@ -395,6 +395,18 @@ class TestBaseJoin:
         with pytest.raises(SystemExit, match="unreadable"):
             R.load_base_records()
 
+    def test_it_refuses_to_run_inside_a_binding(self):
+        """Inside `_bound` the validity rule and the cells directory would be
+        THIS round's, so the column would be checked against the wrong rule and
+        read from the wrong place."""
+        with pytest.raises(SystemExit, match="may not run inside a binding"), R._bound():
+            R.load_base_records()
+        with pytest.raises(SystemExit, match="may not run inside a binding"), R._one(
+            "SEL-80_HUG_r0.8"
+        ):
+            R.load_base_records()
+        assert len(R.load_base_records()) == 18  # ... and outside one it works
+
     def test_nothing_in_the_join_writes_to_s24_1s_directory(self):
         d = pathlib.Path("results/derisk/s24_1_cells")
         before = {p: p.stat().st_mtime_ns for p in sorted(d.glob("*.json"))}
@@ -426,13 +438,33 @@ class TestRecordValidity:
         status, why = R.record_status({"name": "SEL-80_HUG"})
         assert status == "INVALID" and "not a cell of this round" in why
 
-    def test_a_crashed_cell_is_undetermined_and_carries_its_ratio(self, tmp_path, monkeypatch):
+    def test_a_crash_through_run_cells_writes_this_rounds_undetermined_record(
+        self, tmp_path, monkeypatch
+    ):
+        """The crash path is S24.1's `run_cells`, which reaches for the
+        `undetermined_record` global — so that global has to be bound to THIS
+        round's wrapper, or the file on disk would carry no `ratio` and
+        `record_status` would call the crash INVALID instead of UNDETERMINED."""
         monkeypatch.setattr(R, "OUT", tmp_path)
-        rec = R.undetermined_record("SEL-80_HUG_r0.8", RuntimeError("boom"))
+        monkeypatch.setattr(R, "cg_z1", lambda n, d="cpu": _cg_z1(n))
+
+        def boom(name, device="cpu", n_episodes=None):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(R, "run_cell", boom)
+        assert "undetermined_record" in R._BOUND_ALWAYS
+        R.run_cells(["RULES-V0_HUG_r0.8"])
+        rec = json.loads(R.cell_file("RULES-V0_HUG_r0.8").read_text())
         assert rec["verdict"] == R.UNDETERMINED == "UNDETERMINED"
-        assert rec["n_episodes"] == 0 and rec["ratio"] == 0.8
+        assert rec["ratio"] == 0.8 and rec["n_episodes"] == 0
+        assert "RuntimeError: boom" in rec["error"]
         assert "NEVER re-run" in rec["note"]
-        assert R.record_status(rec)[0] == "UNDETERMINED"
+        assert rec["provenance"]["spec"] == R.PREREG  # this round's, not S24.1's
+        assert R.record_status(rec) == ("UNDETERMINED", f"crashed cell: {rec['error']!r}")
+        # ... and the crashed cell is never re-run or read as a measurement
+        assert R.load_records(quiet=True) == {}
+        with pytest.raises(SystemExit, match="UNDETERMINED"):
+            R.read_cell("RULES-V0_HUG_r0.8")
 
     def test_load_records_drops_everything_that_is_not_measurable(self, tmp_path, monkeypatch):
         monkeypatch.setattr(R, "OUT", tmp_path)
@@ -757,27 +789,41 @@ class TestHSafeAndGates:
         g = R.cg_z1_round(records, base)
         assert g["verdict"] == "REFUSE" and name in g["offenders"]
 
-    def test_the_inherited_mask_and_search_guards_pass_and_refuse(self):
+    def test_the_two_inherited_gates_are_separate_sub_blocks(self):
         records, _base = _round_records()
         g = R.cg_inherited(records)
         assert g["verdict"] == "PASS" and g["n_learned_cells"] == 24
-        assert set(g["inapplicable_picks"]) == {
+        assert g["cg_t1"]["verdict"] == g["cg_a2_1"]["verdict"] == "PASS"
+        assert set(g["cg_t1"]["inapplicable_picks"]) == {
             n for n in R.CELL_ORDER if R.CELLS[n]["kind"] == "learned"
         }
+        # the per-cell half ONLY: nothing trains here, so there are no probes
+        assert "not read" in g["cg_t1"]["training_probes"]
+        assert "per-cell half only" in g["cg_t1"]["gate"]
+
+    def test_the_mask_refuses_on_its_own_sub_block(self):
+        records, _base = _round_records()
         name = R.cell_name("SEL-81", "GREEDY", 1.0)
-        bad = dict(records, **{name: records[name] | {"inapplicable_picks": 1}})
-        assert R.cg_inherited(bad)["verdict"] == "REFUSE"
-        assert R.cg_inherited(bad)["offenders"] == [name]
+        bad = R.cg_inherited(
+            dict(records, **{name: records[name] | {"inapplicable_picks": 1}})
+        )
+        assert bad["verdict"] == "REFUSE" and bad["offenders"] == [name]
+        assert bad["cg_t1"]["verdict"] == "REFUSE" and bad["cg_t1"]["offenders"] == [name]
+        assert bad["cg_a2_1"]["verdict"] == "PASS"  # the other gate is untouched
 
     def test_a5s_tolerance_is_inherited_and_every_non_zero_is_named(self):
         records, _base = _round_records()
         name = R.cell_name("SEL-80", "HUG", 0.8)
         rec = records[name] | {"search_policy_steps": 1, "steps": [740] * 500}
         one = R.cg_inherited(dict(records, **{name: rec}))
-        assert one["verdict"] == "PASS" and one["non_zero_search"] == [name]
-        assert one["tolerance"][name] == 4
+        assert one["verdict"] == "PASS"
+        assert one["cg_a2_1"]["verdict"] == "PASS"
+        assert one["cg_a2_1"]["non_zero"] == [name]
+        assert one["cg_a2_1"]["tolerance"][name] == 4
         many = R.cg_inherited(dict(records, **{name: rec | {"search_policy_steps": 5000}}))
         assert many["verdict"] == "REFUSE" and many["offenders"] == [name]
+        assert many["cg_a2_1"]["verdict"] == "REFUSE"
+        assert many["cg_t1"]["verdict"] == "PASS"  # the mask still holds
 
     def test_a_scripted_row_is_outside_the_inherited_guards(self):
         """Reading 5 of S24.1: the comparator rows reach the search policy
@@ -843,6 +889,8 @@ class TestScriptedCheckAndDecision:
         d = v["decision"]
         assert d["verdict"] == "PER-RATIO TRAINING AT r1.0"
         assert d["per_ratio_training"] == [1.0]
+        assert d["reason"] == "H-ZS-1 fail at a ratio"
+        assert d["failing_ratios"] == ["r1.0"]
         assert "3 seeds) before S24.2" in d["statement"]
 
     def test_branch_three_per_ratio_training_regardless_overrides_branch_one(self):
@@ -852,7 +900,10 @@ class TestScriptedCheckAndDecision:
         assert v["h_zs_3"]["verdict"] == "FAIL→PER-RATIO-TRAINING"
         d = v["decision"]
         assert d["verdict"] == "PER-RATIO TRAINING REGARDLESS"
-        assert d["per_ratio_training"] == "REGARDLESS"
+        # a LIST in every branch, never a string, and the reason says which rule
+        assert d["per_ratio_training"] == [0.8, 1.0] == list(R.RATIOS)
+        assert d["reason"] == "REGARDLESS (H-ZS-3 fail)"
+        assert d["failing_ratios"] == v["h_zs_1"]["failing_ratios"] == []
         assert "override" in d["statement"]
         assert d["balanced_ratio"] is not None  # reported in every branch
 
@@ -861,6 +912,7 @@ class TestScriptedCheckAndDecision:
         del records[R.cell_name("SEL-80", "HUG", 0.8)]
         d = R.verdicts(records, base)["decision"]
         assert d["verdict"] == "INCOMPLETE" and d["per_ratio_training"] is None
+        assert d["reason"] == "INCOMPLETE"
         assert "not read from a partial round" in d["statement"]
 
     def test_the_direction_paragraph_states_the_round(self):
@@ -871,10 +923,15 @@ class TestScriptedCheckAndDecision:
             "H-ZS-2 PASS",
             "SUGGESTIVE",
             "UNPAIRED",
+            "Newcombe",
             "DECISION:",
             "in-distribution",
         ):
             assert needed in text, needed
+        # A1.1: the narrative must not misname the statistic
+        assert "disjoint" not in text
+        assert "Newcombe" in R.h_zs_2(records, base)["rule"]
+        assert "disjoint" not in R.h_zs_2(records, base)["rule"]
 
     def test_the_precedence_is_safety_then_gates_then_completeness(self):
         records, base = _round_records()
