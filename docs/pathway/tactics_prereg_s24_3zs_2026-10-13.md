@@ -50,3 +50,23 @@ regardless, as the profile question's proper test.
 As S24.1 (records measurable only at N = 500 / seed0 2 400 000 / the declared ratio; duplicates reject both;
 UNDETERMINED on crash; no rate printed before the GIFs; gated wrapper; frozen worktree).
 `results/derisk/s24_3zs_cells/{ROW}_{OPP}_r{RATIO}.json`, `s24_3zs_round.{json,png}`, `s24_3zs_gifs/`.
+
+---
+
+## Amendment A1 (2026-10-13, before any round number) — runner readings
+
+**A1.1 — H-ZS-2's cross-ratio comparison is Newcombe's interval for the difference of two proportions**, not
+disjoint Wilson intervals (which miss a 0.600 vs 0.520 gap at N = 500 that a two-proportion test puts at
+p = 0.01 and would manufacture "violations" from correctly ordered steps). The dynamics differ across
+ratios, so the comparison is unpaired by construction. **Wording:** a correctly ordered drop that is > 0.02
+and not significant is recorded under §4's conjunction as a "violation"; the write-up calls it what it is —
+an unresolved step — and the per-step CIs are in the artefact.
+
+**A1.2 — H-ZS-3's two direction clauses are complements** (the five tactics partition the decisions), so
+the conjunction states one fact twice; its pass is weaker than it reads, on top of §4's own "suggestive".
+
+**A1.3 — the 1.2 column:** S24.1's records carry no `ratio` field; the ratio is established structurally
+(S24.1's assembly refuses any other) and asserted at join time; the join validates by `record_status`, not
+by the prereg hash (A5 was appended after those cells ran). CG-Z1 compares the observation's ratio entry at
+float32 precision. S24.1's CG-T1 and A2.1 guards are inherited and can refuse the summary (the mask is now
+computed from an out-of-range ratio input). `h_zs_1` is INCOMPLETE if either ratio is incomplete.
