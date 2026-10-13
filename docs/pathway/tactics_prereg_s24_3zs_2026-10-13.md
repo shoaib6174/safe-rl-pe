@@ -70,3 +70,26 @@ the conjunction states one fact twice; its pass is weaker than it reads, on top 
 by the prereg hash (A5 was appended after those cells ran). CG-Z1 compares the observation's ratio entry at
 float32 precision. S24.1's CG-T1 and A2.1 guards are inherited and can refuse the summary (the mask is now
 computed from an out-of-range ratio input). `h_zs_1` is INCOMPLETE if either ratio is incomplete.
+
+---
+
+## Amendment A2 (2026-10-13) — CG-Z2 watched; written BEFORE `--summarize`, no capture rate read
+
+36 cells MEASURED. 12 episodes rendered; four watched as contact sheets. Findings:
+
+**(a) The slower evader is catchable by direct chase, when the selector chases.** `SEL-81` vs GREEDY at
+0.8 (2 400 002): `SWEEP` → brief `AMBUSH(1)` → `LEAD` → capture at 175. vs `TACTIC-V0` at 0.8 (2 400 000):
+`ORBIT(0)`/`LEAD` → `HOP(1)`/`COUNTER-ORBIT(0)` → `LEAD` → capture at 166.
+
+**(b) The zero-shot limit of §2, in the flesh.** `SEL-81` vs GREEDY at 0.8 (2 400 001): a 25 %-slower evader
+orbits obstacle 0 and the pursuer spends ~700 of 1 200 steps in `AMBUSH(0)` at a gap it never crosses,
+interleaved with `SWEEP`; it never simply runs it down. Nothing in its observation tells it the evader is
+slow (the ratio entry is out of its training range), so it plays the 1.2 answer. Registered reading: if
+H-ZS-3's chase share does not rise at 0.8, this is why, and per-ratio training is the stated remedy.
+
+**(c) At 1.0, `LEAD` against an orbiter does not close** (`TACTIC-V0` 2 400 002: ~700 steps of `ORBIT(1)`
+vs `LEAD` around obstacle 1, `COUNTER-ORBIT` never chosen; timeout) — the S23 orbit mechanism at equal speed.
+
+**(d) No frozen pin; interventions are brief** (clearance 0.005–0.3 m for a few steps each).
+
+No bar, stream, seed or threshold changed. Written after watching, before reading.
