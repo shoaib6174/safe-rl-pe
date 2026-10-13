@@ -144,3 +144,35 @@ round and the particle belief is shelved with both numbers on record. One run; n
 ## S24.0 Step 4 — scripted game watched (D149); construct fixes before S24.1
 Shield = `RecoveryShieldV2` (D131). `SWEEP` = staleness-coverage search when unseen / stale. `HOLD-HIDDEN`
 range-guarded at 2 m. T = 40 cap stands. Re-run once; re-watch; that table is S24.1's baseline.
+
+---
+
+## Plan review after S24.1 (2026-10-13) — what changed, and the recommended reorder
+
+**What S24.0/S24.1 established against the plan's assumptions.**
+1. The memory stack is not what §1 drew: no particle belief (D145/D146), no tactic labels (D147/D148).
+   What survived — dead-reckoning + observable motion features — is enough: H-TAC-3 passes 2/3, but the
+   effect is small and `NOMEM` is itself a strong switcher. **The selector architecture carries the gain.**
+2. The learned selector transfers to held-out opponents (GREEDY, HUG) on 2/3 seeds — but CG-T3 showed it
+   over-applies the training opponent's answer (`AMBUSH`/`SWEEP` against a radial orbiter) on some
+   episodes. **Training against a single scripted evader is the weakest part of the design.**
+3. The evader at ratio 1.2 already sustains its alternation indefinitely against every scripted pursuer
+   (D150, episode 2 290 001). A *learned* evader selector at 1.2 risks making the game unwinnable
+   (capture → 0), which would make S24.2's alternation and meta-game uninformative, and §2's kill rule
+   does not cover that case.
+
+**Recommendation — reorder: run S24.3's zero-shot speed sweep BEFORE S24.2.** It is evaluation-only
+(no training, no new tactic code), it answers the user's original speed-agnostic question with the
+artefact we already hold, and it tells us the ratio at which the game is balanced — which is the ratio
+S24.2's alternation should be run at. Per-ratio training (the expensive half of S24.3) becomes
+conditional on what zero-shot shows. Two design changes carried into S24.2 when it comes: train each
+learned selector against a **mixture** of opponents (not one scripted evader), and add the kill rule
+"if the learned evader drives shielded capture below 0.05 against every pursuer, the ratio is wrong for
+the alternation; stop and report."
+
+**Honest limit of the zero-shot sweep, stated now:** the selector has only ever seen `speed_ratio = 1.2`
+in its observation; at 0.8 and 1.0 that input is out of its training range, so any tactic-profile shift
+comes from the other observations (geometry, visibility, motion features), not from "knowing" the ratio.
+Zero-shot therefore answers *does a 1.2-trained selector degrade gracefully and still beat the best law
+at other ratios?* — the profile-shift question proper needs per-ratio training, and the pre-registration
+says which question each number answers.
