@@ -10,7 +10,7 @@ Plan: `tactics_plan_2026-10-13.md`. Started 2026-10-13. Budget 4.0 M (hard stop 
 | 0.4 | scripted selectors v0 (over features) + labelled GIF harness; watch | opus / sonnet | 250 k | **317 k** | DONE `46f986e`; v0b 1.00/0.68/0.68; pins 9/30→0/30; re-watched (D150) |
 | 1 | S24.1 prereg → learned pursuer selector → run → watch → read | opus / opus | 1.2 M | **≈ 1.0 M** (1.1: 467 k; 1.2: 505 k; A5 patch mine) | DONE — D151: H-TAC-1 PASS 2/3 (held-out transfer), H-TAC-2 PASS 3/3, H-TAC-3 PASS 2/3, H-SAFE HOLDS; S24.2 licensed |
 | 2 | S24.2 | | 1.0 M | | |
-| 3 | S24.3 speed sweep — **reordered before S24.2** (plan review): 3-ZS zero-shot (eval only) now; per-ratio training conditional | opus / opus | 0.6 M | | 3-ZS prereg committed; runner dispatched |
+| 3 | S24.3 speed sweep — 3-ZS zero-shot DONE (D152): H-ZS-1 PASS both ratios, H-ZS-3 FAIL ×3 → per-ratio training triggered | opus / opus | 0.6 M | ≈ 480 k (290 impl + 168 review + 21 fix) | D152; per-ratio training (6 arms) ≈ 0.35 M more — **budget fork** |
 
 ## Log
 - 2026-10-13: plan written; Step 0.1 dispatched.
@@ -35,3 +35,4 @@ Plan: `tactics_plan_2026-10-13.md`. Started 2026-10-13. Budget 4.0 M (hard stop 
 - S24.3-ZS runner landed (290 k; `3899fbe`; 100 tests; 1306 lines, accepted). Prereg A1 records its readings. Review dispatched (opus). Running total **≈ 2.37 M / 4.0 M**.
 - S24.3-ZS review (168 k): APPROVE-WITH-FIXES — narrative misnames the H-ZS-2 statistic; `undetermined_record` unbound (crash record lacks ratio); join invariant unstated; CG-T1 narrowing undocumented; decision branch 3 type. Fix round 1/2 dispatched. Running total **≈ 2.54 M / 4.0 M**.
 - 3-ZS fix landed (≈ 21 k) and verified directly; worktree frozen at `2d8ccbc` (pe2/game/selector identical to the training freeze). Launching 36 cells. Running total **≈ 2.56 M / 4.0 M**.
+- 3-ZS closed (D152): transfer holds at 0.8 and 1.0; profile does not shift zero-shot; the pre-registered rule triggers per-ratio training at 0.8 and 1.0. Running total **≈ 2.58 M / 4.0 M**. Remaining ≈ 1.42 M cannot fund both per-ratio training (≈ 0.35 M) and S24.2 (≈ 1.0 M) with reserve — reported to the user as a fork.
