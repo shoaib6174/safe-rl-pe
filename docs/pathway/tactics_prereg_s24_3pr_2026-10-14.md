@@ -58,3 +58,33 @@ passes but H-PR-2 fails → the gain comes from something other than chasing mor
 As S24.1/S24.3-ZS. `results/derisk/s24_3pr_arm_*.json`, `s24_3pr_probe_*.json`, `s24_3pr_cells/`,
 `s24_3pr_round.{json,png}`, `s24_3pr_gifs/`. Frozen worktrees for training and for the gate; gated wrappers.
 Budget ≈ 0.35 M; two fix rounds max per step.
+
+---
+
+## Amendment A1 (2026-10-14) — CG-P3 watched; written BEFORE `--summarize`, no capture rate read
+
+18 cells MEASURED (N = 500, seed0 2 400 000, declared ratios). 12 episodes rendered; three watched as
+contact sheets. Findings:
+
+**(a) Where it can see the evader, the 0.8-trained selector chases.** `SELr0.8-81` vs GREEDY, seed
+2 400 000: `LEAD` from the first decision, brief `SWEEP`, `LEAD`/`INTERCEPT`, capture at **229** (zero-shot
+`SEL-81`: 704). At 1.0, seed 2 400 001: `INTERCEPT` → `AMBUSH(0)` → `SWEEP` → **`COUNTER-ORBIT(0)`** → capture at
+**212**, where zero-shot timed out — with sight, the trained selector finds the flank.
+
+**(b) On the critical seed it still fails — but for a different and more informative reason.**
+`SELr0.8-81` vs GREEDY at 0.8, seed 2 400 001 (the zero-shot 700-step `AMBUSH` episode): `INTERCEPT` reaches
+the obstacle GREEDY orbits (clearance 0.023 at step 112), the evader keeps the obstacle between them, line
+of sight never returns, and from step 220 to 1 200 the label is `SWEEP` — the staleness-coverage search
+drags the pursuer away across the whole arena to stale cells while a 25 %-slower evader sits behind one
+obstacle. **This is a library and mask gap, not a learning failure:** every tactic that goes round an
+obstacle (`COUNTER-ORBIT`) is masked while the evader is unseen (correctly — the literal `applicable()` would
+leak truth, S24.1 A1.3), and no tactic says "circle the obstacle where I last saw it". A slow orbiter behind
+a single obstacle is uncatchable by this library whenever sight is lost. Registered: H-PR-2's chase share can
+rise only on sighted spans; if H-PR-1 fails on GREEDY at 0.8 while passing on `TACTIC-V0`, this is why.
+**Design note for the plan (not a change now):** a sixth pursuer tactic `ORBIT-SEARCH(k)` — circle the
+obstacle nearest the dead-reckoned last-seen point — is the legal, memory-based counterpart of
+`COUNTER-ORBIT` for the unseen case.
+
+**(c) No frozen pin; interventions are brief** (clearance 0.004–0.07 m for a few steps each).
+
+No bar, stream, seed or threshold changed. Written after watching, before reading.
