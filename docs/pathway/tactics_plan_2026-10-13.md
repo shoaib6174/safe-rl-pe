@@ -176,3 +176,6 @@ comes from the other observations (geometry, visibility, motion features), not f
 Zero-shot therefore answers *does a 1.2-trained selector degrade gracefully and still beat the best law
 at other ratios?* — the profile-shift question proper needs per-ratio training, and the pre-registration
 says which question each number answers.
+
+## After S24.3-PR (D153, 2026-10-14)
+Zero-shot transfer (D152) is the speed-agnostic result; training at the ratio changes the profile (more chase at 0.8) but not captures, because the remaining losses are an unseen slow orbiter behind one obstacle that no tactic can circle (CG-P3). **Library addition proposed, not yet built: `ORBIT-SEARCH(k)`** — circle the obstacle nearest the dead-reckoned last-seen point (memory-based, no truth). It should enter the library with its own behavioural test before S24.2 and be included in the FLAT baseline comparison only if the selector is retrained with it.

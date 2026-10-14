@@ -68,3 +68,4 @@ Plan: `tactics_plan_2026-10-13.md`. Started 2026-10-13. Budget 4.0 M (hard stop 
   reads real results and now fails (every 3zs cell is recorded); not fixed.
 - **Frozen worktrees:** s18 `0ed69e6`, s19 `a252bc8`, s23 `90d2f73`, s24_1 train `1f9eab2`, s24_1 gate
   `d269737`, s24_3zs `2d8ccbc`, s24_3pr train+gate `994a8f3`. Branch `searching-teacher`, unpushed.
+- **S24.3-PR closed (D153):** H-PR-1 FAIL (ratio input inert), H-PR-2 PASS at 0.8 (chase share rises), H-PR-3 PASS, H-SAFE holds; CG-P3 found the library gap (unseen slow orbiter). Running total **≈ 3.12 M / 6.0 M**. NEXT: S24-FLAT baseline (prereg committed; opus for the FLAT env/trainer, sonnet for STRUCT + gate) — waiting on the user's compaction/word; then consider `ORBIT-SEARCH` as a library addition before S24.2.
