@@ -493,14 +493,17 @@ def _paired_seed(records: dict, ratio: float, seed: int, base: str, name: str) -
     )
 
 
-def _per_ratio(records: dict, base_of, name: str, ratio: float) -> dict:
+def _per_ratio(
+    records: dict, base_of, name: str, ratio: float, gated: bool = True
+) -> dict:
     """One ratio of a paired hypothesis: `base_of(seed)` is the comparator row,
     which is seed-dependent for H-PR-1 (the zero-shot twin) and fixed for
-    H-PR-3 (the law)."""
+    H-PR-3 (the law). `gated` marks whether THIS ratio sets the round verdict
+    (review item 3: H-PR-1 gates on the headline ratio only)."""
     per_seed = {
         str(s): _paired_seed(records, ratio, s, base_of(s), name) for s in SEEDS
     }
-    return _ORIG_S1["_round"](per_seed, f"{name} @ ratio {ratio}") | {
+    return _ORIG_S1["_round"](per_seed, f"{name} @ ratio {ratio}", gated) | {
         "ratio": float(ratio)
     }
 
@@ -510,7 +513,10 @@ def h_pr_1(records: dict) -> dict:
     `SEL-s` at that ratio, paired by seed, p < 0.05 on >= 2/3 opponents and
     >= 2/3 seeds. Reading 2: the round's verdict is ratio 0.8's."""
     per = {
-        _r(x): _per_ratio(records, lambda s: f"SEL-{s}", "H-PR-1", x) for x in RATIOS
+        _r(x): _per_ratio(
+            records, lambda s: f"SEL-{s}", "H-PR-1", x, float(x) == HEADLINE_RATIO
+        )
+        for x in RATIOS
     }
     head = per[_r(HEADLINE_RATIO)]
     return {
@@ -803,7 +809,7 @@ def direction(v: dict) -> str:
             )
     if "INCOMPLETE" in (
         safe["verdict"], p1["verdict"], p2["verdict"], p3["verdict"]
-    ):
+    ) or p1.get("incomplete_ratios"):  # review item 2: a non-headline ratio
         return (
             f"incomplete: {len(v['missing'])} of {v['n_cells']} cells have no "
             "record"

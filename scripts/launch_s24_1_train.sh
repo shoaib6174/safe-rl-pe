@@ -6,7 +6,7 @@ set -u
 MAIN=/home/niro-1/Codes/safe-rl-pe
 WT=/home/niro-1/s24_1_worktree
 V=$MAIN/venv/bin/python
-if pgrep -f "derisk_s2[34]_\|replay_s18_branch_split\|s24_tactic_game\|derisk_s18_boundary" >/dev/null; then echo "REFUSED: another round is using the host"; exit 1; fi
+if pgrep -f "derisk_s2[34]_|replay_s18_branch_split|s24_tactic_game|derisk_s18_boundary" >/dev/null; then echo "REFUSED: another round is using the host"; exit 1; fi
 [ -d "$WT" ] || { echo "REFUSED: no frozen worktree at $WT"; exit 1; }
 [ -e "$WT/results" ] || ln -s "$MAIN/results" "$WT/results"
 [ -L "$WT/results" ] && [ "$(readlink -f "$WT/results")" = "$(readlink -f "$MAIN/results")" ] \

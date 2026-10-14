@@ -12,7 +12,7 @@ MAIN=/home/niro-1/Codes/safe-rl-pe
 WT=/home/niro-1/s24_3pr_gate_worktree
 V=$MAIN/venv/bin/python
 ARMS=(SELr0.8-80 SELr0.8-81 SELr0.8-82 SELr1.0-80 SELr1.0-81 SELr1.0-82)
-if pgrep -f "derisk_s2[34]_\|replay_s18_branch_split\|s24_tactic_game\|derisk_s18_boundary" >/dev/null; then echo "REFUSED: another round is using the host (training arms included)"; exit 1; fi
+if pgrep -f "derisk_s2[34]_|replay_s18_branch_split|s24_tactic_game|derisk_s18_boundary" >/dev/null; then echo "REFUSED: another round is using the host (training arms included)"; exit 1; fi
 [ -d "$WT" ] || { echo "REFUSED: no frozen worktree at $WT"; exit 1; }
 [ -f "$WT/scripts/derisk_s24_3pr_gate.py" ] || { echo "REFUSED: $WT is frozen at a commit without the gate runner"; exit 1; }
 [ -e "$WT/results" ] || ln -s "$MAIN/results" "$WT/results"
