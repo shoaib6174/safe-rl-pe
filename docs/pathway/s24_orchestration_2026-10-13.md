@@ -39,3 +39,32 @@ Plan: `tactics_plan_2026-10-13.md`. Started 2026-10-13. Budget 4.0 M (hard stop 
 - 2026-10-14: user chose per-ratio training. S24.3-PR pre-registered (`tactics_prereg_s24_3pr_2026-10-14.md`). One implementer for trainer + gate derivatives (rebinding pattern), one review, ≤ 2 fix rounds; launch 6 arms; gate; watch; read. Budget ≈ 0.35 M.
 - S24.3-PR build landed (317 k; `e0a341a`; 132 tests; 282 steps/s at 0.8). Review dispatched (opus). Running total **≈ 2.90 M / 4.0 M** — reserve consumed; S24.2 is no longer fundable inside 4.0 M (to be reported at close). Known pre-existing rot: `test_derisk_s24_3zs.py::TestCGZ1::test_run_cells_sweeps_the_gate_before_the_first_episode` reads real results; not fixed now.
 - 3-PR review (203 k): APPROVE-WITH-FIXES — the 'no competing jobs' pgrep guard used \\| (a literal in ERE) and had never fired in ANY launcher since S23; fixed in all six (my edit) plus two small gate items. Lesson recorded: with the guard live, a launcher refuses if the launching shell's own argv contains the pattern text — two of my own commands tripped it (and a pkill killed its own shell, exit 144). Launch from a pattern-free command line; build monitor patterns from split strings. Training frozen at `994a8f3`, six arms launched (OMP 3). Running total **≈ 3.10 M / 4.0 M** (hard stop 3.6 M; the gate/watch/read are mine).
+
+## Budget and model policy (user, 2026-10-14)
+- **Budget raised to 6.0 M** (hard stop 5.4 M). Used ≈ 3.10 M at this point.
+- **Model policy — use less Fable/opus:** implementers of derivative or mechanical work (rebinding
+  derivatives, launchers, aggregation scripts, test additions, fix rounds) → **sonnet**; scoped re-reviews
+  → **sonnet**; opus only for (a) new learning/selector code and (b) the FIRST review of any script that
+  produces a gated number. The orchestrator keeps its own turns short.
+- **Plan after S24.3-PR closes:** (1) pre-register and run the **flat-RL baseline** on the frozen game
+  (masked? no — continuous PPO/RecurrentPPO with the same recovery shield, OBS, budget, 3 seeds, same gate
+  seeds 2 400 000+), the comparison the publishable claim needs; (2) **S24.2** (learned evader vs SEL-81 at
+  1.2, mixture training, 'unwinnable' kill rule, tactic meta-game) ≈ 1.0 M; (3) write-up only if the user
+  says so (the construct-validity paper stays shelved).
+
+## Handoff state (for a compacted context) — 2026-10-14
+- **Running:** S24.3-PR training, six arms `SELr0.8-80/81/82`, `SELr1.0-80/81/82`, frozen at `994a8f3`
+  in `/home/niro-1/s24_3pr_train_worktree`; logs `/home/niro-1/s24_3pr_train_logs/`; checkpoints
+  `results/derisk/ckpts_S24-3PR-{ARM}/S24-1-{ARM}_{mark}.zip` (12 marks; final `_3000000`). Background
+  monitor (pattern-free) reports ALL 6 AT 3M / CRASH / STALLED.
+- **Then, in order:** `zsh scripts/launch_s24_3pr.sh` (gate worktree already frozen at `994a8f3`,
+  `/home/niro-1/s24_3pr_gate_worktree`; 18 cells; launcher verified) → `--gifs` (CG-P3, 12; watch seed
+  2 400 001 especially) → write prereg amendment with what was watched → `--summarize` → D153 → ledger.
+- **Launch discipline (hard-won):** launch from a command line containing NONE of the guard pattern text
+  (`derisk_s2[34]_`, `replay_s18_branch_split`, `s24_tactic_game`, `derisk_s18_boundary`) — the guard
+  matches the launching shell's own argv; build monitor patterns from split strings; never `pkill` by a
+  pattern your own shell contains (exit 144). OMP_NUM_THREADS ≤ 3 × 6 arms. Confirm by files, not PIDs.
+- **Known rot:** `tests/pe2/test_derisk_s24_3zs.py::TestCGZ1::test_run_cells_sweeps_the_gate_before_the_first_episode`
+  reads real results and now fails (every 3zs cell is recorded); not fixed.
+- **Frozen worktrees:** s18 `0ed69e6`, s19 `a252bc8`, s23 `90d2f73`, s24_1 train `1f9eab2`, s24_1 gate
+  `d269737`, s24_3zs `2d8ccbc`, s24_3pr train+gate `994a8f3`. Branch `searching-teacher`, unpushed.
