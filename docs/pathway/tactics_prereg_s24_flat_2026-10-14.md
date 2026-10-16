@@ -87,3 +87,6 @@ JSONs at summary time (verdict `MEASURED`, `resumed_from` null, CG-F1 block pres
 `FLAT40`); absence of any of these is an offender (A1.3's "never resumed" made checkable). The selector's
 own `decisions` / env-steps-per-decision are reported in the A1.1 cadence table from the S24.1 records so the
 ratio can be read off one artefact. Neither changes a hypothesis, a bar, or N.
+
+**A1.4 correction (2026-10-16, same day, still before any gate cell):** 7 GIF rows × 2 opponents × 3 seeds =
+**42 GIFs**, not 36 — an arithmetic slip in A1.4, caught by the implementer. Rows and seeds unchanged.

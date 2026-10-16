@@ -67,4 +67,4 @@ nohup env PYTHONPATH=$WT OMP_NUM_THREADS=4 $V -u scripts/derisk_s24_flat_gate.py
 nohup env PYTHONPATH=$WT OMP_NUM_THREADS=4 $V -u scripts/derisk_s24_flat_gate.py --cells STRUCT-80_GREEDY STRUCT-80_HUG STRUCT-80_TACTIC-V0 STRUCT-81_GREEDY STRUCT-81_HUG STRUCT-81_TACTIC-V0 > /home/niro-1/s24_flat_gate_logs/c2.log 2>&1 &
 nohup env PYTHONPATH=$WT OMP_NUM_THREADS=4 $V -u scripts/derisk_s24_flat_gate.py --cells STRUCT-82_GREEDY STRUCT-82_HUG STRUCT-82_TACTIC-V0 > /home/niro-1/s24_flat_gate_logs/c3.log 2>&1 &
 echo "4 chains started; confirm by results/derisk/s24_flat_cells/*.json, not by PIDs"
-echo "then: --gifs (CG-F2, 24 GIFs) BEFORE --summarize"
+echo "then: --gifs (CG-F2, 42 GIFs per A1.4) BEFORE --summarize"
