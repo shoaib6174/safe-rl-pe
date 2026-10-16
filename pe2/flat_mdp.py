@@ -265,7 +265,9 @@ class FlatMDP(SelectorMDP):
         Reading 6: the observation half uses a fresh clone, never `self`.
         """
         args = dict(self._args, recorder=False, label="")
-        flat, sel = type(self)(**args), SelectorMDP(**args)
+        # `hold` is FlatMDP's own argument (A1.2); SelectorMDP's cadence is its DONE-or-40 cap
+        flat = type(self)(**args)
+        sel = SelectorMDP(**{k: v for k, v in args.items() if k != "hold"})
         config_diff = sorted(
             field
             for field, value in dataclasses.asdict(flat.cfg).items()
