@@ -79,3 +79,4 @@ Plan: `tactics_plan_2026-10-13.md`. Started 2026-10-13. Budget 4.0 M (hard stop 
 | F.4 | launch 6 arms; gate; CG-F2 watched; summarize; D154 | me | — | | |
 Revised estimate ≈ 0.9 M (the prereg's 0.5 M assumed pure derivatives; the flat env is new). Running total before: ≈ 3.12 M / 6.0 M.
 - F.1 landed (179 k). Review (opus) + F.2 (sonnet) dispatched concurrently. Running total **≈ 3.30 M / 6.0 M**.
+- F.1 review CLEAN (172 k; cadence asymmetry → prereg A1: FLAT40 family added). F.2 landed (sonnet, 223 k). **My error:** launched the nine arms in the same response as an untested patch; CG-F1 raised TypeError on every FLAT arm; killed, fixed (`8ee44f9`), archived (`interrupted_2026-10-16_flat/`), tests re-run, relaunching. Lesson: never launch in the same response as a code change — tests first, launch next turn. Running total **≈ 3.70 M / 6.0 M**.

@@ -72,3 +72,9 @@ tactic block is zero); the structural guarantee is the shared builder and a sole
 to touch only indices 28–48. A crashed arm is skipped, never resumed (stop-rule-safe, as S24.1). Training
 `STRUCT` uses one persistent recovery shield for the run (S17's convention); its probes and the gate rebuild
 the shield per episode — stated. Nine arms train in parallel at `OMP_NUM_THREADS=2`.
+
+**A1.2 correction (2026-10-16):** CG-F1's assembly comparison reads the GAME's `hold` (10 for every arm);
+`FLAT40`'s 40-step span is the env's own `hold` attribute, so its CG-F1 reads `assembly_diff == []` with
+`flat_hold = 40` recorded in the arm JSON — not `["hold"]` as A1.2 first said. **Disclosure:** the first
+launch at `edfe26f` died at CG-F1 (my patch passed `hold` to the `SelectorMDP` clone); nothing trained, no
+probe row, no number seen; artefacts archived under `results/derisk/interrupted_2026-10-16_flat/`.

@@ -319,7 +319,7 @@ def test_play_episode_replays_the_same_seed_twice_in_one_env():
 # the training script
 # ----------------------------------------------------------------------------
 def test_the_arms_and_the_budget_are_the_preregistered_ones():
-    assert set(R.ARMS) == {"FLAT-80", "FLAT-81", "FLAT-82"}
+    assert set(R.ARMS) == {"FLAT-80", "FLAT-81", "FLAT-82", "FLAT40-80", "FLAT40-81", "FLAT40-82"}
     assert R.SEEDS == (80, 81, 82)
     assert (R.TOTAL, R.EVERY, R.PROBE_SEED0, R.PROBE_N) == (
         3_000_000,
@@ -394,7 +394,7 @@ def test_cg_f1_failure_aborts_the_launch(monkeypatch, tmp_path):
     monkeypatch.setattr(
         env,
         "config_diff_vs_selector",
-        lambda: {
+        lambda **_kw: {
             "ok": False,
             "config_diff": ["evader_speed_ratio"],
             "assembly_diff": [],
