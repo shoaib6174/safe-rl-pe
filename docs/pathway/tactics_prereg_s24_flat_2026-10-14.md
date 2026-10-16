@@ -90,3 +90,32 @@ ratio can be read off one artefact. Neither changes a hypothesis, a bar, or N.
 
 **A1.4 correction (2026-10-16, same day, still before any gate cell):** 7 GIF rows × 2 opponents × 3 seeds =
 **42 GIFs**, not 36 — an arithmetic slip in A1.4, caught by the implementer. Rows and seeds unchanged.
+
+---
+
+## Amendment A2 (2026-10-16, CG-F2 watched BEFORE `--summarize`; no rate seen)
+
+All 42 GIFs watched as 8-frame contact sheets per row plus three full-resolution frames. Renderer
+convention (checked in `pe2/render.py::ROLE_STYLE`): **pursuer red, evader blue**; pink = pursuer's field
+of view, grey = occlusion shadows cast from the pursuer; the orange ring = the pursuer's shield intervening.
+Per-episode outcomes (not rates): 3 captures in 42 (FLAT-81 vs TACTIC-V0 seed 0; FLAT40-80 vs TACTIC-V0
+seed 2; STRUCT-81 vs GREEDY seed 0); the rest time out at 1200.
+
+**What the baselines do (behavioural reading):**
+- `FLAT` (hold 10): the pursuer wanders in loops and, in most episodes, ends at a wall or corner with the shield
+  intervening at ≈ 0 m clearance for hundreds of steps (e.g. FLAT-82 vs GREEDY seeds 1 and 2; FLAT-80 vs
+  TACTIC-V0 seed 0: pinned in the bottom-right corner from ≈ step 500 to 1200 while the evader holds 3 m away).
+  The recovery shield offers forward motion but the policy keeps commanding into the wall — the D125 absorbing
+  loop reappears under a recovery shield when the policy itself has learned to stall.
+- `FLAT40` (hold 40): same phenotypes with longer straight segments; corner/wall pins again (FLAT40-81 vs GREEDY
+  seed 1; FLAT40-80 vs GREEDY seed 2 leaves the evader to hug the left wall).
+- `STRUCT`: when the evader is visible the law chases and often orbits the obstacle the evader hugs without
+  closing (STRUCT-81 vs GREEDY seed 1, vs TACTIC-V0 seed 1); when hidden, the learned search spins in place for
+  the whole episode (seeds 2 of both opponents, "sees opponent: NO" throughout).
+- Evaders behave per their labels (GREEDY flees to a far corner; ORBIT/HOLD-HIDDEN/HOP/WALL-SLIDE switch as
+  designed); obstacles, arena and shield identical across rows; 0 contact steps.
+
+**CG-F2 reading: PASS as a construct** — the rows differ only in the pursuer, and the pursuers' failure modes are
+the known collapse phenotypes (D108 flat collapse; D125 stall loop; D112 obstacle-hug), not an environment
+defect. **Disclosure:** my first pass read the colours backwards (blue as pursuer); corrected from the
+renderer source before this note was written. The summary is read next, with no further cut or re-run.
