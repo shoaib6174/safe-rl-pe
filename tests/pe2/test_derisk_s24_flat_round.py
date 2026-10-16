@@ -133,6 +133,29 @@ def _probes(train_violations: int = 0, violations: int = 0) -> dict:
     }
 
 
+def _arm_jsons(tmp_path, monkeypatch, skip: str | None = None, **overrides) -> None:
+    """One clean `{PREFIX}_arm_{row}.json` per row (item 1's `_check_arm_record`),
+    under `FLAT_TR`/`STRUCT_TR`'s OWN `OUT`, redirected to `tmp_path` so
+    nothing here reads the real, in-progress `results/derisk/`."""
+    monkeypatch.setattr(G.FLAT_TR, "OUT", tmp_path)
+    monkeypatch.setattr(G.STRUCT_TR, "OUT", tmp_path)
+    for row in G.ROW_NAMES:
+        if row == skip:
+            continue
+        family = G.ROWS[row]["family"]
+        tr = G.STRUCT_TR if family == "STRUCT" else G.FLAT_TR
+        path = tr._arm_file(row)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rec = {
+            "arm": row,
+            "verdict": "MEASURED",
+            "resumed_from": None,
+            "cg_f1": {"ok": True},
+            "hold": 40 if family == "FLAT40" else G.HOLD,
+        } | overrides.get(row, {})
+        path.write_text(json.dumps(rec))
+
+
 # ----------------------------------------------------------------------------
 # the cell table
 # ----------------------------------------------------------------------------
@@ -194,13 +217,21 @@ class TestCgF1:
         assert cg["config_diff"] == []
         assert cg["assembly_diff"] == []
         assert cg["ok"] is True
+        assert cg["flat_hold"] == G.HOLD
+        assert cg["own_hold_differs"] is False
 
-    def test_flat40_reports_hold_and_nothing_else(self):
-        """A1.2's binding requirement: `assembly_diff == ["hold"]`."""
+    def test_flat40_has_no_assembly_diff_either(self):
+        """The A1.2 correction (prereg, 2026-10-16): `config_diff_vs_selector`
+        reads the GAME's `hold` (10 for every arm), so `FLAT40` reads
+        `assembly_diff == []` too — not `["hold"]` as A1.2 first said. Its own
+        40-step span is recorded separately as `flat_hold`."""
         cg = G.flat_cg_f1("FLAT40")
         assert cg["config_diff"] == []
-        assert cg["assembly_diff"] == ["hold"]
+        assert cg["assembly_diff"] == []
         assert cg["ok"] is True
+        assert cg["flat_hold"] == 40
+        assert cg["game_hold"] == G.HOLD
+        assert cg["own_hold_differs"] is True
 
     def test_struct_cg_f1_asserts_on_the_built_gate_env(self):
         cg = G.struct_cg_f1()
@@ -214,18 +245,81 @@ class TestCgF1:
         b = G.cg_f1("FLAT40")
         assert a is b
 
-    def test_cg_f1_summary_refuses_without_a_stored_block(self):
+    def test_cg_f1_summary_refuses_without_a_stored_block(self, tmp_path, monkeypatch):
+        _arm_jsons(tmp_path, monkeypatch)  # clean arm records; the per-cell block is the offender
         records = {"FLAT-80_GREEDY": _cell("FLAT-80_GREEDY", 0.3)}
         del records["FLAT-80_GREEDY"]["cg_f1"]
         out = G.cg_f1_summary(records)
         assert out["verdict"] == "REFUSE"
         assert out["offenders"] == ["FLAT-80_GREEDY"]
 
-    def test_cg_f1_summary_passes_with_an_ok_block(self):
+    def test_cg_f1_summary_passes_with_an_ok_block(self, tmp_path, monkeypatch):
+        _arm_jsons(tmp_path, monkeypatch)
         records = {"FLAT-80_GREEDY": _cell("FLAT-80_GREEDY", 0.3)}
         out = G.cg_f1_summary(records)
         assert out["verdict"] == "PASS"
         assert out["offenders"] == []
+        assert out["arm_records"]["FLAT-80"] == {"ok": True, "why": ""}
+        assert all(block["ok"] for block in out["arm_records"].values())
+
+    def test_cg_f1_summary_flags_a_mismatch_within_a_family_as_an_offender(self, tmp_path, monkeypatch):
+        """Item 7: a cell whose stored `cg_f1` block disagrees with another
+        cell of the SAME family (both individually `ok`) is itself an
+        offender — not silently accepted as the family's first block."""
+        _arm_jsons(tmp_path, monkeypatch)
+        records = {
+            "FLAT-80_GREEDY": _cell("FLAT-80_GREEDY", 0.3),
+            "FLAT-81_GREEDY": _cell("FLAT-81_GREEDY", 0.3),
+        }
+        records["FLAT-81_GREEDY"]["cg_f1"] = {"ok": True, "family": "FLAT", "config_diff": ["ratio"]}
+        out = G.cg_f1_summary(records)
+        assert out["verdict"] == "REFUSE"
+        assert "FLAT-81_GREEDY" in out["offenders"]
+        assert "FLAT-80_GREEDY" not in out["offenders"]
+
+    # --- item 1: the nine arm JSONs are re-read, not just the per-cell block ---
+    def test_cg_f1_summary_refuses_on_a_missing_arm_record(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(G.FLAT_TR, "OUT", tmp_path)
+        monkeypatch.setattr(G.STRUCT_TR, "OUT", tmp_path)  # no arm files written at all
+        records = {"FLAT-80_GREEDY": _cell("FLAT-80_GREEDY", 0.3)}
+        out = G.cg_f1_summary(records)
+        assert out["verdict"] == "REFUSE"
+        assert "arm:FLAT-80" in out["offenders"]
+        assert out["arm_records"]["FLAT-80"]["ok"] is False
+        assert "absent" in out["arm_records"]["FLAT-80"]["why"]
+
+    @pytest.mark.parametrize(
+        ("override", "why_substr"),
+        [
+            ({"verdict": "UNDETERMINED"}, "not MEASURED"),
+            ({"resumed_from": "some/ckpt.zip"}, "not None"),
+            ({"cg_f1": None}, "cg_f1 absent"),
+            ({"cg_f1": {"ok": False}}, "cg_f1 absent"),
+            ({"hold": 10}, "not 40"),  # FLAT40 only
+        ],
+    )
+    def test_cg_f1_summary_flags_each_arm_offender_kind(self, tmp_path, monkeypatch, override, why_substr):
+        _arm_jsons(tmp_path, monkeypatch, **{"FLAT40-80": override})
+        records = {"FLAT-80_GREEDY": _cell("FLAT-80_GREEDY", 0.3)}
+        out = G.cg_f1_summary(records)
+        assert out["verdict"] == "REFUSE"
+        assert "arm:FLAT40-80" in out["offenders"]
+        assert why_substr in out["arm_records"]["FLAT40-80"]["why"]
+        # every OTHER row's arm record is still clean
+        assert all(
+            out["arm_records"][row]["ok"] for row in G.ROW_NAMES if row != "FLAT40-80"
+        )
+
+
+# ----------------------------------------------------------------------------
+# CG-F3 (documentary): item 6's CG-T2 clause
+# ----------------------------------------------------------------------------
+class TestCgF3:
+    def test_note_states_cg_t2_labels_do_not_apply(self):
+        out = G.cg_f3()
+        assert out["verdict"] == "N/A (documentary)"
+        assert "CG-T2" in out["note"]
+        assert "do not apply to FLAT/FLAT40/STRUCT rows" in out["note"]
 
 
 # ----------------------------------------------------------------------------
@@ -289,6 +383,27 @@ class TestRecordValidity:
         )
         with pytest.raises(SystemExit, match="REFUSED before any episode ran"):
             G.run_cells(["FLAT-80_GREEDY"])
+
+    def test_run_cells_raises_before_the_first_episode_on_a_flat_cg_f1_failure(self, tmp_path, monkeypatch):
+        """Item 3: unlike STRUCT (whose own `assert_cg_f1` already raises),
+        `flat_cg_f1` is a pure function that never raises on its own — the
+        docstring's promise ("raises on failure") only held for STRUCT before
+        this fix."""
+        monkeypatch.setattr(G, "OUT", tmp_path)
+        monkeypatch.setattr(G, "require_ckpt", lambda row: pathlib.Path("unused"))
+        monkeypatch.setattr(
+            G, "cg_f1",
+            lambda family: {
+                "ok": False, "family": family, "config_diff": ["x"], "assembly_diff": [],
+                "obs_diff_indices_on_identical_reset": [], "flat_tactic_entries_nonzero": 0,
+                "selector_tactic_entries_nonzero": 0,
+            },
+        )
+        ran: list[str] = []
+        monkeypatch.setattr(G, "run_cell", lambda *a, **k: ran.append(a[0]))
+        with pytest.raises(SystemExit, match="CG-F1 FAILED for FLAT"):
+            G.run_cells(["FLAT-80_GREEDY"])
+        assert ran == []  # no episode ran
 
 
 # ----------------------------------------------------------------------------
@@ -471,17 +586,34 @@ class TestHypotheses:
         assert v["cg_f1"]["verdict"] == "REFUSE"
         assert G.direction(v).startswith("CG-F1 REFUSES")
 
-    def test_direction_names_the_section_4_refutation_on_0_of_3(self):
+    def test_direction_names_the_section_4_refutation_on_0_of_3(self, tmp_path, monkeypatch):
+        _arm_jsons(tmp_path, monkeypatch)  # clean arm records: CG-F1 must not REFUSE
         records, combined = _round_records(flat=0.3, struct=0.3, sel=0.1)
         v = G.verdicts(records, combined, _probes())
         assert "withdrawn to 'a selector matches flat learning" in G.direction(v)
 
-    def test_direction_reports_decisions_and_env_steps_per_decision(self):
+    def test_direction_reports_decisions_and_env_steps_per_decision(self, tmp_path, monkeypatch):
+        _arm_jsons(tmp_path, monkeypatch)
         records, combined = _round_records()
         v = G.verdicts(records, combined, _probes())
         assert "A1.1's cadence" in G.direction(v)
         for row in G.ROW_NAMES:
             assert v["cadence"][row]["env_steps_per_decision"] == pytest.approx(2.0)
+
+    def test_cadence_table_includes_the_selector_rows(self, tmp_path, monkeypatch):
+        """Item 4: A1.1's cadence table (and `direction()`'s cadence line)
+        must carry `SEL-80/81/82` too, from the JOINED S24.1 records — the
+        selector's own `n_decisions`/`steps` so the ratio can be read off one
+        artefact."""
+        _arm_jsons(tmp_path, monkeypatch)
+        records, combined = _round_records()
+        v = G.verdicts(records, combined, _probes())
+        for row in G.SEL_ROWS:
+            assert v["cadence"][row] is not None
+            assert v["cadence"][row]["env_steps_per_decision"] == pytest.approx(2.0)
+        direction_text = G.direction(v)
+        for row in G.SEL_ROWS:
+            assert row in direction_text
 
 
 # ----------------------------------------------------------------------------
@@ -492,8 +624,17 @@ class TestGifsAndCaptions:
         assert G.gif_seeds() == (G.GATE_SEED0, G.GATE_SEED0 + 1, G.GATE_SEED0 + 2)
         assert G.gif_seeds() == S1.gif_seeds()
 
-    def test_gif_rows_and_opponents_give_24_gifs(self):
-        assert len(G.GIF_ROWS) * len(G.GIF_OPPONENTS) * G.GIF_N == 24
+    def test_gif_rows_and_opponents_give_42_gifs(self):
+        """Item 5 (A1.4): FLAT40-80/81/82 join the watched rows — 7 rows
+        (not 4) x 2 opponents x 3 seeds. (The prereg's own figure, "36", does
+        not match 7 x 2 x 3 = 42; this asserts the arithmetic actually
+        implemented, not the prereg's stated total.)"""
+        assert set(G.GIF_ROWS) == {
+            "FLAT-80", "FLAT-81", "FLAT-82",
+            "FLAT40-80", "FLAT40-81", "FLAT40-82",
+            "STRUCT-81",
+        }
+        assert len(G.GIF_ROWS) * len(G.GIF_OPPONENTS) * G.GIF_N == 42
 
     def test_flat_caption_is_the_literal_pursuer_flat(self):
         env = G.build_cell_env("FLAT-80_TACTIC-V0", recorder=True, label="t")
@@ -557,6 +698,26 @@ class TestMainDispatchOrder:
         monkeypatch.setattr(pathlib.Path, "mkdir", lambda *a, **k: None)
         G.main()
         assert calls == []
+
+
+class TestSummarizeWritesRejectedRecords:
+    def test_summarize_writes_rejected_records(self, tmp_path, monkeypatch):
+        """Item 7: `summarize()` must write `rejected_records` into the round
+        JSON, as S24.1's own `summarize` does (`derisk_s24_1_gate.py:1578`).
+        Every io boundary is stubbed to a controlled fake so nothing here
+        reads or writes the real, in-progress `results/derisk/`."""
+        monkeypatch.setattr(G, "OUT", tmp_path)
+        _arm_jsons(tmp_path, monkeypatch)  # clean arm records: CG-F1 must not REFUSE
+        records, combined = _round_records()
+        comparators = {k: v for k, v in combined.items() if k not in records}
+        rejected = {"dup_a.json": "duplicate of a measurable record", "dup_b.json": "duplicate"}
+        monkeypatch.setattr(G, "load_records", lambda quiet=False: records)
+        monkeypatch.setattr(G, "scan_records", lambda: (dict(records), rejected, {}))
+        monkeypatch.setattr(G, "load_s24_1_comparators", lambda: comparators)
+        monkeypatch.setattr(G, "read_probes", lambda: _probes())
+        monkeypatch.setattr(G, "write_figure", lambda *a, **k: None)
+        blob = G.summarize()
+        assert blob["rejected_records"] == rejected
 
 
 # ----------------------------------------------------------------------------

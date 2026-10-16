@@ -52,17 +52,20 @@ directory — exactly the discipline `derisk_s24_3zs.py::load_base_records` and
 
 Readings this module fixes, because the text can be read two ways:
 
-1. **CG-F1 for `FLAT40` is computed here with an explicit `hold` check added
-   on top of `FlatMDP.config_diff_vs_selector()`.** That frozen method (F.1,
-   not touched by this round) compares `_assembly()`'s `"hold"` field, which
-   reads `env.game.hold` — the underlying `TacticGameMDP`'s BUILD-TIME
-   constant (10), identical for `FLAT` and `FLAT40` — and so never reflects
-   `FlatMDP`'s OWN `.hold` override (verified empirically:
+1. **CG-F1 for `FLAT40` is read literally off `FlatMDP.config_diff_vs_selector()`
+   (F.1, not touched by this round), with no augmentation of `assembly_diff`**
+   (the A1.2 correction, 2026-10-16). That frozen method compares
+   `_assembly()`'s `"hold"` field, which reads `env.game.hold` — the
+   underlying `TacticGameMDP`'s BUILD-TIME constant (10), identical for
+   `FLAT` and `FLAT40` — so `assembly_diff == []` for BOTH families
+   (verified empirically:
    `FlatMDP(1.2, hold=40).config_diff_vs_selector()["assembly_diff"] == []`).
-   A1.2 requires `assembly_diff == ["hold"]` for `FLAT40`. This gate's own
-   `flat_cg_f1` augments the returned `assembly_diff` with `"hold"` whenever
-   `flat.hold != int(flat.game.hold)` — true for `FLAT40`, false for `FLAT`
-   — so the RECORD matches A1.2's literal requirement without editing F.1.
+   `FLAT40`'s 40-step span is the ENV's own `.hold` attribute, not the
+   game's, so this gate's own `flat_cg_f1` passes `allowed_assembly=()` for
+   both families and records `flat_hold`/`game_hold`/`own_hold_differs`
+   beside the frozen method's own output. (The first draft of this module,
+   before the correction, augmented `assembly_diff` with `"hold"` instead;
+   that reading is superseded and removed.)
 2. **CG-F2's captions are forced to the literal `PURSUER: FLAT` / `PURSUER:
    STRUCT`** (the brief's exact wording), not S24.1's default `_name(law)`
    (which would print `UNKNOWN` for FLAT, whose law is never consulted, or
@@ -470,16 +473,21 @@ def _flat_caption(game, opponent: str) -> None:
 
 
 def flat_cg_f1(family: str) -> dict:
-    """Reading 1: `FlatMDP.config_diff_vs_selector()`, augmented with the
-    `hold` check F.1's own `_assembly()` cannot see."""
+    """Reading 1 (A1.2 correction): `FlatMDP.config_diff_vs_selector()`'s own
+    output, unaugmented — `allowed_assembly=()` for both families, since the
+    frozen method already reads `assembly_diff == []` for `FLAT40` (it
+    compares the GAME's `hold`, identical for every family). `FLAT40`'s own
+    40-step span is recorded separately as `flat_hold`/`game_hold`/
+    `own_hold_differs`, not folded into `assembly_diff`."""
     hold = 40 if family == "FLAT40" else None
-    allowed = ("hold",) if family == "FLAT40" else ()
     env = FlatMDP(1.2, hold=hold)
-    cg = env.config_diff_vs_selector(allowed_assembly=allowed)
-    own_hold_diff = int(env.hold) != int(env.game.hold)
-    assembly_diff = sorted(set(cg["assembly_diff"]) | ({"hold"} if own_hold_diff else set()))
-    ok = bool(cg["ok"] and not (set(assembly_diff) - set(allowed)))
-    return cg | {"family": family, "assembly_diff": assembly_diff, "ok": ok}
+    cg = env.config_diff_vs_selector(allowed_assembly=())
+    return cg | {
+        "family": family,
+        "flat_hold": int(env.hold),
+        "game_hold": int(env.game.hold),
+        "own_hold_differs": bool(int(env.hold) != int(env.game.hold)),
+    }
 
 
 def struct_cg_f1() -> dict:
@@ -711,7 +719,20 @@ def run_cells(
     for row in dict.fromkeys(CELLS[n]["row"] for n in todo):
         require_ckpt(row)
     for family in dict.fromkeys(CELLS[n]["family"] for n in todo):
-        cg_f1(family)  # construct gate, before the first episode of that family
+        block = cg_f1(family)  # construct gate, before the first episode of that family
+        # STRUCT's own `assert_cg_f1` already raises on failure (reading 3);
+        # `flat_cg_f1` never does (it is a pure function of its argument), so
+        # this gate raises here for FLAT/FLAT40 instead.
+        if family in FLAT_FAMILIES and not block["ok"]:
+            raise SystemExit(
+                f"CG-F1 FAILED for {family}: FLAT's env differs from the "
+                "selector's in more than the action and the tactic block — "
+                f"config_diff {block['config_diff']}, assembly_diff "
+                f"{block['assembly_diff']}, observation entries differing on "
+                f"an identical reset {block['obs_diff_indices_on_identical_reset']}, "
+                f"FLAT tactic entries non-zero {block['flat_tactic_entries_nonzero']}, "
+                f"selector tactic entries non-zero {block['selector_tactic_entries_nonzero']}"
+            )
     print(
         f"{len(todo)}/{len(wanted)} cells to run ({len(wanted) - len(todo)} already "
         f"have a measurable record; stop rule: never re-run), N = "
@@ -863,10 +884,43 @@ def _cadence(records: dict, row: str) -> dict | None:
     }
 
 
+def _check_arm_record(row: str) -> tuple[bool, str]:
+    """Fix round 1, item 1: the nine ARM records (one per row, written by
+    each family's OWN trainer — `FLAT_TR`/`STRUCT_TR`'s `_arm_file`) are
+    re-read here, not just the per-cell `cg_f1` block this gate itself
+    wrote. An offender is a missing/unreadable arm file, a `verdict` other
+    than `MEASURED`, a `resumed_from` that is not `None` (A1.3: a crashed
+    arm is skipped, never resumed), an absent/not-`ok` `cg_f1` block, or
+    (`FLAT40` only) a declared `hold` other than 40."""
+    family = ROWS[row]["family"]
+    tr = STRUCT_TR if family == "STRUCT" else FLAT_TR
+    path = tr._arm_file(row)
+    if not path.exists():
+        return False, f"{path}: absent"
+    try:
+        rec = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"{path}: unreadable: {exc}"
+    if rec.get("verdict") != "MEASURED":
+        return False, f"verdict = {rec.get('verdict')!r}, not MEASURED"
+    if rec.get("resumed_from") is not None:
+        return False, f"resumed_from = {rec.get('resumed_from')!r}, not None"
+    cg = rec.get("cg_f1")
+    if not (cg and cg.get("ok")):
+        return False, "cg_f1 absent or not ok"
+    if family == "FLAT40" and rec.get("hold") != 40:
+        return False, f"hold = {rec.get('hold')!r}, not 40"
+    return True, ""
+
+
 def cg_f1_summary(records: dict) -> dict:
     """Section 5: CG-F1 is re-read from every existing record's own `cg_f1`
     block (not recomputed) — a resumed run must still refuse before any
-    capture rate is read if a prior arm's block does not read `ok`."""
+    capture rate is read if a prior arm's block does not read `ok`. Every
+    cell's block is compared against the first one seen for its family (not
+    just stored once and never checked again) — a mismatch within a family
+    is itself an offender. The nine arm JSONs are also re-read (item 1) and
+    reported under their own key, `arm_records`."""
     by_family: dict = {}
     offenders: list[str] = []
     for name in CELL_ORDER:
@@ -875,9 +929,19 @@ def cg_f1_summary(records: dict) -> dict:
         rec = records[name]
         family = rec["family"]
         block = rec.get("cg_f1")
-        by_family.setdefault(family, block)
         if not (block and block.get("ok")):
             offenders.append(name)
+            continue
+        if family in by_family and block != by_family[family]:
+            offenders.append(name)  # mismatch within the family
+            continue
+        by_family.setdefault(family, block)
+    arm_records: dict = {}
+    for row in ROW_NAMES:
+        ok, why = _check_arm_record(row)
+        arm_records[row] = {"ok": ok, "why": why}
+        if not ok:
+            offenders.append(f"arm:{row}")
     return {
         "gate": (
             "CG-F1 (prereg section 5): FLAT's env differs from the selector's "
@@ -886,6 +950,7 @@ def cg_f1_summary(records: dict) -> dict:
         ),
         "verdict": "REFUSE" if offenders else "PASS",
         "families": by_family,
+        "arm_records": arm_records,
         "offenders": offenders,
     }
 
@@ -901,7 +966,12 @@ def cg_f3() -> dict:
             "apply here: FLAT/FLAT40 are continuous (v, omega) with no action "
             "mask, and STRUCT's learner is also a plain continuous PPO "
             "(SearchMDP, S17 BASE) with no mask. The A3.1 absent-evidence "
-            "rule DOES apply and is enforced by H-SAFE below."
+            "rule DOES apply and is enforced by H-SAFE below. S24.1's CG-T2 "
+            "labels (mean switches per gate episode, 'it switches') also do "
+            "not apply to FLAT/FLAT40/STRUCT rows: none of the three ever "
+            "logs a tactic switch (`n_switches` is `None` throughout, never "
+            "averaged), so no CG-T2 label is computed or carried for any row "
+            "of this round."
         ),
     }
 
@@ -987,7 +1057,7 @@ def direction(v: dict) -> str:
     cadence_bits = [
         f"{row} {d['mean_decisions_per_episode']:.1f} decisions/ep, "
         f"{d['env_steps_per_decision']:.2f} env steps/decision"
-        for row in ROW_NAMES
+        for row in (*ROW_NAMES, *SEL_ROWS)
         if (d := v["cadence"].get(row))
     ]
     if cadence_bits:
@@ -1007,7 +1077,10 @@ def verdicts(records: dict, combined: dict, probes: dict | None = None) -> dict:
         "h_safe": h_safe(records, probes),
         "cg_f1": cg_f1_summary(records),
         "cg_f3": cg_f3(),
-        "cadence": {row: _cadence(records, row) for row in ROW_NAMES},
+        # A1.1: the selector's OWN decisions / env-steps-per-decision, read
+        # from the JOINED S24.1 records (`SEL-80/81/82`), beside this round's
+        # own nine rows, so the cadence ratio can be read off one artefact.
+        "cadence": {row: _cadence(combined, row) for row in (*ROW_NAMES, *SEL_ROWS)},
         "complete": not missing,
         "missing": missing,
         "n_cells": len(CELLS),
@@ -1060,6 +1133,7 @@ def write_figure(records: dict, path: pathlib.Path) -> None:
 def summarize(device: str = "cpu") -> dict:
     """The round's only reader of numbers, run after `--gifs` (CG-F2)."""
     records = load_records()
+    _measurable, rejected, _by_cell = scan_records()
     comparators = load_s24_1_comparators()
     combined = {**records, **comparators}
     probes = read_probes()
@@ -1080,6 +1154,7 @@ def summarize(device: str = "cpu") -> dict:
     blob = {
         "verdicts": v,
         "direction": direction(v),
+        "rejected_records": rejected,  # as S24.1's own summarize does
         "cells": {n: {k: val for k, val in r.items() if k not in _BULK_KEYS} for n, r in records.items()},
         "provenance": provenance(device),
     }
@@ -1093,7 +1168,11 @@ def summarize(device: str = "cpu") -> dict:
 # ----------------------------------------------------------------------------
 gif_seeds = S1.gif_seeds  # the first three GATE seeds — a rule, not a pick
 gif_title = S1.gif_title  # pure: f"{row} vs {opponent} · episode {seed}"
-GIF_ROWS: tuple[str, ...] = ("FLAT-80", "FLAT-81", "FLAT-82", "STRUCT-81")
+GIF_ROWS: tuple[str, ...] = (
+    "FLAT-80", "FLAT-81", "FLAT-82",
+    "FLAT40-80", "FLAT40-81", "FLAT40-82",  # A1.4: FLAT40 joins the watched rows
+    "STRUCT-81",
+)
 GIF_OPPONENTS: tuple[str, ...] = ("TACTIC-V0", "GREEDY")
 GIF_N = 3
 
@@ -1118,7 +1197,9 @@ def write_gifs(
     rows: list[str] | None = None, device: str = "cpu", every: int = GIF_EVERY, fps: float = 15.0,
 ) -> list[tuple[str, str, int]]:
     """CG-F2: the first three gate seeds per row vs TACTIC-V0 and GREEDY —
-    (3 FLAT seeds + STRUCT-81) x 2 opponents x 3 seeds = 24 GIFs."""
+    (3 FLAT seeds + 3 FLAT40 seeds + STRUCT-81) x 2 opponents x 3 seeds = 42
+    GIFs (A1.4: FLAT40 joins the watched rows; the prereg's own count, "36",
+    does not match 7 x 2 x 3 — flagged, not silently matched)."""
     from pe2.render import save_gif
 
     wanted = list(GIF_ROWS) if not rows else list(rows)
