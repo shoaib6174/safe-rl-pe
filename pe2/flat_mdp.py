@@ -103,6 +103,7 @@ class FlatMDP(SelectorMDP):
         recorder: bool = False,
         label: str = "",
         cfg=None,
+        hold: int | None = None,
     ) -> None:
         # Reading 6: the exact constructor arguments, so CG-F1 can build the
         # comparison pair with the same ones and not with re-derived defaults.
@@ -113,6 +114,7 @@ class FlatMDP(SelectorMDP):
             "recorder": bool(recorder),
             "label": str(label),
             "cfg": cfg,
+            "hold": hold,
         }
         super().__init__(
             speed_ratio,
@@ -124,7 +126,9 @@ class FlatMDP(SelectorMDP):
         )
         # Reading 2 / 3: the game's own hold and the inner wrapper's own Box,
         # exactly as `SearchMDP.__init__` takes them.
-        self.hold = int(self.game.hold)
+        # A1.2: FLAT40 holds the command for the selector's decision cap (40)
+        # instead of the primitive's hold (10); the game's own hold otherwise.
+        self.hold = int(hold) if hold is not None else int(self.game.hold)
         self.action_space = self.game.inner.action_space
         self.span_lengths: list[int] = []
 
@@ -240,7 +244,7 @@ class FlatMDP(SelectorMDP):
         }
 
     # -- CG-F1 ------------------------------------------------------------
-    def config_diff_vs_selector(self) -> dict:
+    def config_diff_vs_selector(self, allowed_assembly: tuple = ()) -> dict:
         """CG-F1 (prereg section 5): FLAT's env differs from the selector's
         ONLY in the action space and the zeroed tactic block.
 
@@ -267,7 +271,8 @@ class FlatMDP(SelectorMDP):
             for field, value in dataclasses.asdict(flat.cfg).items()
             if value != dataclasses.asdict(sel.cfg).get(field)
         )
-        mine, theirs = _assembly(self), _assembly(sel)
+        mine, theirs = _assembly(flat), _assembly(sel)  # review item 2: both clones
+        allowed = set(allowed_assembly)
         assembly_diff = sorted(k for k, v in mine.items() if theirs[k] != v)
 
         flat_obs, _i = flat.reset(seed=CG_SEED)
@@ -312,9 +317,10 @@ class FlatMDP(SelectorMDP):
                 "never consumes the training env's episode stream or its "
                 "counters"
             ),
+            "allowed_assembly_diff": sorted(allowed),
             "ok": bool(
                 not config_diff
-                and not assembly_diff
+                and not (set(assembly_diff) - allowed)
                 and not diff
                 and flat_nonzero == 0
                 and sel_nonzero > 0

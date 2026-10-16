@@ -97,7 +97,11 @@ PROBE_N = 200
 GAMMA = 0.99  # S17's GAMMA and the prereg's "gamma = 0.99 per decision"
 OPPONENT = "TACTIC-V0"  # the scripted tactical evader; the only probe opponent
 
-ARMS: dict[str, dict] = {f"FLAT-{seed}": {"family": "FLAT", "seed": seed} for seed in SEEDS}
+ARMS: dict[str, dict] = {
+    **{f"FLAT-{seed}": {"family": "FLAT", "seed": seed, "hold": None, "probe_seed0": None} for seed in SEEDS},
+    # A1.2: the selector's decision cap as a second flat family; probe stream 2 650 000+
+    **{f"FLAT40-{seed}": {"family": "FLAT40", "seed": seed, "hold": 40, "probe_seed0": 2_650_000} for seed in SEEDS},
+}
 
 if TOTAL % EVERY:
     raise SystemExit(f"TOTAL {TOTAL} must be a multiple of EVERY {EVERY}")
@@ -183,7 +187,7 @@ def provenance() -> dict:
 
 # -------------------------------------------------------------- the arm
 def make_env(arm: str) -> FlatMDP:
-    return FlatMDP(RATIO, seed0=ARMS[arm]["seed"] * 1000)
+    return FlatMDP(RATIO, seed0=ARMS[arm]["seed"] * 1000, hold=ARMS[arm].get("hold"))
 
 
 def make_learner(arm: str, env, device: str = "cpu"):
@@ -201,12 +205,12 @@ def make_learner(arm: str, env, device: str = "cpu"):
     )
 
 
-def assert_cg_f1(env: FlatMDP) -> dict:
+def assert_cg_f1(env: FlatMDP, allowed_assembly: tuple = ()) -> dict:
     """CG-F1 on the BUILT env, before the first step (prereg section 5). A
     failure is a refusal about the CONFIGURATION, so it aborts the launch the
     way the v0b assembly guards do (`SystemExit`), rather than becoming three
     UNDETERMINED records."""
-    cg = env.config_diff_vs_selector()
+    cg = env.config_diff_vs_selector(allowed_assembly=allowed_assembly)
     if not cg["ok"]:
         raise SystemExit(
             "CG-F1 FAILED: FLAT's env differs from the selector's in more "
@@ -229,7 +233,7 @@ def probe(model, arm: str, n: int | None = None, seed0: int | None = None) -> di
     # The module constants are read HERE, not bound as defaults, so a test can
     # shrink the probe without the pre-registered value drifting.
     n = PROBE_N if n is None else int(n)
-    seed0 = PROBE_SEED0 if seed0 is None else int(seed0)
+    seed0 = (ARMS[arm].get("probe_seed0") or PROBE_SEED0) if seed0 is None else int(seed0)  # A1.2
     env = make_env(arm)
     logs = [env.play_episode(model.predict, seed0 + i) for i in range(n)]
     k, total = win_count(logs, "pursuer")
@@ -349,7 +353,8 @@ def train(arm: str, device: str = "cpu") -> dict:
     started = time.time()
     resume_ckpt, offset, rows = _resume_from(arm)
     env = make_env(arm)
-    cg_f1 = assert_cg_f1(env)  # prereg section 5, before the first step
+    # A1.2: FLAT40 differs from the selector in `hold` and nothing else
+    cg_f1 = assert_cg_f1(env, ("hold",) if ARMS[arm]["family"] == "FLAT40" else ())
     probes = _Probe(arm, rows, offset=offset)
     if resume_ckpt is None:
         model = make_learner(arm, env, device)
@@ -372,7 +377,7 @@ def train(arm: str, device: str = "cpu") -> dict:
         "hold": int(env.hold),
         "total_env_steps_budget": TOTAL,
         "probe_every": EVERY,
-        "probe_seed0": PROBE_SEED0,
+        "probe_seed0": ARMS[arm].get("probe_seed0") or PROBE_SEED0,
         "probe_n": PROBE_N,
         "obs_len": int(env.observation_space.shape[0]),
         "action_space": str(env.action_space),

@@ -50,3 +50,25 @@ withdrawn to "a selector matches flat learning with legible tactics" and the pap
 ≈ 0.5 M: FLAT env + trainer (new learning code → opus implementer; sonnet scoped re-review), STRUCT arm
 (rebinding of the S17 trainer → sonnet), gate as a derivative of the S24.1 runner (sonnet), one opus first
 review of the gate. Stop rule, launch discipline, records validity as S24.1/A3–A5.
+
+---
+
+## Amendment A1 (2026-10-16, before any arm trains) — decision cadence, and a second flat family
+
+**A1.1 — the cadence asymmetry, stated as part of the treatment.** `FLAT` decides every 10 env steps
+(≈ 300 000 decisions in 3 M steps); the selector decides at tactic termination or 40 steps (measured
+≈ 86 500 decisions, ≈ 35 steps each). With γ = 0.99 per decision, FLAT's credit horizon is ≈ 3.5× shorter
+in env steps (0.99^120 ≈ 0.30 vs 0.99^35 ≈ 0.70 over a full episode — the D128 failure mode), while FLAT
+receives ≈ 3.5× more gradient samples for the same env budget. Both follow from §3 as written and neither
+is changed; both are reported beside H-FLAT-1 (`decisions`, env steps per decision, per arm).
+
+**A1.2 — `FLAT40-s` added (3 seeds):** identical to `FLAT-s` except `hold = 40` — the selector's decision
+cap — so one flat family matches the selector's cadence and the other matches its primitive. H-FLAT-1 is
+evaluated against BOTH families; the claim passes only if the selector beats both. CG-F1 for `FLAT40` must
+report `assembly_diff == ["hold"]` and nothing else. Probe stream for `FLAT40`: **2 650 000+**.
+
+**A1.3 — recorded, not changed:** CG-F1's observation comparison runs at reset only (where the selector's
+tactic block is zero); the structural guarantee is the shared builder and a sole `_spans` override, verified
+to touch only indices 28–48. A crashed arm is skipped, never resumed (stop-rule-safe, as S24.1). Training
+`STRUCT` uses one persistent recovery shield for the run (S17's convention); its probes and the gate rebuild
+the shield per episode — stated. Nine arms train in parallel at `OMP_NUM_THREADS=2`.

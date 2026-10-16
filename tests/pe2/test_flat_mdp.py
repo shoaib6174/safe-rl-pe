@@ -53,7 +53,7 @@ _PATH = (
     / "scripts"
     / "derisk_s24_flat_train.py"
 )
-SEED = 2_550_000  # this round's probe stream
+SEED = 2_290_000  # construct stream (review item 4: never a probe/gate stream)
 STRAIGHT = np.array([1.0, 0.0], dtype=np.float32)
 
 
