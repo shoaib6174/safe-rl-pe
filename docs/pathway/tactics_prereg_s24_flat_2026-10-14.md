@@ -78,3 +78,12 @@ the shield per episode — stated. Nine arms train in parallel at `OMP_NUM_THREA
 `flat_hold = 40` recorded in the arm JSON — not `["hold"]` as A1.2 first said. **Disclosure:** the first
 launch at `edfe26f` died at CG-F1 (my patch passed `hold` to the `SelectorMDP` clone); nothing trained, no
 probe row, no number seen; artefacts archived under `results/derisk/interrupted_2026-10-16_flat/`.
+
+**A1.4 (2026-10-16, before any gate cell runs; arms at ≤ 1 M steps, no capture number seen):** CG-F2 watches
+`FLAT40` too — `FLAT40-80/81/82` join `FLAT-80/81/82` and `STRUCT-81` in the GIF rows (3 unselected gate
+episodes × {TACTIC-V0, GREEDY} each): **36 GIFs**, not 24. Reason: A1.2 made `FLAT40` a family H-FLAT-1
+must clear; an unwatched family is the gap D125 came through. The gate also re-reads each of the nine arm
+JSONs at summary time (verdict `MEASURED`, `resumed_from` null, CG-F1 block present and ok, `hold == 40` for
+`FLAT40`); absence of any of these is an offender (A1.3's "never resumed" made checkable). The selector's
+own `decisions` / env-steps-per-decision are reported in the A1.1 cadence table from the S24.1 records so the
+ratio can be read off one artefact. Neither changes a hypothesis, a bar, or N.
