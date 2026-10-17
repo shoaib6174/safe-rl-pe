@@ -98,3 +98,4 @@ Revised estimate ≈ 0.9 M (the prereg's 0.5 M assumed pure derivatives; the fla
 | E.2 | EVS trainer + 15-cell gate | sonnet / opus review | 260 k | | |
 | E.3 | SEL3 alternation | sonnet | 80 k | | |
 | E.4 | meta-game LP | sonnet | 100 k | | |
+- O.1 landed (opus, 230 k): `17d150b`; CG-O1 IDENTICAL (outcome/steps/violations/13-span log vs the stored SEL-81 record); CG-O2 10/10; selector regression 34 unchanged; v1 obs_len 59. Carried into O.2: picks must project onto `env.actions`; checkpoint paths via the trainer's own function. **Ruling:** no separate O.1 review — its bar is the identity test; the opus review of the O.2 gate covers the v1 selector path (`_candidates`/mask/`done_on_entry`) because the gated numbers depend on it. Running total **≈ 4.78 M / 6.0 M** (0.62 M to the hard stop).
