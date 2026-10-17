@@ -44,7 +44,19 @@ from pe2.scripted import (
     ObstacleHuggingEvader,
 )
 from pe2.sensing import is_visible, segment_intersects_disk, wrap_angle
-from pe2.structured import K_OMEGA, OrbitSearch, _clip_omega, _normalize
+
+# S24-OS: `OrbitSearch` in THIS module is the ORBIT-SEARCH(k) tactic, so the
+# S16 search POLICY `Sweep` falls back to is imported under its role's name.
+# The object is `pe2.structured.OrbitSearch` unchanged — `Sweep` stays
+# bit-for-bit that policy (`tests/pe2/test_tactics.py` holds it to it).
+from pe2.structured import (
+    K_OMEGA,
+    _clip_omega,
+    _normalize,
+)
+from pe2.structured import (
+    OrbitSearch as OrbitSearchPolicy,
+)
 
 ARRIVAL_TOL = 0.3  # m — "arrived at the goal" for HOP and AMBUSH
 COUNTER_ORBIT_MAX_STEPS = 80  # then the selector decides again
@@ -60,6 +72,13 @@ BELIEF_FRESH_STEPS = 100
 # it up for the next-stalest — the guard against a target that can be reached
 # but, from the bearings the route allows, never actually observed.
 STALE_TARGET_MAX_STEPS = 120
+# S24-OS (prereg `tactics_prereg_s24_os_2026-10-17.md` section 1): ORBIT-SEARCH
+# circles the obstacle nearest the dead-reckoned last-seen point until the
+# evader is seen again. The range is the point's SURFACE distance to that
+# obstacle: beyond it the point is not "behind" the obstacle at all and there is
+# nothing to go round. The cap is the span's own budget, as COUNTER-ORBIT's.
+ORBIT_SEARCH_RANGE = 2.0  # m
+ORBIT_SEARCH_MAX_STEPS = 200
 
 
 # ---------------------------------------------------------------- geometry
@@ -122,6 +141,16 @@ def gap_point(obstacle: dict, others: list[dict], lim: float) -> np.ndarray:
         if best is None or width < best[0]:
             best = (width, point)
     return best[1]
+
+
+def surface_distance(point, obstacle: dict) -> float:
+    """Distance from `point` to obstacle's SURFACE — negative inside it. The
+    same quantity `pe2.selectors._surface_distances` and the recogniser use to
+    pick obstacle k; written here because `pe2.selectors` imports this module."""
+    p = np.asarray(point, dtype=float)[:2]
+    return float(np.hypot(p[0] - obstacle["x"], p[1] - obstacle["y"])) - float(
+        obstacle["radius"]
+    )
 
 
 def counter_orbit_direction(own_xy, opp_xy, obstacle: dict) -> float:
@@ -708,7 +737,7 @@ class Sweep(PursuerTactic):
 
     def __init__(self, cfg: EnvConfig, belief=None, staleness=None) -> None:
         super().__init__(cfg)
-        self.search = OrbitSearch(cfg)
+        self.search = OrbitSearchPolicy(cfg)
         self.belief = belief
         self.staleness = staleness
         self.law = PlannerInterceptLaw(cfg)  # the planned route to the estimate
@@ -786,6 +815,125 @@ class Sweep(PursuerTactic):
         if point is None:
             return self.search.predict(obs)[0]
         return self.law._steer_toward(self.env.pursuer_pose, point)
+
+
+class OrbitSearch(PursuerTactic):
+    """`ORBIT-SEARCH(k)` — go all the way round obstacle k about the point the
+    evader was last believed to be at, until it is seen again.
+
+    Prereg `tactics_prereg_s24_os_2026-10-17.md` section 1. D153's failure case
+    is an evader circling a SINGLE obstacle: `SWEEP` steers at the belief point
+    and stops there, `COUNTER-ORBIT` is masked out while the evader is unseen
+    (reading 2 of `pe2/selector_mdp.py`: its precondition reads truth), so no
+    library tactic goes round. This one does, and it is MEMORY-BASED: the only
+    thing it knows about the evader is `belief` (`LastSeenBelief`'s `seen` /
+    `mean`), the same hook `Sweep` takes, and it never reads `env.evader_pose`.
+
+    The geometry and the steering are `CounterOrbit`'s, not a second copy: the
+    way round is committed once (`counter_orbit_direction` about the belief
+    point — recomputing it every step flips it on alternating steps, see that
+    function), the waypoint is `counter_orbit_goal` on k's hug circle, and the
+    command is the planned `_steer_at`. Two things differ, both because this is
+    a SEARCH and not a flank: `phi_target` is a FULL turn away rather than the
+    antipode (the evader believed to be behind k may be anywhere on its circle,
+    so half a turn can miss it), and DONE is sight regained — there is no
+    `COUNTER_ORBIT_CLOSE` test, because an unseen evader has no measurable
+    range.
+
+    `applicable` iff the evader is not visible, the belief HAS a point, and
+    k is the obstacle nearest that point with its surface within
+    `ORBIT_SEARCH_RANGE`. Beyond that range the point is not behind k at all.
+    """
+
+    def __init__(self, cfg: EnvConfig, k: int, belief=None) -> None:
+        super().__init__(cfg)
+        self.k = int(k)
+        self.name = f"ORBIT-SEARCH({self.k})"
+        self.belief = belief  # kept by REFERENCE, as `Sweep` keeps it
+        self.law = PlannerInterceptLaw(cfg)  # planning + clearance geometry
+        self.direction = 0.0  # committed at the start of each span
+        self.phi_target = 0.0  # ditto: a full turn on from the entry angle
+        self.phi_acc = 0.0  # own unwrapped angle about k, integrated
+        self.last_remaining = 0.0
+        self.last_goal: np.ndarray | None = None
+        self.last_steer_point: np.ndarray | None = None
+
+    def reset(self, env=None) -> None:
+        super().reset(env)
+        self.law.reset(env)
+        self.direction = 0.0
+        self.phi_target = 0.0
+        self.phi_acc = 0.0
+        self.last_remaining = 0.0
+        self.last_goal = None
+        self.last_steer_point = None
+
+    def enter(self) -> None:
+        super().enter()
+        self.direction = 0.0  # re-chosen on the first act of the new span
+
+    def _point(self) -> np.ndarray | None:
+        """The belief's point estimate, or None when it has never had one. No
+        age test: an OLD estimate is exactly the case this tactic is for, where
+        `Sweep` has already driven to the point and found nothing."""
+        belief = self.belief
+        if belief is None or not getattr(belief, "seen", False):
+            return None
+        return np.asarray(belief.mean, dtype=float)[:2]
+
+    def applicable(self, obs, env) -> bool:
+        if obs[6] > 0.5 or self.k >= len(env.obstacles):
+            return False
+        point = self._point()
+        if point is None:
+            return False
+        surfaces = [surface_distance(point, o) for o in env.obstacles]
+        return (
+            int(np.argmin(surfaces)) == self.k
+            and surfaces[self.k] <= ORBIT_SEARCH_RANGE
+        )
+
+    def act(self, obs):
+        env = self.env
+        if obs[6] > 0.5 or self.steps >= ORBIT_SEARCH_MAX_STEPS:
+            return None
+        if self.k >= len(env.obstacles):
+            return None
+        point = self._point()
+        if point is None:
+            return None  # nothing to orbit about: the belief never had a point
+        own = env.pursuer_pose
+        obstacle = env.obstacles[self.k]
+        phi = float(np.arctan2(own[1] - obstacle["y"], own[0] - obstacle["x"]))
+        if self.steps == 0:  # commit the way round and the terminal point
+            self.direction = counter_orbit_direction(own[:2], point, obstacle)
+            self.phi_acc = phi
+            self.phi_target = phi + self.direction * 2.0 * np.pi
+        else:
+            self.phi_acc = unwrap_angle(self.phi_acc, phi)
+        goal, remaining = counter_orbit_goal(
+            obstacle,
+            env.cfg.agent_radius,
+            self.phi_acc,
+            self.direction,
+            self.phi_target,
+        )
+        self.last_goal = goal
+        self.last_remaining = remaining
+        # `CounterOrbit.act`'s steering, verbatim: direct when the line to the
+        # waypoint is clear, else the planned lookahead point.
+        steer_at = goal
+        if not self.law.is_clear(own[:2], goal):
+            path = self.law.plan(own[:2], goal)
+            if path is None:
+                self.law.n_unreachable += 1
+            else:
+                step_to = self.law.lookahead_point(path)
+                if float(np.hypot(*(step_to - own[:2]))) >= 1e-9:
+                    steer_at = step_to
+        self.last_steer_point = steer_at
+        self.steps += 1
+        return self.law._steer_at(own, steer_at)
 
 
 # ------------------------------------------------------------------ adapters

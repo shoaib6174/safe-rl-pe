@@ -73,57 +73,107 @@ from pe2.config import EnvConfig
 from pe2.obs import opponent_world_from_obs, own_pose_from_obs
 from pe2.recogniser import FEATURES, PURSUER_TACTICS, tactic_family
 from pe2.scripted import LAST_SEEN_TOL
-from pe2.selectors import DECISION_PERIOD, _nearest_obstacle, _surface_distances
+from pe2.selectors import (
+    DECISION_PERIOD,
+    _Capped,
+    _nearest_obstacle,
+    _surface_distances,
+)
 from pe2.structured import OrbitSearch
 from pe2.tactics import AMBUSH_CLOSE
+from pe2.tactics import OrbitSearch as OrbitSearchTactic
 
 PREREG = "docs/pathway/tactics_prereg_s24_1_2026-10-13.md"
 
 # The action space, in the prereg's order. Imported, not restated: the
 # recogniser's pursuer label space IS this list.
-ACTIONS = PURSUER_TACTICS  # ("INTERCEPT", "LEAD", "COUNTER-ORBIT", "AMBUSH", "SWEEP")
-N_ACTIONS = len(ACTIONS)
+#
+# S24-OS: the library is now a FLAG. `v0` is the five tactics of S24.1, the
+# object `PURSUER_TACTICS` itself, so every frozen artefact replays bit for bit;
+# `v1` adds S24-OS's `ORBIT-SEARCH` as a sixth action. The recogniser's label
+# space is NOT extended (that is the recogniser's own, D147/D148): the selector
+# stops aliasing it and takes it as `v0`'s value instead.
+LIBRARIES: dict[str, tuple[str, ...]] = {
+    "v0": PURSUER_TACTICS,  # ("INTERCEPT", "LEAD", "COUNTER-ORBIT", "AMBUSH", "SWEEP")
+    "v1": PURSUER_TACTICS + ("ORBIT-SEARCH",),
+}
+DEFAULT_LIBRARY = "v0"
 N_OBSTACLE_SLOTS = 2  # "the nearest two obstacles" (prereg section 3)
 N_LAST_TACTICS = 3  # "one-hot of own last 3 tactics"
 AGE_SCALE = 100.0  # `BELIEF_FRESH_STEPS`: the horizon SWEEP will steer at
 
-# The observation layout, block by block: (name, width, in_memory_block).
-# `in_memory_block` is what the NOMEM control zeroes (prereg section 3: "the
-# memory block (dead-reckoning, own history, opponent features) zeroed"); the
-# block POSITIONS stay, so the two arms have an identical policy shape.
-OBS_LAYOUT: tuple[tuple[str, int, bool], ...] = (
-    ("visible", 1, False),  # obs[6]
-    ("evader_range_bearing", 2, False),  # range / half, bearing / pi; 0,0 unseen
-    ("dead_reckoning", 3, True),  # body-frame xy / arena, age / AGE_SCALE
-    ("own_pose", 4, False),  # x / half, y / half, cos theta, sin theta
-    ("obstacles", 3 * N_OBSTACLE_SLOTS, False),  # surface dist / half, bearing / pi, radius / r_max
-    ("wall", 1, False),  # nearest-wall distance / half
-    ("features", len(FEATURES) + 1, True),  # FEATURES order, then `valid`
-    ("current_tactic", N_ACTIONS + 1, True),  # one-hot, then time-in-tactic / T
-    ("last_tactics", N_ACTIONS * N_LAST_TACTICS, True),  # most recent first
-    ("speed_ratio", 1, False),
-    # A1.1: `SearchMDP.shield_features()` — the last executed step's
-    # intervention flag, min clearance clipped to [-0.5, 2] m, stall run /
-    # `DEADLOCK_STEPS` (= 40) clipped to [0, 2]. Observable, not memory
-    # (D113/D131: these are what let a learner recover the shield's cost).
-    ("shield", 3, False),
-    # A1.1: `SearchMDP.escape_features()` — the admissible omega range at
-    # v = 0 at the CURRENT true pose, over omega_max, clipped to [-1, 1].
-    ("escape", 2, False),
-)
-OBS_LEN = sum(width for _name, width, _mem in OBS_LAYOUT)
+
+def _obs_layout(n_actions: int) -> tuple[tuple[str, int, bool], ...]:
+    """The observation layout, block by block: (name, width, in_memory_block).
+
+    `in_memory_block` is what the NOMEM control zeroes (prereg section 3: "the
+    memory block (dead-reckoning, own history, opponent features) zeroed"); the
+    block POSITIONS stay, so the two arms have an identical policy shape.
+
+    Only the two one-hot blocks are a function of the library's size, so the
+    layout is the same function of `n_actions` for every library and v1 is
+    `OBS_LEN` 55 + 1 + 3 = 59.
+    """
+    return (
+        ("visible", 1, False),  # obs[6]
+        ("evader_range_bearing", 2, False),  # range / half, bearing / pi; 0,0 unseen
+        ("dead_reckoning", 3, True),  # body-frame xy / arena, age / AGE_SCALE
+        ("own_pose", 4, False),  # x / half, y / half, cos theta, sin theta
+        ("obstacles", 3 * N_OBSTACLE_SLOTS, False),  # surface dist / half, bearing / pi, radius / r_max
+        ("wall", 1, False),  # nearest-wall distance / half
+        ("features", len(FEATURES) + 1, True),  # FEATURES order, then `valid`
+        ("current_tactic", n_actions + 1, True),  # one-hot, then time-in-tactic / T
+        ("last_tactics", n_actions * N_LAST_TACTICS, True),  # most recent first
+        ("speed_ratio", 1, False),
+        # A1.1: `SearchMDP.shield_features()` — the last executed step's
+        # intervention flag, min clearance clipped to [-0.5, 2] m, stall run /
+        # `DEADLOCK_STEPS` (= 40) clipped to [0, 2]. Observable, not memory
+        # (D113/D131: these are what let a learner recover the shield's cost).
+        ("shield", 3, False),
+        # A1.1: `SearchMDP.escape_features()` — the admissible omega range at
+        # v = 0 at the CURRENT true pose, over omega_max, clipped to [-1, 1].
+        ("escape", 2, False),
+    )
 
 
-def _block_slices() -> dict[str, slice]:
+def _block_slices(obs_layout: tuple[tuple[str, int, bool], ...]) -> dict[str, slice]:
     out, start = {}, 0
-    for name, width, _mem in OBS_LAYOUT:
+    for name, width, _mem in obs_layout:
         out[name] = slice(start, start + width)
         start += width
     return out
 
 
-OBS_SLICES = _block_slices()
-MEMORY_SLICES = tuple(OBS_SLICES[name] for name, _w, mem in OBS_LAYOUT if mem)
+def layout(library: str = DEFAULT_LIBRARY):
+    """`(ACTIONS, N_ACTIONS, OBS_LAYOUT, OBS_SLICES, MEMORY_SLICES, OBS_LEN)`
+    for one library — the six names the module exported as constants, which
+    stay bound to `v0`'s values so every existing import is untouched."""
+    if library not in LIBRARIES:
+        raise ValueError(
+            f"unknown tactic library {library!r}; the choices are "
+            f"{sorted(LIBRARIES)}"
+        )
+    actions = LIBRARIES[library]
+    obs_layout = _obs_layout(len(actions))
+    slices = _block_slices(obs_layout)
+    return (
+        actions,
+        len(actions),
+        obs_layout,
+        slices,
+        tuple(slices[name] for name, _w, mem in obs_layout if mem),
+        sum(width for _name, width, _mem in obs_layout),
+    )
+
+
+def obs_len_for(library: str = DEFAULT_LIBRARY) -> int:
+    """This library's observation width (55 for v0, 59 for v1)."""
+    return layout(library)[5]
+
+
+# The v0 values, under the names S24.1's trainers, gates, tests and
+# `pe2/flat_mdp.py` already import. `ACTIONS is PURSUER_TACTICS` still holds.
+ACTIONS, N_ACTIONS, OBS_LAYOUT, OBS_SLICES, MEMORY_SLICES, OBS_LEN = layout()
 
 
 def done_on_entry(tactic, obs, env, cfg: EnvConfig) -> bool:
@@ -150,6 +200,11 @@ def done_on_entry(tactic, obs, env, cfg: EnvConfig) -> bool:
       on entry while applicable (its DONE needs a clear line to the evader,
       its precondition needs obstacle k to block that line, and both inflate
       the disc by `agent_radius` with the planner's MARGIN at 0).
+    - `ORBIT-SEARCH` (library v1) is DONE when the evader is visible, like
+      `SWEEP` and for the same reason; its other two DONE branches (the step
+      cap, an empty belief) are excluded by its own `applicable()`, which the
+      mask consults beside this. The clause is inert under v0, where no action
+      resolves to that family.
     """
     name = tactic_family(tactic.name)
     visible = bool(obs[6] > 0.5)
@@ -165,6 +220,8 @@ def done_on_entry(tactic, obs, env, cfg: EnvConfig) -> bool:
         own = np.asarray(env.pursuer_pose, dtype=float)
         evader = np.asarray(env.evader_pose, dtype=float)
         return visible and float(np.hypot(*(evader[:2] - own[:2]))) <= AMBUSH_CLOSE
+    if name == "ORBIT-SEARCH":
+        return visible
     return False
 
 
@@ -229,6 +286,14 @@ class SelectorMDP(gym.Env):
     steps as in every prior round. `inapplicable_picks` is CG-T1's counter and
     must stay 0; an inapplicable action also raises, because the mask makes it
     impossible by construction rather than caught afterwards.
+
+    S24-OS: `library` picks the action list (`LIBRARIES`). `v0` is S24.1's five
+    tactics and is the default, so every frozen artefact replays through this
+    class unchanged (CG-O1); `v1` adds `ORBIT-SEARCH(k)` as a sixth action,
+    whose instances are built HERE and registered in the game's own tactic list
+    so `reset` resets them. The library is a per-instance property —
+    `self.actions`, `self.n_actions`, `self.obs_slices`, `self.memory_slices`,
+    `self.obs_len` — and the module constants stay v0's.
     """
 
     metadata = {"render_modes": []}  # noqa: RUF012 — gym's own mutable field
@@ -242,10 +307,20 @@ class SelectorMDP(gym.Env):
         recorder: bool = False,
         label: str = "",
         cfg: EnvConfig | None = None,
+        library: str = DEFAULT_LIBRARY,
     ) -> None:
         super().__init__()
         self.cfg = EnvConfig(evader_speed_ratio=float(speed_ratio)) if cfg is None else cfg
         self.memory = bool(memory)
+        self.library = str(library)
+        (
+            self.actions,
+            self.n_actions,
+            self.obs_layout,
+            self.obs_slices,
+            self.memory_slices,
+            self.obs_len,
+        ) = layout(self.library)
         game_module = _game_module()
         self.game, self.rules = game_module.build_game(
             self.cfg, recorder=recorder, label=label
@@ -254,11 +329,29 @@ class SelectorMDP(gym.Env):
         self.game.law.select = self._select  # the ONE replaced field
         self.pursuer = self.rules["pursuer"]
         self._search = OrbitSearch(self.cfg)
-        self.action_space = spaces.Discrete(N_ACTIONS)
+        # S24-OS: the library's tactics that are NOT `PursuerRulesV0`'s. The
+        # v0 five stay the rule table's own instances (so the library the
+        # learner chooses from is bit-for-bit the one the baseline chose from);
+        # v1's sixth is built here and appended to the game's law tactic list,
+        # which is what `TacticLaw._reset_common` resets per episode. `SWEEP`'s
+        # belief is handed to it by REFERENCE, the one the memory owns.
+        self.rules_extra: dict[str, list] = {}
+        if "ORBIT-SEARCH" in self.actions:
+            searches = [
+                _Capped(
+                    OrbitSearchTactic(
+                        self.cfg, k, belief=self.pursuer.memory.belief
+                    )
+                )
+                for k in range(self.cfg.n_obstacles)
+            ]
+            self.rules_extra["orbit_search"] = searches
+            self.game.law.tactics.extend(searches)
+        self.action_space = spaces.Discrete(self.n_actions)
         # A bound, not a normalisation claim: a body-frame range over the half
         # arena reaches 2.83 and the recogniser clips its trends at 3.0.
         self.observation_space = spaces.Box(
-            low=-10.0, high=10.0, shape=(OBS_LEN,), dtype=np.float32
+            low=-10.0, high=10.0, shape=(self.obs_len,), dtype=np.float32
         )
         self.inapplicable_picks = 0
         self.n_decisions = 0
@@ -298,13 +391,22 @@ class SelectorMDP(gym.Env):
         return np.asarray(self.game.inner.env.pursuer_pose, dtype=float)[:2]
 
     def _candidates(self, obs) -> list:
-        """The five tactics this decision's actions resolve to, in `ACTIONS`
-        order; None where the family has no instance (no obstacles)."""
+        """The tactics this decision's actions resolve to, in `self.actions`
+        order; None where the family has no instance (no obstacles).
+
+        S24-OS: `ORBIT-SEARCH` resolves per obstacle like the other two
+        families and off the SAME k, the obstacle nearest the evader's position
+        estimate (reading 1). Under v0 the list is S24.1's five, unchanged.
+        """
         rules, env = self.pursuer, self.game.inner.env
         k = _nearest_obstacle(self._estimate_xy(obs), env.obstacles)
         flank = None if k is None or k >= len(rules.counter_orbits) else rules.counter_orbits[k]
         trap = None if k is None or k >= len(rules.ambushes) else rules.ambushes[k]
-        return [rules.intercept, rules.lead, flank, trap, rules.sweep]
+        out = [rules.intercept, rules.lead, flank, trap, rules.sweep]
+        if "ORBIT-SEARCH" in self.actions:
+            searches = self.rules_extra["orbit_search"]
+            out.append(None if k is None or k >= len(searches) else searches[k])
+        return out
 
     def action_masks(self) -> np.ndarray:
         """`applicable()` of the tactic each action resolves to, at this
@@ -319,11 +421,11 @@ class SelectorMDP(gym.Env):
         """
         obs, env = self._obs_raw, self.game.inner.env
         visible = bool(obs[6] > 0.5)
-        mask = np.zeros(N_ACTIONS, dtype=bool)
+        mask = np.zeros(self.n_actions, dtype=bool)
         for i, tactic in enumerate(self._candidates(obs)):
             if tactic is None:
                 continue
-            if ACTIONS[i] == "COUNTER-ORBIT" and not visible:
+            if self.actions[i] == "COUNTER-ORBIT" and not visible:
                 continue
             if done_on_entry(tactic, obs, env, self.cfg):  # A2.1
                 continue
@@ -349,12 +451,13 @@ class SelectorMDP(gym.Env):
         cfg, env = self.cfg, self.game.inner.env
         half = cfg.arena_size / 2.0
         own = np.asarray(env.pursuer_pose, dtype=float)
-        out = np.zeros(OBS_LEN, dtype=np.float32)
+        slices = self.obs_slices
+        out = np.zeros(self.obs_len, dtype=np.float32)
         visible = float(obs[6] > 0.5)
-        out[OBS_SLICES["visible"]] = visible
+        out[slices["visible"]] = visible
         if visible:
             dx_b, dy_b = float(obs[3]) * cfg.arena_size, float(obs[4]) * cfg.arena_size
-            out[OBS_SLICES["evader_range_bearing"]] = (
+            out[slices["evader_range_bearing"]] = (
                 float(np.hypot(dx_b, dy_b)) / half,
                 float(np.arctan2(dy_b, dx_b)) / np.pi,
             )
@@ -362,18 +465,18 @@ class SelectorMDP(gym.Env):
         if point is not None:
             d = np.asarray(point, dtype=float)[:2] - own[:2]
             c, s = np.cos(own[2]), np.sin(own[2])
-            out[OBS_SLICES["dead_reckoning"]] = (
+            out[slices["dead_reckoning"]] = (
                 float(c * d[0] + s * d[1]) / cfg.arena_size,
                 float(-s * d[0] + c * d[1]) / cfg.arena_size,
                 float(np.clip((0 if age is None else age) / AGE_SCALE, 0.0, 1.0)),
             )
-        out[OBS_SLICES["own_pose"]] = (
+        out[slices["own_pose"]] = (
             own[0] / half,
             own[1] / half,
             float(np.cos(own[2])),
             float(np.sin(own[2])),
         )
-        start = OBS_SLICES["obstacles"].start
+        start = slices["obstacles"].start
         order = np.argsort(_surface_distances(own, env.obstacles))
         for slot, j in enumerate(order[:N_OBSTACLE_SLOTS]):
             o = env.obstacles[int(j)]
@@ -384,27 +487,27 @@ class SelectorMDP(gym.Env):
                 float(np.arctan2(-s * d[0] + c * d[1], c * d[0] + s * d[1])) / np.pi,
                 float(o["radius"]) / cfg.obstacle_radius_max,
             )
-        out[OBS_SLICES["wall"]] = (half - max(abs(own[0]), abs(own[1]))) / half
+        out[slices["wall"]] = (half - max(abs(own[0]), abs(own[1]))) / half
         f = self.pursuer.memory.features()
-        out[OBS_SLICES["features"]] = [*(float(f[k]) for k in FEATURES), float(f["valid"])]
+        out[slices["features"]] = [*(float(f[k]) for k in FEATURES), float(f["valid"])]
         spans = self._spans()
         if spans[0] is not None:
             family, length = spans[0]
-            out[OBS_SLICES["current_tactic"].start + ACTIONS.index(family)] = 1.0
-            out[OBS_SLICES["current_tactic"].stop - 1] = float(
+            out[slices["current_tactic"].start + self.actions.index(family)] = 1.0
+            out[slices["current_tactic"].stop - 1] = float(
                 np.clip(length / DECISION_PERIOD, 0.0, 1.0)
             )
-        start = OBS_SLICES["last_tactics"].start
+        start = slices["last_tactics"].start
         for back, span in enumerate(spans[1:]):
             if span is not None:
-                out[start + N_ACTIONS * back + ACTIONS.index(span[0])] = 1.0
-        out[OBS_SLICES["speed_ratio"]] = float(cfg.evader_speed_ratio)
+                out[start + self.n_actions * back + self.actions.index(span[0])] = 1.0
+        out[slices["speed_ratio"]] = float(cfg.evader_speed_ratio)
         # A1.1: read off the game's own `SearchMDP` methods, so the definitions
         # and the clipping are S16/S17's and not a second copy of them.
-        out[OBS_SLICES["shield"]] = self.game.shield_features()
-        out[OBS_SLICES["escape"]] = self.game.escape_features()
+        out[slices["shield"]] = self.game.shield_features()
+        out[slices["escape"]] = self.game.escape_features()
         if not self.memory:  # A1.1: the five new entries are NOT memory
-            for block in MEMORY_SLICES:
+            for block in self.memory_slices:
                 out[block] = 0.0
         return out
 
@@ -455,14 +558,14 @@ class SelectorMDP(gym.Env):
         if not mask[index]:
             self.inapplicable_picks += 1  # CG-T1: counted, then refused
             raise AssertionError(
-                f"action {index} ({ACTIONS[index]}) is not applicable at this "
+                f"action {index} ({self.actions[index]}) is not applicable at this "
                 f"decision (mask {mask.astype(int).tolist()}); CG-T1 requires "
                 "the mask to make an inapplicable pick impossible"
             )
         self._pending = self._candidates(self._obs_raw)[index]
         self._span_steps = 0
         self.n_decisions += 1
-        self.picks[ACTIONS[index]] += 1
+        self.picks[self.actions[index]] += 1
         # A2.4: the span bookkeeping `SearchMDP.step` /
         # `BranchTaggedSearchMDP.step` do, which this env bypasses by driving
         # `_step_inner` itself. Without it every step record reads

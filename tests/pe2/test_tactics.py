@@ -49,6 +49,8 @@ from pe2.tactics import (
     ARRIVAL_TOL,
     COUNTER_ORBIT_CLOSE,
     COUNTER_ORBIT_MAX_STEPS,
+    ORBIT_SEARCH_MAX_STEPS,
+    ORBIT_SEARCH_RANGE,
     Ambush,
     CounterOrbit,
     Flee,
@@ -70,7 +72,13 @@ from pe2.tactics import (
     hug_radius,
     obstacle_between,
     round_robin,
+    surface_distance,
 )
+
+# S24-OS: `pe2.tactics.OrbitSearch` is the ORBIT-SEARCH(k) TACTIC; the bare
+# name above is `pe2.structured`'s search POLICY, which the wrapped-primitive
+# checks of `SWEEP` are written against.
+from pe2.tactics import OrbitSearch as OrbitSearchTactic
 
 CFG = EnvConfig()
 CONSTRUCT_SEED0 = 2_190_000  # the round's construct stream (plan section 5)
@@ -931,3 +939,259 @@ class TestAdapters:
         assert tactic.steps == 0 and law.steps == 0
         # the wrapped law's memory of the world survives the switch
         assert law.law.last_seen is seen_before
+
+
+# ------------------------------------------------------------- ORBIT-SEARCH
+# S24-OS construct gate CG-O2 (`tactics_prereg_s24_os_2026-10-17.md` section
+# 2): on 10 constructed states — the evader hidden behind obstacle k, the
+# belief point at its true last-seen position, the pursuer on the far side —
+# `ORBIT-SEARCH(k)` regains line of sight within `ORBIT_SEARCH_MAX_STEPS` in
+# >= 8/10 with the evader held still, and it is DONE on entry whenever visible.
+ORBIT_SEARCH_SEED0 = CONSTRUCT_SEED0 + 7000
+CG_O2_N = 10
+CG_O2_MIN = 8
+
+
+class _PointBelief:
+    """`LastSeenBelief`'s read interface, with the point set by hand.
+
+    The tactic takes the belief by reference and reads `seen` and `mean` only,
+    so the constructed state can place the point where the prereg says it is
+    (the evader's true last-seen position) without running an episode to get
+    one there. `t_since_seen` is carried because the real object has it; this
+    tactic, unlike `SWEEP`, does not consult the age."""
+
+    def __init__(self, xy=None, age: int = 40) -> None:
+        self.seen = xy is not None
+        self.mean = np.zeros(2) if xy is None else np.asarray(xy, dtype=float)
+        self.t_since_seen = None if xy is None else int(age)
+
+
+class _NoTruthEnv:
+    """The env with `evader_pose` POISONED: reading it raises.
+
+    ORBIT-SEARCH is the library's first memory-based tactic, so "reads no
+    truth" is enforced rather than reviewed. Everything else is forwarded, so
+    the pursuer's own pose, the static map and `cfg` are the real env's."""
+
+    def __init__(self, env) -> None:
+        self._env = env
+
+    def __getattr__(self, attr):
+        return getattr(self._env, attr)
+
+    @property
+    def evader_pose(self):
+        raise AssertionError("ORBIT-SEARCH read env.evader_pose")
+
+
+def _behind_obstacle(seed: int, angle: float, gap: float):
+    """One CG-O2 state: the evader on obstacle k's hug circle at `angle`, the
+    pursuer `gap` metres off that circle diametrically opposite and facing the
+    obstacle's centre, so the disc is between the two and the evader would be
+    inside the +-45 deg FOV if it were not occluded.
+
+    k is the obstacle nearest the arena centre — the one with room to be
+    circled. Returns `(env, obs, k, belief)` with the belief point ON the
+    evader, which is the prereg's "its true last-seen position"."""
+    env, _obs = _start(seed)
+    k = int(np.argmin([float(np.hypot(o["x"], o["y"])) for o in env.obstacles]))
+    obstacle = env.obstacles[k]
+    centre = np.array([obstacle["x"], obstacle["y"]], dtype=float)
+    hug = hug_radius(obstacle, CFG.agent_radius)
+    unit = np.array([np.cos(angle), np.sin(angle)])
+    env.evader_pose[:] = (*(centre + hug * unit), angle)
+    own = centre - (hug + gap) * unit
+    toward = centre - own
+    env.pursuer_pose[:] = (*own, float(np.arctan2(toward[1], toward[0])))
+    return env, env._get_obs(), k, _PointBelief(env.evader_pose[:2])
+
+
+def _in_front_of_obstacle(seed: int, angle: float, gap: float):
+    """The same scene with the pursuer on the evader's OWN side, so the line is
+    clear: the visible case ORBIT-SEARCH must refuse and be DONE on."""
+    env, _obs, k, belief = _behind_obstacle(seed, angle, gap)
+    obstacle = env.obstacles[k]
+    centre = np.array([obstacle["x"], obstacle["y"]], dtype=float)
+    hug = hug_radius(obstacle, CFG.agent_radius)
+    unit = np.array([np.cos(angle), np.sin(angle)])
+    own = centre + (hug + gap) * unit
+    toward = centre - own
+    env.pursuer_pose[:] = (*own, float(np.arctan2(toward[1], toward[0])))
+    return env, env._get_obs(), k, belief
+
+
+def _cg_o2_states():
+    """The 10 states: a different obstacle map per state (its own construct
+    seed), a different bearing and a different standoff, so the gate is not one
+    rotationally symmetric scene counted ten times."""
+    for i in range(CG_O2_N):
+        yield (
+            ORBIT_SEARCH_SEED0 + 37 * i,
+            -np.pi + 2.0 * np.pi * i / CG_O2_N,
+            0.8 + 0.1 * i,
+        )
+
+
+def _far_from_every_obstacle(env) -> np.ndarray:
+    """An arena point whose SURFACE distance to every obstacle exceeds
+    `ORBIT_SEARCH_RANGE` — the corner that is farthest from all of them, picked
+    off the map rather than hard-coded, because the map is seeded."""
+    lim = CFG.arena_size / 2.0 - CFG.agent_radius
+    corners = [np.array([sx * lim, sy * lim]) for sx in (-1.0, 1.0) for sy in (-1.0, 1.0)]
+    return max(corners, key=lambda p: min(surface_distance(p, o) for o in env.obstacles))
+
+
+class TestOrbitSearch:
+    def test_cg_o2_regains_line_of_sight_on_at_least_eight_of_ten_states(self):
+        regained, steps = [], []
+        for seed, angle, gap in _cg_o2_states():
+            env, obs, k, belief = _behind_obstacle(seed, angle, gap)
+            assert not _seen(env)  # by construction: the disc is in the way
+            tactic = OrbitSearchTactic(CFG, k, belief=belief)
+            tactic.reset(env)
+            assert tactic.applicable(obs["pursuer"], env)
+            evader = StationaryEvader()
+            evader.reset()
+            n = 0
+            for _obs in _drive_pursuer(
+                tactic, env, obs, evader, ORBIT_SEARCH_MAX_STEPS
+            ):
+                n += 1
+            regained.append(_seen(env))
+            steps.append(n)
+        print(
+            f"\nCG-O2: LOS regained on {sum(regained)}/{CG_O2_N} states; "
+            f"span lengths {steps}"
+        )
+        assert all(n <= ORBIT_SEARCH_MAX_STEPS for n in steps)
+        assert sum(regained) >= CG_O2_MIN
+
+    def test_orbit_search_is_done_on_entry_whenever_the_evader_is_visible(self):
+        checked = 0
+        for seed, angle, gap in _cg_o2_states():
+            env, obs, k, belief = _in_front_of_obstacle(seed, angle, gap)
+            if not _seen(env):
+                continue  # the scene did not come out visible; not a case
+            tactic = OrbitSearchTactic(CFG, k, belief=belief)
+            tactic.reset(env)
+            assert not tactic.applicable(obs["pursuer"], env)
+            assert tactic.act(obs["pursuer"]) is None
+            checked += 1
+        assert checked >= 5
+
+    def test_applicable_needs_a_hidden_evader_a_belief_point_and_a_near_point(
+        self,
+    ):
+        env, obs, k, belief = _behind_obstacle(*next(iter(_cg_o2_states())))
+        tactic = OrbitSearchTactic(CFG, k, belief=belief)
+        tactic.reset(env)
+        assert tactic.applicable(obs["pursuer"], env)
+        # 1. visible: the observation's own flag, nothing else changed
+        visible = np.array(obs["pursuer"], dtype=float)
+        visible[6] = 1.0
+        assert not tactic.applicable(visible, env)
+        # 2. no belief point at all (never seen this episode)
+        assert not OrbitSearchTactic(CFG, k, belief=_PointBelief()).applicable(
+            obs["pursuer"], env
+        )
+        assert not OrbitSearchTactic(CFG, k, belief=None).applicable(
+            obs["pursuer"], env
+        )
+        # 3. a point farther than ORBIT_SEARCH_RANGE from EVERY obstacle: there
+        #    is nothing it could be hiding behind, so no obstacle to go round.
+        far = _far_from_every_obstacle(env)
+        assert min(surface_distance(far, o) for o in env.obstacles) > ORBIT_SEARCH_RANGE
+        for j in range(len(env.obstacles)):
+            search = OrbitSearchTactic(CFG, j, belief=_PointBelief(far))
+            search.reset(env)
+            assert not search.applicable(obs["pursuer"], env)
+        # ... and k must be the NEAREST obstacle to the point, not merely one
+        #     within range: the other obstacle's instance is not applicable.
+        for j in range(len(env.obstacles)):
+            search = OrbitSearchTactic(CFG, j, belief=belief)
+            search.reset(env)
+            assert search.applicable(obs["pursuer"], env) == (j == k)
+
+    def test_orbit_search_never_reads_the_evaders_pose(self):
+        """The poison is shown to BITE first (`COUNTER-ORBIT`, whose
+        precondition is truth by design), so a pass means the probe works."""
+        env, obs, k, belief = _behind_obstacle(*next(iter(_cg_o2_states())))
+        poisoned = _NoTruthEnv(env)
+        flank = CounterOrbit(CFG, k)
+        flank.reset(poisoned)
+        with pytest.raises(AssertionError):
+            flank.applicable(obs["pursuer"], poisoned)
+        tactic = OrbitSearchTactic(CFG, k, belief=belief)
+        tactic.reset(poisoned)
+        assert tactic.applicable(obs["pursuer"], poisoned)
+        n = 0
+        for _ in range(ORBIT_SEARCH_MAX_STEPS):
+            action = tactic.act(obs["pursuer"])
+            if action is None:
+                break
+            v_p, w_p = _unscale_pursuer(action, CFG)
+            obs, _r, terminated, truncated, _i = env.step([v_p, w_p, 0.0, 0.0])
+            n += 1
+            if terminated or truncated:
+                break
+        assert n >= 20  # a span long enough for the branch to have been taken
+
+    def test_the_span_commits_one_way_round_and_aims_a_full_turn_on(self):
+        env, obs, k, belief = _behind_obstacle(*next(iter(_cg_o2_states())))
+        tactic = OrbitSearchTactic(CFG, k, belief=belief)
+        tactic.reset(env)
+        assert tactic.direction == 0.0  # nothing committed before the span
+        tactic.act(obs["pursuer"])
+        direction, target = tactic.direction, tactic.phi_target
+        assert abs(direction) == 1.0
+        assert direction == counter_orbit_direction(
+            env.pursuer_pose[:2], belief.mean, env.obstacles[k]
+        )
+        # a FULL turn, where COUNTER-ORBIT aims at the antipode
+        assert tactic.last_remaining == pytest.approx(2.0 * np.pi)
+        evader = StationaryEvader()
+        evader.reset()
+        for _obs in _drive_pursuer(tactic, env, obs, evader, 30):
+            assert tactic.direction == direction  # held, never recomputed
+            assert tactic.phi_target == target
+            assert tactic.last_goal is not None
+        assert tactic.last_remaining < 2.0 * np.pi  # the arc actually shrank
+        # the waypoint rides obstacle k's hug circle
+        centre = np.array([env.obstacles[k]["x"], env.obstacles[k]["y"]])
+        assert float(np.hypot(*(tactic.last_goal - centre))) == pytest.approx(
+            hug_radius(env.obstacles[k], CFG.agent_radius)
+        )
+
+    def test_the_step_cap_ends_the_span(self):
+        """DONE at `ORBIT_SEARCH_MAX_STEPS` even with the evader still hidden
+        and the precondition still holding, and `enter` re-arms the span."""
+        env, obs, k, belief = _behind_obstacle(*next(iter(_cg_o2_states())))
+        tactic = OrbitSearchTactic(CFG, k, belief=belief)
+        tactic.reset(env)
+        tactic.steps = ORBIT_SEARCH_MAX_STEPS
+        assert tactic.act(obs["pursuer"]) is None
+        tactic.enter()  # a new span re-arms it and re-chooses the way round
+        assert tactic.steps == 0 and tactic.direction == 0.0
+        assert tactic.act(obs["pursuer"]) is not None
+
+    def test_the_name_carries_the_obstacle_and_the_constants_are_the_prereg(self):
+        assert OrbitSearchTactic(CFG, 1).name == "ORBIT-SEARCH(1)"
+        assert (ORBIT_SEARCH_RANGE, ORBIT_SEARCH_MAX_STEPS) == (2.0, 200)
+        assert issubclass(OrbitSearchTactic, PursuerTactic)
+        # the belief is kept by REFERENCE, as `Sweep` keeps it
+        belief = _PointBelief((0.0, 0.0))
+        assert OrbitSearchTactic(CFG, 0, belief=belief).belief is belief
+
+    def test_pursuer_rules_v0_does_not_offer_orbit_search(self):
+        """The v0 rule table is UNCHANGED by S24-OS: the new tactic enters
+        through the learned selector's library flag and nowhere else."""
+        from pe2.selectors import PursuerRulesV0
+
+        rules = PursuerRulesV0(CFG)
+        assert not any(
+            isinstance(getattr(t, "inner", t), OrbitSearchTactic)
+            for t in rules.tactics
+        )
+        assert not any("ORBIT-SEARCH" in t.name for t in rules.tactics)
+
