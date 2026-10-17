@@ -52,3 +52,15 @@ alternation converged; a mixed one with cyclic support is the arms race, itself 
 E.1 opus ≈ 250 k; E.2 sonnet 150 k + opus review 110 k; E.3 sonnet 80 k; E.4 sonnet 100 k; fixes ≈ 100 k →
 ≈ 0.80–0.90 M. With ≈ 0.85 M available before the 5.4 M hard stop and S24-OS first (≈ 0.54 M), **the
 hard stop falls inside stage 1**; I stop there and report unless the budget is raised.
+
+## Amendment A1 (2026-10-17, before any S24.2 code)
+- **A1.1 reward:** the evader's span reward is the NEGATIVE of the pursuer's reward exactly as the game emits it
+  (terminal ±1 and the game's 0.2 acquisition term, `r_acq`), summed over the span — pure zero-sum, no second
+  reward definition. §1's "−(terminal ±1)" is replaced by this.
+- **A1.2 pursuer seats in the mixture:** `RULES-V0` = the game's default `TacticLaw` select; `LEAD-1.0` =
+  `fixed(rules["pursuer"].lead)` exactly as the S24.1 gate's BASELINE row; learned = a frozen MaskablePPO
+  checkpoint driven through `SelectorMDP`'s own `_observe`/`action_masks`/`_candidates` (library per checkpoint).
+- **A1.3 decision mechanics:** the evader is consulted BEFORE the env step (the shield mutates state before the
+  wrapper reaches the opponent, so a mid-step exception is not an option); its computed action is handed to the
+  wrapper through a one-shot proxy; the pursuer's action for a step is computed once and held across an evader
+  decision point. CG-E1's replay identity is the test of all of this.
