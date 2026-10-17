@@ -44,3 +44,16 @@ zero-shot `SEL-s` rows of `s24_3zs_cells`. Records under `results/derisk/s24_os_
 
 ## 5. Budget
 O.1 opus ≈ 220 k, O.2 sonnet ≈ 150 k + opus review ≈ 110 k, fixes ≤ 2 rounds sonnet ≈ 60 k → ≈ 0.54 M.
+
+## Amendment A1 (2026-10-17, CG-O3 watched BEFORE `--summarize`; no rate seen)
+18 GIFs watched as contact sheets (pursuer RED, evader BLUE, per `pe2/render.py::ROLE_STYLE`). Per-episode outcomes
+(not rates): 1 capture (SEL2-82 vs GREEDY seed 2 400 002 at step 207), 17 timeouts; the S24.1 selector's own GIFs on
+the same nine GREEDY seeds are 9/9 timeouts (frame counts), so these three seeds are hard hugging cases for both.
+Behaviour: `ORBIT-SEARCH(k)` is selected and executed as designed — after SWEEP loses the evader behind an obstacle
+the pursuer circles that obstacle (e.g. SEL2-80 vs GREEDY seeds 0 and 1; SEL2-81 vs GREEDY seed 1; SEL2-82 vs HUG seed 1);
+against an evader that keeps hugging, the orbit becomes a chase around the same obstacle with line of sight regained
+and lost repeatedly (the COUNTER-ORBIT standoff geometry, D112's hug exploitation of the shield margin). SEL2-82 vs HUG
+seed 2 re-selects AMBUSH(1) at the gap for most of the episode while the evader never leaves its obstacle. All
+scripted evaders behave per label; the arena, shield and obstacles are the S24.1 ones. **CG-O3 reading: PASS as a
+construct** — the new tactic is reachable, chosen and executed; its effect on captures is what H-OS-1/2/3 measure next,
+with no cut or re-run.
