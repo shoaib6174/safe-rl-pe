@@ -87,7 +87,12 @@ from pe2.selector_mdp import LIBRARIES, SelectorMDP, obs_len_for  # noqa: E402
 # --- imported from S24.1 and CALLED, not reimplemented ----------------------
 _write_json, _sha256 = T1._write_json, T1._sha256
 win_count = T1.win_count
-make_learner = T1.make_learner  # reads ARMS[arm]["seed"] and GAMMA only
+def make_learner(arm: str, env, device: str = "cpu"):
+    """S24.1's `make_learner`, CALLED with S24.1's arm name for the same seed:
+    its body resolves `ARMS` in S24.1's module (keys SEL-80..NOMEM-82), so this
+    round's names would raise KeyError there (review defect 1). Same seed,
+    same GAMMA, every other hyper-parameter the S24.1 default."""
+    return T1.make_learner(f"SEL-{ARMS[arm]['seed']}", env, device)
 _label_branch = T1._label_branch
 
 PREREG = "docs/pathway/tactics_prereg_s24_os_2026-10-17.md"
@@ -123,7 +128,11 @@ if TOTAL % EVERY:
 
 # Reading 1: the seed streams this round touches must be pairwise disjoint.
 _STREAMS: dict[str, set[int]] = {
-    "train": {s * 1000 + i for s in SEEDS for i in range(1000)},
+    # An upper bound on the episodes one arm consumes (3 M steps / a 100-step
+    # floor). Arms are independent, unpaired runs, so their streams may
+    # overlap EACH OTHER (review note 4); the claim tested here is that no
+    # training stream touches the gate or either probe stream.
+    "train": {s * 1000 + i for s in SEEDS for i in range(TOTAL // 100)},
     "s24_1_gate": set(range(2_400_000, 2_400_500)),
     "s24_1_probe": set(range(T1.PROBE_SEED0, T1.PROBE_SEED0 + T1.PROBE_N)),
     "os_probe": set(range(PROBE_SEED0, PROBE_SEED0 + PROBE_N)),

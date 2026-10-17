@@ -150,7 +150,12 @@ if S1.GATE_SEED0 != GATE_SEED0:
         f"S24.1's GATE_SEED0 is {S1.GATE_SEED0}, not {GATE_SEED0}; this round's "
         "gate stream must be the same one (brief: cross-checked at import)."
     )
-if S1.N_EPISODES != N_EPISODES or S1.P_GATE != P_GATE or Z.GATE_SEED0 != GATE_SEED0:
+if (
+    S1.N_EPISODES != N_EPISODES
+    or S1.P_GATE != P_GATE
+    or Z.GATE_SEED0 != GATE_SEED0
+    or Z.N_EPISODES != N_EPISODES
+):
     raise SystemExit(
         "S24.1's or S24.3-ZS's N, p-gate or stream differ from this round's; the "
         "comparator joins and the reused orchestration would disagree."
@@ -605,8 +610,12 @@ def h_os_1_seed(records: dict, comparators: dict, opponent: str, seed: int) -> d
         return {"verdict": "INCOMPLETE", "missing": missing, "row": row, "comparator": base, "opponent": opponent, "seed": seed}
     # the LOSING direction: does the comparator beat the row significantly?
     losing = paired_indicator_test(b["capture_ind"], a["capture_ind"], P_GATE)
-    delta = a["capture_rate"] - b["capture_rate"]  # row - comparator
-    passed = (not losing["pass"]) or (delta >= NI_MARGIN)
+    delta = a["capture_rate"] - b["capture_rate"]  # row - comparator (reported)
+    # The margin is compared on exact COUNTS: 175/500 - 190/500 is
+    # -0.030000000000000027 in binary floating point and would score a seed
+    # sitting exactly on the pre-registered margin as FAIL (review defect 2).
+    gap = int(sum(a["capture_ind"])) - int(sum(b["capture_ind"]))
+    passed = (not losing["pass"]) or (gap >= round(NI_MARGIN * N_EPISODES))
     return {
         "verdict": "PASS" if passed else "FAIL",
         "row": row, "comparator": base, "opponent": opponent, "seed": seed,
@@ -734,7 +743,9 @@ def _probe_training_evidence() -> dict:
                 (int(r["train_violations"]) for r in rows if "train_violations" in r),
                 default=None,
             ),
-            "probe_violations_total": sum(int(r.get("violations", 0)) for r in rows),
+            "probe_violations_total": sum(int(r["violations"]) for r in rows if "violations" in r),
+            # A3.1: a probe row without the counter is absent evidence (review note 5)
+            "probe_violations_absent": any("violations" not in r for r in rows),
         }
     offenders = sorted(
         a for a, b in train.items()
@@ -742,7 +753,7 @@ def _probe_training_evidence() -> dict:
     )
     missing = sorted(
         a for a, b in train.items()
-        if b["evidence_absent"] or b["train_violations_max"] is None
+        if b["evidence_absent"] or b["train_violations_max"] is None or b["probe_violations_absent"]
     )
     return {"arms": train, "offenders": offenders, "missing": missing}
 

@@ -523,6 +523,19 @@ class TestHOs1TwoBranchRule:
         assert b["losing_direction_significant"] is True
         assert b["verdict"] == "FAIL"
 
+    def test_exactly_on_the_margin_passes_and_one_past_it_fails(self):
+        # review defect 2: 175/500 - 190/500 is -0.030000000000000027 in
+        # floating point; the margin is decided on exact counts.
+        row_ind, comp_ind = _indicators(500, 175, 0, 15)  # row 175, comparator 190
+        records, comparators = _os1_fixture("GREEDY", 80, row_ind, comp_ind)
+        b = G.h_os_1_seed(records, comparators, "GREEDY", 80)
+        assert sum(row_ind) == 175 and sum(comp_ind) == 190
+        assert b["losing_direction_significant"] is True
+        assert b["verdict"] == "PASS"
+        row_ind, comp_ind = _indicators(500, 174, 0, 16)  # row 174, comparator 190
+        records, comparators = _os1_fixture("GREEDY", 80, row_ind, comp_ind)
+        assert G.h_os_1_seed(records, comparators, "GREEDY", 80)["verdict"] == "FAIL"
+
     def test_a_winning_row_always_passes(self):
         row_ind, comp_ind = _indicators(500, 0, 50, 0)  # row wins, not comparator
         records, comparators = _os1_fixture("GREEDY", 80, row_ind, comp_ind)
@@ -827,6 +840,11 @@ class TestSmoke:
         try:
             monkeypatch.setattr(TR, "ckpt_path", lambda arm, _tmp=tmp: _tmp / f"{arm}.zip")
             env = G.build_cell_env("SEL2-80_GREEDY")
+            # review defect 1: the trainer's make_learner must build a learner for
+            # THIS round's arm names (S24.1's ARMS table does not know them)
+            assert "SEL2-80" not in TR.T1.ARMS
+            built = TR.make_learner("SEL2-80", env, "cpu")
+            assert isinstance(built, MaskablePPO) and built.gamma == TR.GAMMA
             model = MaskablePPO(
                 "MlpPolicy", env, seed=80, gamma=0.99, n_steps=64, batch_size=32, verbose=0,
             )
