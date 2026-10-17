@@ -87,3 +87,14 @@ Revised estimate ≈ 0.9 M (the prereg's 0.5 M assumed pure derivatives; the fla
 - 2026-10-16 15:1x: all nine arms MEASURED at 3 M (no resume, CG-F1 ok, 0 violations in every probe row of both families). **Gate LAUNCHED** from `/home/niro-1/s24_flat_gate_worktree` (`d8b437d`), 4 chains (9/9/6/3), N = 500 from 2 400 000; launcher's H-SAFE precheck passed over 9 arms. Next: 27 records → `--gifs` (42) → WATCH → amendment → `--summarize` → D154.
 - 27 cells recorded (4 chains exited 0, no tracebacks; N = 500 from 2 400 000; spot-checked record: 0 contact steps, FLAT40 CG-F1 `assembly_diff [] / flat_hold 40 / game_hold 10`). No rate seen. `--gifs` (42) rendering; WATCH before `--summarize`.
 - **ROUND CLOSED (D154, 2026-10-16):** CG-F2 watched (A2) → `--summarize`: H-FLAT-1 PASS on FLAT and FLAT40 (9/9 cells each), H-FLAT-2 PASS (9/9), H-SAFE holds, CG-F1 and arm records clean. The selector beats flat (collapsed, ≤ 0.12 on 5/6 arms) and structured (0.31–0.47) on every cell. Worklog S130; tracker row 130. Running total **≈ 4.55 M / 6.0 M** (round close used my own steps only). Next: ORBIT-SEARCH(k) → S24.2 (prereg first) → write-up on the user's word.
+
+## S24-OS + S24.2 (2026-10-17) — user: "plan and do these"
+- Plan `orbit_search_s24_2_plan_2026-10-17.md`; preregs `tactics_prereg_s24_os_2026-10-17.md`, `tactics_prereg_s24_2_2026-10-17.md`. Available ≈ 0.85 M to the 5.4 M hard stop; S24-OS ≈ 0.54 M, S24.2 ≈ 0.9 M → hard stop inside S24.2 stage 1 (stated to the user).
+| Step | Deliverable | Model | Est. | Actual | Status |
+|---|---|---|---|---|---|
+| O.1 | OrbitSearch tactic + SelectorMDP library flag + CG-O1/CG-O2 tests | opus | 220 k | | dispatched |
+| O.2 | SEL2 trainer flag + 12-cell gate + launchers | sonnet / opus review | 260 k | | |
+| E.1 | EvaderSelectorMDP + CG-E1 | opus | 250 k | | |
+| E.2 | EVS trainer + 15-cell gate | sonnet / opus review | 260 k | | |
+| E.3 | SEL3 alternation | sonnet | 80 k | | |
+| E.4 | meta-game LP | sonnet | 100 k | | |
