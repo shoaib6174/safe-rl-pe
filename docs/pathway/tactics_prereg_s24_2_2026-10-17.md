@@ -105,3 +105,10 @@ reading: PASS as a construct**; H-EV-3's kill rule is read next from the summary
 addition read the probe files in the wrong shape (`rows` key), so every clean arm looked absent. Fixed in the summary code
 only (`dd2503f`); the 15 cell records and the 18 GIFs are untouched and were recorded under `4bda889`. The gate worktree is
 re-frozen at `dd2503f` for the summary. No number had been seen.
+
+## Amendment A5 (2026-10-18, before stage 2 trains and before the meta-game runs)
+- **A5.1 (E.4 definitions, fixed now):** capture payoff M (pursuer rows maximise, evader columns minimise); LP via
+  `derisk_s14_matrix.meta_game(minimise_rows=False)`; exploitability of a pure pursuer policy i = value − min_j M[i,j],
+  of a pure evader policy j = max_i M[i,j] − value; a "pure saddle" = both supports singletons; best responses are the
+  arg-min / arg-max of the row / column. Script `scripts/s24_2_meta_game.py` (written by me, 3 tests), report-only.
+- **A5.2:** `SEL3-best` = highest mean capture over the six stage-2 gate evaders, read from `s24_2b_round.json`.
