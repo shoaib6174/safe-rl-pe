@@ -89,3 +89,14 @@ hard stop falls inside stage 1**; I stop there and report unless the budget is r
 - **A3.4:** the trainer refuses to resume from an existing checkpoint (`SystemExit`): resumable-never, as A1.3's stop rule.
 - **A3.5:** a probe row without `violations` is absent evidence (A3.1 of S24.1); records carry `pursuer_spec` and the round JSON
   carries `rejected_records`. Code: `8b6a042`.
+
+## Amendment A4 (2026-10-18, CG-E2 watched BEFORE `--summarize`; no rate seen)
+18 GIFs watched as contact sheets (pursuer RED, evader BLUE). Per-episode outcomes (not rates): 18/18 timeouts; the scripted
+evader on the same three seeds was captured by SEL-81 3/3 (454/1003/661 steps) and by RULES-V0 2/3. Behaviour: the learned
+evader keeps a tight ORBIT of its nearest obstacle for most of each episode and switches to FLEE / HOLD-HIDDEN / HOP as the
+labels show (several tactics per episode, not one); the pursuer seats SWEEP, AMBUSH the gap, LEAD and COUNTER-ORBIT, lose line of
+sight behind the hugged obstacle and intervene with the shield at ≈ 0 m clearance beside it — the obstacle-hug exploitation of
+the shield margin (D112), now learned by the evader selector. The three evader seeds produce near-identical trajectories on the
+same episode seed (EVS-80/81/82 vs RULES-V0 seed 2 400 001 are visually the same), i.e. the seeds converged to the same policy
+under deterministic prediction. Evader tactics execute per label; arena, shield and pursuer seats are the S24.1 ones. **CG-E2
+reading: PASS as a construct**; H-EV-3's kill rule is read next from the summary, with no cut or re-run.
