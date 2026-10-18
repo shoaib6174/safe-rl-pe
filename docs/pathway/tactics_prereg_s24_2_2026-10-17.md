@@ -72,3 +72,8 @@ hard stop falls inside stage 1**; I stop there and report unless the budget is r
   counters (A2.4 bookkeeping), so a recorder's `span_intervention_total` under-counts in this env; no gated metric reads it.
 - **A2.3 (stated):** `HOP` resolves to the first applicable hop in `EvaderRulesV0`'s farthest-first order (its rule 2).
 - E.1: `6fdbb2e`; CG-E1 IDENTICAL (outcome, 454 steps, 0 violations, 13 pursuer spans, 55 evader spans); ≈ 335 env steps/s.
+- **A2.4 (§3/§4, after D155):** `SEL2` is excluded from the alternation and the meta-game (ORBIT-SEARCH was dropped);
+  the pursuer library is v0 throughout. Stage 3's matrix is pursuers {`RULES-V0`, `LEAD-1.0`, `SEL-81`, `SEL3-best`} ×
+  evaders {GREEDY, HUG, TACTIC-V0, `EVS-best`}; `EVS-best` / `SEL3-best` = the seed with the lowest / highest mean capture
+  over its stage's gate pursuers / evaders (a pre-stated rule, applied once). All 16 cells exist from stages 1–2 and S24.1
+  except none: no new cell is run for the meta-game.
