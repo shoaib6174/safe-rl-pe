@@ -77,3 +77,15 @@ hard stop falls inside stage 1**; I stop there and report unless the budget is r
   evaders {GREEDY, HUG, TACTIC-V0, `EVS-best`}; `EVS-best` / `SEL3-best` = the seed with the lowest / highest mean capture
   over its stage's gate pursuers / evaders (a pre-stated rule, applied once). All 16 cells exist from stages 1–2 and S24.1
   except none: no new cell is run for the meta-game.
+
+## Amendment A3 (2026-10-18, after the E.2 review, before any EVS arm trains or any number exists)
+- **A3.1 (labelling correction, no change to any test or pairing):** §2 called `RULES-V0` and `LEAD-1.0` "held-out"; they are
+  IN every arm's training mixture (A1.2). The genuinely held-out pursuer seats are `SEL-80` and `SEL-82`, met inside H-EV-1 by
+  `EVS-80` and `EVS-82` (same-seed pairing); `EVS-81`'s H-EV-1 seat is its training seat. H-EV-2 is therefore the
+  in-distribution scripted check and H-EV-1 carries the held-out claim for two of three seeds. The round's sentences say so.
+- **A3.2:** CG-T1 reads the three arms' probe rows (`train_inapplicable_picks`, `inapplicable_picks`; absence = offender) as
+  S24.1 did, not only the 15 cells. A frozen pursuer seat's refused pick raises (UNDETERMINED), so it cannot be silently counted.
+- **A3.3:** CG-E3's flag requires the SAME most-used tactic ≥ 0.95 in every cell of a seed (§1's "one tactic").
+- **A3.4:** the trainer refuses to resume from an existing checkpoint (`SystemExit`): resumable-never, as A1.3's stop rule.
+- **A3.5:** a probe row without `violations` is absent evidence (A3.1 of S24.1); records carry `pursuer_spec` and the round JSON
+  carries `rejected_records`. Code: `8b6a042`.
