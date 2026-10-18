@@ -272,6 +272,56 @@ class EvaderSelectorMDP(gym.Env):
         self._span_steps = 0
         self._obs_p = np.zeros(self.game.inner.observation_space.shape, np.float32)
 
+    @classmethod
+    def over_game(
+        cls, game, rules, *, cfg: EnvConfig, memory: bool = True
+    ) -> EvaderSelectorMDP:
+        """This class over a game that is ALREADY assembled — for a caller
+        that owns the game and needs the EVADER's `_observe`/`action_masks`/
+        `_candidates` code over it (E.3's `LearnedEvaderSelect`, the mirror of
+        `LearnedPursuerSelect`'s own use of `SelectorMDP.over_game`), never a
+        second game.
+
+        UNLIKE `SelectorMDP.over_game` ("everything after `build_game` runs
+        here, nothing else moves"), this is deliberately NOT the rest of
+        `__init__`'s body. `SearchMDP` builds `self.inner` as
+        `SingleAgentWrapper(cfg, "pursuer", opponent_factory)` in BOTH
+        `SelectorMDP` and this class (`scripts/s24_tactic_game.py::build_game`
+        is the one assembly), so `opponent_factory` governs the EVADER's
+        identity either way. `SelectorMDP` never touches it, so its
+        `over_game` really can run the whole constructor tail unchanged; this
+        class's OWN `__init__` installs itself there on purpose — the
+        one-shot proxy (A1.3) — because when `EvaderSelectorMDP` owns the
+        game it also drives the evader's decisions as an external Gym agent.
+        A caller using `over_game` drives nothing: it installs
+        `game.evader.select` itself (never this object's own `_select`, which
+        would raise `_NeedDecision`) and means to leave the game's opponent
+        wiring exactly as it already found it. So only the mirror surface is
+        built here — `_observe`, `action_masks`, `_candidates` and their
+        per-decision bookkeeping (`picks`, `n_decisions`,
+        `inapplicable_picks`) — and never `self._select`, `self._proxy`,
+        `self.game.inner.opponent_factory` or the pursuer-seat machinery
+        (`self.seats`, `self.np_random`), none of which `LearnedEvaderSelect`
+        reads or writes.
+        """
+        self = cls.__new__(cls)
+        self.cfg = cfg
+        self.memory = bool(memory)
+        self.decision_source = "agent"
+        self.actions = EVADER_ACTIONS
+        self.n_actions = N_EV_ACTIONS
+        self.obs_layout = EV_OBS_LAYOUT
+        self.obs_slices = EV_OBS_SLICES
+        self.memory_slices = EV_MEMORY_SLICES
+        self.obs_len = EV_OBS_LEN
+        self.game, self.rules = game, rules
+        self.evader = self.rules["evader"]
+        self.inapplicable_picks = 0
+        self.n_decisions = 0
+        self.picks: Counter = Counter()
+        self._pending = None
+        return self
+
     # -- the pursuer's seat (A1.2) ----------------------------------------
     def _build_seats(self, pursuer, device: str) -> list[tuple[str, object]]:
         specs = list(pursuer) if isinstance(pursuer, list) else [pursuer]
