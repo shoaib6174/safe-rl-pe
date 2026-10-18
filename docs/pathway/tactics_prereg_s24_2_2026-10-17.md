@@ -112,3 +112,16 @@ re-frozen at `dd2503f` for the summary. No number had been seen.
   of a pure evader policy j = max_i M[i,j] − value; a "pure saddle" = both supports singletons; best responses are the
   arg-min / arg-max of the row / column. Script `scripts/s24_2_meta_game.py` (written by me, 3 tests), report-only.
 - **A5.2:** `SEL3-best` = highest mean capture over the six stage-2 gate evaders, read from `s24_2b_round.json`.
+
+## Amendment A6 (2026-10-19, after the E.3 review, before any SEL3 arm trains or any stage-2 number exists)
+- **A6.1:** the frozen evader checkpoint is loaded EAGERLY in the trainer's env constructor — `MaskablePPO.load` reseeds the
+  global RNGs, and a lazy load on the first EVS episode would have handed all three arms seed 80's exploration stream.
+- **A6.2:** H-ALT-1's per-seed verdict enforces §3 as written: ≥ 2/3 evader seeds AND both held-out seeds (EVS-81, EVS-82)
+  must pass; the brief's weaker bar is withdrawn. The round sentence says so.
+- **A6.3 (CG-A2):** both seats learned — a SelectorMDP-side replay with `LearnedPursuerSelect(SEL-80)` and
+  `LearnedEvaderSelect(EVS-80)` reproduces the stage-1 record `EVS-80_SEL-80` episode 0 bit for bit (outcome, steps,
+  violations, both span logs). The H-ALT-1 join across the two drivers rests on this; it holds.
+- **A6.4:** the gate refuses before any cell if a frozen evader checkpoint is missing (else 9 cells would be filed
+  UNDETERMINED forever); CG-T1 iterates the arm list (absence = offender); the mixture RNG is seeded from `seed0`.
+- Noted, not changed (inherited S24.1 behaviour, nothing gated reads it): during GREEDY/HUG episodes the evader adapter's
+  stale `current` is attributed in `usage["evader"]`; `evader_tactics_recorded` reads False for the EVS cells. Code: `34a3f84`.
