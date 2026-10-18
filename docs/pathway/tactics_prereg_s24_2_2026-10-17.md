@@ -64,3 +64,11 @@ hard stop falls inside stage 1**; I stop there and report unless the budget is r
   wrapper reaches the opponent, so a mid-step exception is not an option); its computed action is handed to the
   wrapper through a one-shot proxy; the pursuer's action for a step is computed once and held across an evader
   decision point. CG-E1's replay identity is the test of all of this.
+
+## Amendment A2 (2026-10-18, after E.1 landed, before any trainer exists)
+- **A2.1 (wording):** A1.1 named an `r_acq` term; the game's step reward as `SelectorMDP` consumes it carries none, so the
+  evader's reward is exactly `−(reward returned by the game's step)`, summed over the span. No second definition.
+- **A2.2 (stated, not gated):** at a pursuer decision inside an evader span the frozen seat zeroes the game's span
+  counters (A2.4 bookkeeping), so a recorder's `span_intervention_total` under-counts in this env; no gated metric reads it.
+- **A2.3 (stated):** `HOP` resolves to the first applicable hop in `EvaderRulesV0`'s farthest-first order (its rule 2).
+- E.1: `6fdbb2e`; CG-E1 IDENTICAL (outcome, 454 steps, 0 violations, 13 pursuer spans, 55 evader spans); ≈ 335 env steps/s.
