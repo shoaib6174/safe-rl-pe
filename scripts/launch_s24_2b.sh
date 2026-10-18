@@ -44,6 +44,11 @@ for a in sys.argv[2:]:
                 bad.append(f"{a} mark {r.get('mark')}: {key} absent (A3.1)")
             elif int(r[key]):
                 bad.append(f"{a} mark {r.get('mark')}: {key} = {r[key]}")
+# Review defect 3: the three frozen EVADER checkpoints this gate loads inside run_cell.
+for s in (80, 81, 82):
+    evs = TR.T2.ckpt_path(f"EVS-{s}")
+    if not evs.exists():
+        bad.append(f"EVS-{s}: no frozen evader checkpoint at {evs}")
 if bad:
     print("REFUSED: " + "; ".join(bad))
     sys.exit(1)

@@ -93,6 +93,7 @@ T2 = _load("derisk_s24_2_train", _HERE / "derisk_s24_2_train.py")
 
 from pe2.evader_selector_mdp import EvaderSelectorMDP
 from pe2.learned_select import LearnedEvaderSelect
+import numpy as np  # noqa: E402
 from pe2.selector_mdp import ACTIONS, OBS_LEN, SelectorMDP
 
 # --- imported from S24.1 and CALLED, not reimplemented ----------------------
@@ -236,7 +237,16 @@ class _EvaderMixtureSelectorMDP(SelectorMDP):
         # — `scripts/s24_tactic_game.py::build_game`'s own factory), read back
         # BEFORE anything here ever overwrites it.
         self._default_opponent_factory = self.game.inner.opponent_factory
-        self._learned_select = None  # built lazily, once, over this shared game
+        # Review defect 1: `MaskablePPO.load` reseeds the GLOBAL python/numpy/torch
+        # RNGs (sb3 `_setup_model` -> `set_random_seed(model.seed)`), so the frozen
+        # evader is loaded EAGERLY here, before `make_learner` seeds the arm — never
+        # lazily inside training, where it would hand every arm seed 80's stream.
+        self._learned_select = (
+            self._build_learned_select() if EVS_BEST_STEM in self._evader_seats else None
+        )
+        # Review note 6: the per-episode mixture draw must be reproducible from
+        # `seed0` for ANY caller, not only through SB3's first seeded reset.
+        self.np_random = np.random.default_rng(int(kwargs.get("seed0", 0)))
         self.evader_name = ""
 
     def _build_learned_select(self) -> LearnedEvaderSelect:
@@ -259,8 +269,6 @@ class _EvaderMixtureSelectorMDP(SelectorMDP):
         if name != EVS_BEST_STEM:
             raise ValueError(f"unknown evader seat {name!r}")
         self.game.inner.opponent_factory = self._default_opponent_factory
-        if self._learned_select is None:
-            self._learned_select = self._build_learned_select()
         self.game.evader.select = self._learned_select
         self._learned_select.reset()
 

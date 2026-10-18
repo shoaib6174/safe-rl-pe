@@ -413,6 +413,11 @@ def run_cell(name: str, device: str = "cpu", n_episodes: int | None = None) -> d
 def run_cells(
     names: list[str] | None = None, device: str = "cpu", n_episodes: int | None = None
 ) -> list[str]:
+    # Review defect 3: an absent frozen-evader checkpoint would turn 9 cells into
+    # permanently UNDETERMINED records inside `run_cell`; refuse BEFORE any cell.
+    for o in EVS_OPPONENTS:
+        if not T2.ckpt_path(o).exists():
+            raise SystemExit(f"missing the frozen evader checkpoint for {o} at {T2.ckpt_path(o)}")
     with _bound():
         return _ORIG["run_cells"](names, device, n_episodes)
 
@@ -604,13 +609,19 @@ def h_alt_1_seed(records: dict, s2_comparators: dict, s: int) -> dict:
     per_sp = {str(sp): h_alt_1_pair(records, s2_comparators, s, sp) for sp in SEEDS}
     verdicts_ = [b["verdict"] for b in per_sp.values()]
     n_pass = sum(v == "PASS" for v in verdicts_)
+    # Prereg section 3 (wins over the brief; review defect 2): the passers must
+    # INCLUDE the two held-out evader seeds (every seed except EVS-best).
+    held_out = [sp for sp in SEEDS if f"EVS-{sp}" != T.EVS_BEST]
+    held_out_pass = all(per_sp[str(sp)]["verdict"] == "PASS" for sp in held_out)
     return {
         "pursuer_seed": s,
         "verdict": "INCOMPLETE"
         if "INCOMPLETE" in verdicts_
-        else ("PASS" if n_pass >= PASS_MIN else "FAIL"),
+        else ("PASS" if (n_pass >= PASS_MIN and held_out_pass) else "FAIL"),
         "n_pass": n_pass,
         "pass_min": PASS_MIN,
+        "held_out_evader_seeds": [f"EVS-{sp}" for sp in held_out],
+        "held_out_pass": held_out_pass,
         "evader_seeds": per_sp,
     }
 
@@ -791,8 +802,9 @@ def cg_t1(records: dict, probes: dict | None = None) -> dict:
     non_zero = sorted(n for n, v in cells.items() if v)
     probes = read_probes() if probes is None else probes
     training: dict = {}
-    for arm, block in probes.items():
-        rows = (block or {}).get("rows", [])
+    for arm in T.ARM_ORDER:  # review note 4: a missing arm key is absent evidence, not a pass
+        block = probes.get(arm) or {}
+        rows = block.get("rows", [])
         absent = not rows or any(
             ("train_inapplicable_picks" not in r) or ("inapplicable_picks" not in r)
             for r in rows
@@ -877,8 +889,9 @@ def direction(v: dict) -> str:
     if t1["verdict"] == "PASS" and t2["verdict"] == "PASS":
         parts.append(
             "H-ALT-1 and H-ALT-2 both PASS: the pursuer's re-trained selector "
-            "recovers capture against the learned evader (held-out seeds "
-            "included) without losing ground on the scripted opponents of its "
+            "recovers capture against the learned evader (every passing pursuer "
+            "seed passed on BOTH held-out evader seeds, prereg section 3) without "
+            "losing ground on the scripted opponents of its "
             "own training mixture — the alternation answers."
         )
     elif t1["verdict"] != "PASS":

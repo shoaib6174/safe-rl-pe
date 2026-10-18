@@ -608,15 +608,26 @@ class TestHAlt1:
     def _cell(self, ind):
         return {"capture_ind": ind, "capture_rate": sum(ind) / len(ind)}
 
-    def test_two_of_three_evader_seeds_pass_for_a_seed(self):
+    def _seed_case(self, pattern):
         row_win, comp_lose = _indicators(500, 0, 25, 0)
         row_lose, comp_win = _indicators(500, 0, 1, 0)
         records, s2 = {}, {}
-        for sp, (r, c) in zip(G.SEEDS, [(row_win, comp_lose), (row_win, comp_lose), (row_lose, comp_win)]):
+        for sp, win in zip(G.SEEDS, pattern):
+            r, c = (row_win, comp_lose) if win else (row_lose, comp_win)
             records[G.cell_name("SEL3-80", f"EVS-{sp}")] = self._cell(r)
             s2[G2.cell_name(f"EVS-{sp}", "SEL-80")] = self._cell(c)
-        b = G.h_alt_1_seed(records, s2, 80)
-        assert b["n_pass"] == 2 and b["verdict"] == "PASS"
+        return G.h_alt_1_seed(records, s2, 80)
+
+    def test_two_of_three_pass_including_both_held_out_seeds_passes(self):
+        # prereg section 3: the passers must include the two held-out evader seeds
+        # (EVS-81, EVS-82 — every seed except EVS-best = EVS-80)
+        b = self._seed_case([False, True, True])
+        assert b["held_out_evader_seeds"] == ["EVS-81", "EVS-82"]
+        assert b["n_pass"] == 2 and b["held_out_pass"] is True and b["verdict"] == "PASS"
+
+    def test_two_of_three_pass_with_a_held_out_seed_failing_FAILS(self):
+        b = self._seed_case([True, True, False])  # EVS-82 (held-out) fails
+        assert b["n_pass"] == 2 and b["held_out_pass"] is False and b["verdict"] == "FAIL"
 
     def test_round_passes_on_two_of_three_pursuer_seeds(self):
         row_win, comp_lose = _indicators(500, 0, 25, 0)
@@ -624,7 +635,8 @@ class TestHAlt1:
         for s in G.SEEDS:
             n_pass_seeds = 2 if s != 82 else 0
             for i, sp in enumerate(G.SEEDS):
-                r, c = (row_win, comp_lose) if i < n_pass_seeds else (comp_lose, row_win)
+                # the passers are the two HELD-OUT evader seeds (EVS-81, EVS-82): i >= 1
+                r, c = (row_win, comp_lose) if (n_pass_seeds and i >= 1) else (comp_lose, row_win)
                 records[G.cell_name(f"SEL3-{s}", f"EVS-{sp}")] = self._cell(r)
                 s2[G2.cell_name(f"EVS-{sp}", f"SEL-{s}")] = self._cell(c)
         v = G.h_alt_1(records, s2)
@@ -899,11 +911,32 @@ class TestGateLauncherChecker:
         got = _run_checker(checker, tmp_path, "SEL3-80")
         assert got.returncode == 1 and "violations = 1" in got.stdout
 
+    @staticmethod
+    def _evs_ckpts(d):
+        # review defect 3: the gate launcher also requires the three frozen EVADER checkpoints
+        for s in (80, 81, 82):
+            e = d / f"ckpts_S24-2-EVS-{s}"
+            e.mkdir(parents=True, exist_ok=True)
+            (e / f"S24-2-EVS-{s}_3000000.zip").write_bytes(b"x")
+
+    def test_it_refuses_without_the_frozen_evader_checkpoints(self, tmp_path):
+        d = tmp_path / "results" / "derisk"
+        ck = d / "ckpts_S24-2B-SEL3-80"
+        ck.mkdir(parents=True)
+        (ck / "S24-2B-SEL3-80_3000000.zip").write_bytes(b"x")
+        (d / "s24_2b_probe_SEL3-80.json").write_text(
+            json.dumps({"checkpoints": [{"mark": 3_000_000, "violations": 0, "train_violations": 0}]})
+        )
+        checker = _checker(_LAUNCH_GATE, tmp_path)
+        got = _run_checker(checker, tmp_path, "SEL3-80")
+        assert got.returncode == 1 and "no frozen evader checkpoint" in got.stdout
+
     def test_it_accepts_clean_evidence(self, tmp_path):
         d = tmp_path / "results" / "derisk"
         ck = d / "ckpts_S24-2B-SEL3-80"
         ck.mkdir(parents=True)
         (ck / "S24-2B-SEL3-80_3000000.zip").write_bytes(b"x")
+        self._evs_ckpts(d)
         (d / "s24_2b_probe_SEL3-80.json").write_text(
             json.dumps({"checkpoints": [{"mark": 3_000_000, "violations": 0, "train_violations": 0}]})
         )

@@ -157,3 +157,39 @@ class TestResetAndRefusal:
         with pytest.raises(AssertionError, match="refuses"):
             select(game.inner._last_joint_obs["evader"], game.inner.env, game.evader.history)
         assert sel.inapplicable_picks == 1
+
+
+# ----------------------------------------------------------------------------
+# CG-A2 (review note 5) — BOTH seats learned: the configuration H-ALT-1 joins
+# across the two drivers. A SelectorMDP-side replay with LearnedPursuerSelect
+# (SEL-80) and LearnedEvaderSelect (EVS-80) must reproduce the stage-1 record
+# EVS-80_SEL-80 episode 0 (measured in EvaderSelectorMDP) bit for bit.
+# ----------------------------------------------------------------------------
+RECORD_BOTH = REPO / "results/derisk/s24_2_cells/EVS-80_SEL-80.json"
+CKPT_SEL80 = REPO / "results/derisk/ckpts_S24-1-SEL-80/S24-1-SEL-80_3000000.zip"
+
+
+class TestCgA2BothSeatsLearned:
+    def test_replays_the_stored_evs_80_sel_80_episode(self):
+        from sb3_contrib import MaskablePPO
+
+        from pe2.learned_select import LearnedPursuerSelect
+        from pe2.selector_mdp import SelectorMDP
+
+        assert RECORD_BOTH.exists() and CKPT_SEL80.exists() and CKPT.exists()
+        record = json.loads(RECORD_BOTH.read_text())
+        assert record["name"] == "EVS-80_SEL-80" and record["seed0"] == GATE_SEED0
+        cfg = EnvConfig()
+        game, rules = _game_module().build_game(cfg)
+        psel = SelectorMDP.over_game(game, rules, cfg=cfg)
+        game.law.select = LearnedPursuerSelect(psel, MaskablePPO.load(CKPT_SEL80, device="cpu"), name=CKPT_SEL80.stem)
+        esel = EvaderSelectorMDP.over_game(game, rules, cfg=cfg)
+        game.evader.select = LearnedEvaderSelect(esel, MaskablePPO.load(CKPT, device="cpu"), name=CKPT.stem)
+        GAME = _game_module()
+        log = game.play_episode(OrbitSearch(cfg).predict, GATE_SEED0)
+        tactics = {"evader": GAME._history(game.evader), "pursuer": GAME._history(game.law)}
+        assert (log["outcome"] == "capture") is bool(record["capture_ind"][0])
+        assert log["steps"] == record["steps"][0]
+        assert log["violations"] == record["violations"][0]
+        assert _spans(tactics["pursuer"]) == _spans(record["tactics"][0]["pursuer"])
+        assert _spans(tactics["evader"]) == _spans(record["tactics"][0]["evader"])
