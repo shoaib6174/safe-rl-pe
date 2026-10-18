@@ -309,8 +309,37 @@ class SelectorMDP(gym.Env):
         cfg: EnvConfig | None = None,
         library: str = DEFAULT_LIBRARY,
     ) -> None:
+        cfg = EnvConfig(evader_speed_ratio=float(speed_ratio)) if cfg is None else cfg
+        game, rules = _game_module().build_game(cfg, recorder=recorder, label=label)
+        game.inner.seed0 = int(seed0)
+        self._build(game, rules, cfg=cfg, memory=memory, library=library)
+
+    @classmethod
+    def over_game(
+        cls,
+        game,
+        rules,
+        *,
+        cfg: EnvConfig,
+        memory: bool = True,
+        library: str = DEFAULT_LIBRARY,
+    ) -> SelectorMDP:
+        """This class over a game that is ALREADY assembled — for a caller that
+        owns the game (S24.2's evader seat drives the shared game and needs the
+        pursuer's observation/mask/candidate code over it, not a second game).
+
+        A pure refactor of `__init__`: everything after `build_game` runs here
+        and nothing else moves, so `seed0`, `recorder` and `label` stay the
+        constructor's business (they are `build_game`'s arguments) and this
+        classmethod touches neither.
+        """
+        self = cls.__new__(cls)
+        self._build(game, rules, cfg=cfg, memory=memory, library=library)
+        return self
+
+    def _build(self, game, rules, *, cfg: EnvConfig, memory: bool, library: str) -> None:
         super().__init__()
-        self.cfg = EnvConfig(evader_speed_ratio=float(speed_ratio)) if cfg is None else cfg
+        self.cfg = cfg
         self.memory = bool(memory)
         self.library = str(library)
         (
@@ -321,11 +350,7 @@ class SelectorMDP(gym.Env):
             self.memory_slices,
             self.obs_len,
         ) = layout(self.library)
-        game_module = _game_module()
-        self.game, self.rules = game_module.build_game(
-            self.cfg, recorder=recorder, label=label
-        )
-        self.game.inner.seed0 = int(seed0)
+        self.game, self.rules = game, rules
         self.game.law.select = self._select  # the ONE replaced field
         self.pursuer = self.rules["pursuer"]
         self._search = OrbitSearch(self.cfg)
