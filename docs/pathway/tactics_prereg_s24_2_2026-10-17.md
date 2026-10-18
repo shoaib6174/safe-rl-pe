@@ -100,3 +100,8 @@ the shield margin (D112), now learned by the evader selector. The three evader s
 same episode seed (EVS-80/81/82 vs RULES-V0 seed 2 400 001 are visually the same), i.e. the seeds converged to the same policy
 under deterministic prediction. Evader tactics execute per label; arena, shield and pursuer seats are the S24.1 ones. **CG-E2
 reading: PASS as a construct**; H-EV-3's kill rule is read next from the summary, with no cut or re-run.
+
+**A4.1 disclosure (2026-10-18):** the first `--summarize` at `4bda889` was REFUSED by CG-T1 before reading any rate — my A3.2
+addition read the probe files in the wrong shape (`rows` key), so every clean arm looked absent. Fixed in the summary code
+only (`dd2503f`); the 15 cell records and the 18 GIFs are untouched and were recorded under `4bda889`. The gate worktree is
+re-frozen at `dd2503f` for the summary. No number had been seen.
