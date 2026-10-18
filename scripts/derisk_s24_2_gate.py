@@ -172,7 +172,8 @@ PURSUER_SPECS: dict[str, object] = {
     f"SEL-{s}": ("ckpt", str(S1.ckpt_path(f"SEL-{s}")), "v0") for s in SEEDS
 } | {"RULES-V0": "RULES-V0", "LEAD-1.0": "LEAD-1.0"}
 PURSUERS: tuple[str, ...] = tuple(PURSUER_SPECS)  # SEL-80, SEL-81, SEL-82, RULES-V0, LEAD-1.0
-HELD_OUT_PURSUERS: tuple[str, ...] = ("RULES-V0", "LEAD-1.0")  # H-EV-2
+MIXTURE_PURSUERS: tuple[str, ...] = ("RULES-V0", "LEAD-1.0")  # H-EV-2: IN the training mixture (A3);
+# the genuinely held-out seats are SEL-{s' != 81}, met inside H-EV-1 by EVS-80 and EVS-82.
 
 
 def cell_name(row: str, pursuer: str) -> str:
@@ -343,6 +344,7 @@ def run_cell(name: str, device: str = "cpu", n_episodes: int | None = None) -> d
         "name": name,
         "row": spec["row"],
         "pursuer": spec["pursuer"],
+        "pursuer_spec": [str(x) for x in spec["pursuer_spec"]] if isinstance(spec["pursuer_spec"], tuple) else str(spec["pursuer_spec"]),  # audit (review fix 6)
         "kind": "learned",
         "memory": True,
         "ratio": spec["ratio"],
@@ -638,7 +640,7 @@ def h_ev_2_pursuer(records: dict, comparators: dict, pursuer: str) -> dict:
 def h_ev_2(records: dict, comparators: dict) -> dict:
     """H-EV-2 (gated, reading 2): likewise vs the HELD-OUT pursuers RULES-V0
     and LEAD-1.0 — the round passes iff BOTH individually clear >= 2/3 seeds."""
-    per = {p: h_ev_2_pursuer(records, comparators, p) for p in HELD_OUT_PURSUERS}
+    per = {p: h_ev_2_pursuer(records, comparators, p) for p in MIXTURE_PURSUERS}
     verds = [b["verdict"] for b in per.values()]
     return {
         "hypothesis": "H-EV-2",
@@ -709,8 +711,10 @@ def cg_e3(records: dict) -> dict:
     flagged: list[int] = []
     for s in SEEDS:
         cells = [cell_name(f"EVS-{s}", p) for p in PURSUERS]
-        if all(c in per_cell for c in cells) and all(
-            (per_cell[c]["top_share"] or 0.0) >= 0.95 for c in cells
+        if (
+            all(c in per_cell for c in cells)
+            and all((per_cell[c]["top_share"] or 0.0) >= 0.95 for c in cells)
+            and len({per_cell[c]["top_tactic"] for c in cells}) == 1  # the SAME tactic (review fix 4)
         ):
             flagged.append(s)
     return {
@@ -740,7 +744,8 @@ def h_safe(records: dict, probes: dict | None = None) -> dict:
                 (int(r["train_violations"]) for r in rows if "train_violations" in r),
                 default=None,
             ),
-            "probe_violations_total": sum(int(r.get("violations", 0)) for r in rows),
+            "probe_violations_total": sum(int(r["violations"]) for r in rows if "violations" in r),
+            "probe_violations_absent": any("violations" not in r for r in rows),  # A3.1 (review fix 3)
             "evidence_absent": block["evidence_absent"],
             "path": block["path"],
         }
@@ -750,7 +755,7 @@ def h_safe(records: dict, probes: dict | None = None) -> dict:
     )
     missing_training = sorted(
         a for a, b in train.items()
-        if b["evidence_absent"] or b["train_violations_max"] is None
+        if b["evidence_absent"] or b["train_violations_max"] is None or b["probe_violations_absent"]
     )
     missing = _missing(records)
     return {
@@ -768,15 +773,26 @@ def h_safe(records: dict, probes: dict | None = None) -> dict:
     }
 
 
-def cg_t1(records: dict) -> dict:
-    """CG-T1, inherited at the gate level (brief): 0 `inapplicable_picks` over
-    this round's 15 cells."""
+def cg_t1(records: dict, probes: dict | None = None) -> dict:
+    """CG-T1, inherited (S24.1 prereg section 5): 0 `inapplicable_picks` over
+    this round's 15 cells AND over every probe row's `train_inapplicable_picks`
+    / `inapplicable_picks` (A3.1: an absent counter is an offender). Review fix 2."""
     cells = {n: int(records[n].get("inapplicable_picks", 0)) for n in CELL_ORDER if n in records}
     non_zero = sorted(n for n, v in cells.items() if v)
+    probes = read_probes() if probes is None else probes
+    training: dict = {}
+    for arm, rows in probes.items():
+        rows = rows if isinstance(rows, list) else (rows or {}).get("checkpoints", [])
+        absent = not rows or any(("train_inapplicable_picks" not in r) or ("inapplicable_picks" not in r) for r in rows)
+        mx = max((int(r.get("train_inapplicable_picks", 0)) + int(r.get("inapplicable_picks", 0)) for r in rows), default=0)
+        training[arm] = {"evidence_absent": absent, "max_inapplicable": mx}
+        if absent or mx:
+            non_zero.append(f"probe:{arm}")
     return {
         "gate": "CG-T1 (the mask holds), inherited from S24.1 prereg section 5",
         "verdict": "REFUSE" if non_zero else "PASS",
         "cells": cells,
+        "training": training,
         "offenders": non_zero,
     }
 
@@ -838,19 +854,22 @@ def direction(v: dict) -> str:
     if t1["verdict"] == "PASS" and t2["verdict"] == "PASS":
         parts.append(
             "H-EV-1 and H-EV-2 both PASS: the evader's learned tactic "
-            "alternation lowers the shielded pursuer's capture against both "
-            "the training-stream pursuer and the held-out pursuers."
+            "alternation lowers the shielded pursuer's capture against the "
+            "selector seats (held-out SEL-80/SEL-82 for EVS-80/EVS-82, the "
+            "training seat SEL-81 for EVS-81) and against the two scripted "
+            "pursuers of its training mixture (RULES-V0 / LEAD-1.0; A3)."
         )
     elif t1["verdict"] != "PASS":
         parts.append(
             "H-EV-1 FAILS: the evader selector does not lower capture against "
-            "its own training-stream pursuer; S24.2's alternation claim is not "
-            "licensed."
+            "the selector seats (two of three held-out, A3); S24.2's alternation "
+            "claim is not licensed."
         )
     else:
         parts.append(
-            "H-EV-1 passes but H-EV-2 fails: the lowering does not generalise "
-            "to the held-out pursuers (RULES-V0 / LEAD-1.0)."
+            "H-EV-1 passes but H-EV-2 fails: the lowering holds against the "
+            "selector seats but not against the scripted pursuers of its own "
+            "training mixture (RULES-V0 / LEAD-1.0; A3)."
         )
     if e3["flagged_seeds"]:
         parts.append(
@@ -872,7 +891,7 @@ def verdicts(records: dict, comparators: dict | None = None, probes: dict | None
         "h_ev_2": h_ev_2(records, comparators or {}),
         "cg_e3": cg_e3(records),
         "h_safe": h_safe(records, probes),
-        "cg_t1": cg_t1(records),
+        "cg_t1": cg_t1(records, probes),
         "complete": not missing,
         "missing": missing,
         "n_cells": len(CELLS),
@@ -951,6 +970,8 @@ def summarize(device: str = "cpu") -> dict:
     """The round's only reader of numbers, run after `--gifs` (CG-E2). H-SAFE
     and the inherited CG-T1 REFUSE here, before any capture rate is read."""
     records = load_records()
+    _scan = scan_records()  # (measurable, rejected, undetermined) as S24.1: audit trail into the blob (review fix 6)
+    rejected = _scan[1] if isinstance(_scan, tuple) and len(_scan) > 1 else {}
     comparators = load_comparators()
     probes = read_probes()
     v = verdicts(records, comparators, probes)
@@ -976,6 +997,7 @@ def summarize(device: str = "cpu") -> dict:
             n: {k: val for k, val in r.items() if k not in _BULK_KEYS}
             for n, r in records.items()
         },
+        "rejected_records": rejected,
         "provenance": provenance(device),
     }
     S1._write_json(round_file("json"), blob)

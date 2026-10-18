@@ -109,7 +109,7 @@ EVERY: int = T1.EVERY  # 250 000
 PROBE_N: int = T1.PROBE_N  # 200
 GAMMA: float = T1.GAMMA  # 0.99
 PROBE_SEED0 = 2_700_000  # brief/prereg section 2: "probes every 250 000 on 2 700 000+"
-PROBE_PURSUER = "SEL-81"  # prereg section 2: the probe's SINGLE held-out pursuer
+PROBE_PURSUER = "SEL-81"  # prereg section 2: the probe's SINGLE pursuer (it is IN the mixture, A3)
 
 # The frozen SEL-81 checkpoint, via S24.1's own gate function (never a literal).
 SEL_81_CKPT = G1.ckpt_path("SEL-81")
@@ -359,11 +359,9 @@ def train(arm: str, device: str = "cpu") -> dict:
     resume_ckpt, offset, rows = _resume_from(arm)
     env = make_env(arm)
     probes = _Probe(arm, rows, offset=offset)
-    if resume_ckpt is None:
-        model = make_learner(arm, env, device)
-    else:
-        print(f"[{arm}] resuming from {resume_ckpt.name} (mark {offset})", flush=True)
-        model = MaskablePPO.load(resume_ckpt, env=env, device=device)
+    if resume_ckpt is not None:  # review fix 5: this round is resumable-never (A1.3 stop rule)
+        raise SystemExit(f"[{arm}] a checkpoint exists ({resume_ckpt.name}); never resume an arm")
+    model = make_learner(arm, env, device)
     model.learn(
         total_timesteps=TOTAL - offset,  # env steps >= decisions: an upper bound
         callback=probes.callback,  # the callback is what stops at TOTAL env steps

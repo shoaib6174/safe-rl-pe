@@ -546,7 +546,7 @@ class TestHEv2:
     def test_needs_both_pursuers_to_pass(self):
         pass_comp, pass_row = _indicators(500, 0, 25, 0)
         records, comparators = {}, {}
-        for pursuer in G.HELD_OUT_PURSUERS:
+        for pursuer in G.MIXTURE_PURSUERS:
             for seed in G.SEEDS:
                 rec, cmp_ = self._fixture(pursuer, seed, pass_row, pass_comp)
                 records |= rec
@@ -672,11 +672,17 @@ class TestHSafeAndInheritedCgT1:
         assert "EVS-82" in v["missing_training"]
 
     def test_cg_t1_refuses_on_a_non_zero_inapplicable_pick(self):
+        clean = {a: [{"mark": 3_000_000, "train_inapplicable_picks": 0, "inapplicable_picks": 0}] for a in ("EVS-80", "EVS-81", "EVS-82")}
         records = self._records()
         records["EVS-81_RULES-V0"]["inapplicable_picks"] = 1
-        v = G.cg_t1(records)
+        v = G.cg_t1(records, clean)
         assert v["verdict"] == "REFUSE" and v["offenders"] == ["EVS-81_RULES-V0"]
-        assert G.cg_t1(self._records())["verdict"] == "PASS"
+        assert G.cg_t1(self._records(), clean)["verdict"] == "PASS"
+        # review fix 2: probe rows are evidence too — a non-zero counter or an ABSENT one refuses
+        bad = dict(clean); bad["EVS-80"] = [{"mark": 3_000_000, "train_inapplicable_picks": 2, "inapplicable_picks": 0}]
+        assert G.cg_t1(self._records(), bad)["offenders"] == ["probe:EVS-80"]
+        absent = dict(clean); absent["EVS-82"] = [{"mark": 3_000_000, "inapplicable_picks": 0}]
+        assert G.cg_t1(self._records(), absent)["offenders"] == ["probe:EVS-82"]
 
 
 # ----------------------------------------------------------------------------
