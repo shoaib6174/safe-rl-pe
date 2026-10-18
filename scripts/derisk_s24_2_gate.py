@@ -782,7 +782,7 @@ def cg_t1(records: dict, probes: dict | None = None) -> dict:
     probes = read_probes() if probes is None else probes
     training: dict = {}
     for arm, rows in probes.items():
-        rows = rows if isinstance(rows, list) else (rows or {}).get("checkpoints", [])
+        rows = (rows or {}).get("rows", [])  # `read_probes()` shape: {path, missing, rows}
         absent = not rows or any(("train_inapplicable_picks" not in r) or ("inapplicable_picks" not in r) for r in rows)
         mx = max((int(r.get("train_inapplicable_picks", 0)) + int(r.get("inapplicable_picks", 0)) for r in rows), default=0)
         training[arm] = {"evidence_absent": absent, "max_inapplicable": mx}

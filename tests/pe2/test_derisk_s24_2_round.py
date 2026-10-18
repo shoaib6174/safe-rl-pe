@@ -672,16 +672,20 @@ class TestHSafeAndInheritedCgT1:
         assert "EVS-82" in v["missing_training"]
 
     def test_cg_t1_refuses_on_a_non_zero_inapplicable_pick(self):
-        clean = {a: [{"mark": 3_000_000, "train_inapplicable_picks": 0, "inapplicable_picks": 0}] for a in ("EVS-80", "EVS-81", "EVS-82")}
+        # the REAL read_probes() shape: {arm: {"path", "missing", "rows": [...]}}
+        clean = {a: {"path": "", "missing": False, "rows": [{"mark": 3_000_000, "train_inapplicable_picks": 0, "inapplicable_picks": 0}]} for a in ("EVS-80", "EVS-81", "EVS-82")}
         records = self._records()
         records["EVS-81_RULES-V0"]["inapplicable_picks"] = 1
         v = G.cg_t1(records, clean)
         assert v["verdict"] == "REFUSE" and v["offenders"] == ["EVS-81_RULES-V0"]
         assert G.cg_t1(self._records(), clean)["verdict"] == "PASS"
         # review fix 2: probe rows are evidence too — a non-zero counter or an ABSENT one refuses
-        bad = dict(clean); bad["EVS-80"] = [{"mark": 3_000_000, "train_inapplicable_picks": 2, "inapplicable_picks": 0}]
+        bad = dict(clean); bad["EVS-80"] = {"path": "", "missing": False, "rows": [{"mark": 3_000_000, "train_inapplicable_picks": 2, "inapplicable_picks": 0}]}
         assert G.cg_t1(self._records(), bad)["offenders"] == ["probe:EVS-80"]
-        absent = dict(clean); absent["EVS-82"] = [{"mark": 3_000_000, "inapplicable_picks": 0}]
+        absent = dict(clean); absent["EVS-82"] = {"path": "", "missing": False, "rows": [{"mark": 3_000_000, "inapplicable_picks": 0}]}
+        assert G.cg_t1(self._records(), absent)["offenders"] == ["probe:EVS-82"]
+        # and the real files on disk, when present, must be readable in that shape
+        real = G.read_probes(); assert all(isinstance(real[a].get("rows"), list) for a in real)
         assert G.cg_t1(self._records(), absent)["offenders"] == ["probe:EVS-82"]
 
 
