@@ -125,3 +125,12 @@ re-frozen at `dd2503f` for the summary. No number had been seen.
   UNDETERMINED forever); CG-T1 iterates the arm list (absence = offender); the mixture RNG is seeded from `seed0`.
 - Noted, not changed (inherited S24.1 behaviour, nothing gated reads it): during GREEDY/HUG episodes the evader adapter's
   stale `current` is attributed in `usage["evader"]`; `evader_tactics_recorded` reads False for the EVS cells. Code: `34a3f84`.
+
+## Amendment A7 (2026-10-19, stage-2 CG-E2 watched BEFORE `--summarize`; no stage-2 rate seen)
+18 GIFs (SEL3-80/81/82 × {EVS-80, HUG} × seeds 2 400 000/1/2) watched as contact sheets (pursuer RED, evader BLUE).
+Per-episode outcomes (not rates): 18/18 timeouts. The retrained pursuers alternate SWEEP, AMBUSH at the gap, LEAD and
+COUNTER-ORBIT around the obstacle the evader orbits; when sight is lost they sweep long diagonals across the arena and
+return; the shield intervenes at ≈ 0 m beside the hugged obstacle. EVS-80 and HUG keep tight orbits with FLEE /
+HOLD-HIDDEN switches (learned) or the hug law (scripted). Tactics execute per label on both seats; arena, shield and
+seats are the pre-registered ones. **CG-E2 (stage 2) reading: PASS as a construct.** H-ALT-1/2 are read next from the
+summary, with no cut or re-run; the three watched seeds are hard hugging cases for every pursuer so far (S24-OS A1).
