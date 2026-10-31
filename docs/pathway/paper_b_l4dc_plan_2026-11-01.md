@@ -73,3 +73,20 @@ approval before prose · Nov 3–6 draft (ARS pipeline, entered at Stage 2 with 
 dispatch on 2026-11-01) · Nov 7–8 integrity + 5-reviewer panel · Nov 9–10 revise · **Nov 10 go/no-go** · Nov 11 L4DC
 template + 2-min supplementary video from recorded GIFs · **Nov 12 submit**.
 User-only items: author list/affiliation; rotate the niro-2 password (public repo); blind-review implications.
+
+## Next steps (written 2026-11-01 evening; budget 5.0 M; deadline Nov 13 FIRM)
+| # | When | Step | Output | Gate / owner | Est. tokens |
+|---|------|------|--------|--------------|-------------|
+| 0 | tonight | S25 closes (Paper A): 80 records → `--gifs` 12 → watch → amendment → `--summarize` → D158 | D158 | me (own steps) | 0.1 M |
+| 1 | Nov 2 am | **Evidence audit** of B: for each claim (D112, D125–D131, D149, D138/D142) quote the exact numbers, N, seeds, conditions from the round JSON/decisions; FIRST check the S16 MEM and GAM arms against the mechanism story; list every figure's data source | `docs/pathway/paper_b_evidence_audit_2026-11-02.md` | me; blocks the skeleton | 0.15 M |
+| 2 | Nov 2 | **Pre-register B1–B4** (one document): B1 stall geometry + dwell prediction; B2 recovery_after sweep {5,10,20,40,80} + plain control + **perturbation-recovery baseline arm** + cycle rate + escape-time-vs-bound; B3 phenomenon under PredictiveShield (no recovery, pinned metric); B4 recovery composed onto PredictiveShield (construct test: every candidate passes the predictive filter) with a one-day cut | `docs/pathway/paper_b_prereg_rounds_2026-11-02.md` | me; before any number | 0.1 M |
+| 3 | Nov 2–3 | Implement B1–B4 runners (own code; tests; smoke; frozen worktree; launch from a pattern-free command) — B4 first so its cut decision is early | runners + launch | me; opus review ONLY for the one script producing gated numbers (B2) | 0.5 M |
+| 4 | Nov 2–3 | **Skeleton for approval**: outline (L4DC length), formal section per the revised skeleton above, figure list with data sources, related-work map (Grover et al., Kim et al., Wang/He/Pajic, Dawood, Arnström, S2C) — citations VERIFIED (DOI/arXiv) before entry | skeleton doc | **user approval before prose** | 0.2 M |
+| 5 | Nov 3–4 | Venue facts from the OpenReview template: page limit, blind policy, supplementary; author block; anonymised code/record release prepared (frozen commits, bit-identical replays) | checklist | me + user (authors) | 0.05 M |
+| 6 | Nov 4–7 | **Draft** via the ARS pipeline entered at Stage 2 with the audit + skeleton + B1–B4 results as material (B results land Nov 3–5 into Figs. 3–5) | full draft v1 | pipeline Stage 2 → 2.5 integrity (mandatory) | 1.5 M |
+| 7 | Nov 7–8 | Stage 3: 5-reviewer panel incl. Devil's Advocate; Stage 4 revise | v2 + response | pipeline (mandatory checkpoints) | 0.9 M |
+| 8 | Nov 9–10 | Stage 3' re-review → Stage 4' if needed → **Nov 10 go/no-go** (user; rule: strong or not at all) | decision | **user** | 0.5 M |
+| 9 | Nov 11 | Stage 4.5 final integrity → Stage 5 L4DC template; 2-min supplementary video from recorded GIFs; anonymisation check | submission package | me | 0.3 M |
+| 10 | Nov 12 | **Submit** (one day inside the firm deadline); D159 "Paper B submitted"; worklog/tracker/memory | — | user submits on OpenReview | 0.05 M |
+| — | after Nov 13 | Resume: Paper A write-up for RA-L (S25/D158 in hand); playable-site brainstorm (pending question: who plays first) | — | — | reserve ≈ 0.6 M |
+Hard cuts: B4 dropped if not composing by Nov 3 evening; any B round not summarised by Nov 6 is reported as "in progress" in the draft and excluded from claims. User-only items, needed by Nov 3: author list/affiliation; niro-2 password rotation; confirmation of blind policy handling.
