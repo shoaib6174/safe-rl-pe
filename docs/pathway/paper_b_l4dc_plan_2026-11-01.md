@@ -99,3 +99,10 @@ Hard cuts: B4 dropped if not composing by Nov 3 evening; any B round not summari
 - Decisions Jan 25 2027; camera-ready Apr 19; conference June 16–18 2027, KTH Stockholm; proceedings PMLR; all papers posters, selected orals.
 - Topics 2027: "Reinforcement learning and adaptive control", "Agentic AI and algorithmic robustness", data-driven control, applications in robotics. **"Safe RL" is NOT in the 2027 list** (it was in 2025/2026) → frame as RL + robustness of the learning–control interface, robotics as the application.
 - Dual-submission/arXiv policy: not stated in any year; 2025 explicitly allowed arXiv-hosted supplements.
+
+
+## Status 2026-11-02 04:00 (after the night session)
+Steps 1 (audit), 2 (prereg B1–B4 + A1–A3), 3 (runners, tests, launcher — opus review pending; launch waits for S25 to
+release the host), 4 (skeleton `docs/paper_b/skeleton_2026-11-02.md` — **awaiting user approval**) and the archived
+figures F1–F5 are DONE. Step 0 (S25 close → D158) pending the sweep (25/80). Step 5 venue facts DONE (above); the author
+block and the password rotation remain the user's.
