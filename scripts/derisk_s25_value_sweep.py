@@ -206,7 +206,7 @@ def round_file(ext: str) -> pathlib.Path:
 def ckpt_path(row: str) -> pathlib.Path:
     """Each learned row's checkpoint through ITS trainer's/gate's own function."""
     if row == "SEL-81":
-        return S1.ckpt_path(row)
+        return _ORIG["ckpt_path"](row)  # the ORIGINAL: inside the binding S1.ckpt_path is this function
     if row == "SEL3-80":
         return T3.ckpt_path(row)
     raise KeyError(f"{row} is not a learned row of this round")

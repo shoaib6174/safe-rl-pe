@@ -61,3 +61,9 @@ written and tested by me — no subagent, budget ≈ 6.8 M / 7.0 M), frozen work
 16 cells each), `--gifs` → watch → amendment → `--summarize` → D158. Reading registered now: the shield factory is
 swapped per cell by rebinding the game module's `build_shield` (the assembly calls it at construction and at every
 `_begin`), so a cell's every episode is built under its own setting and nothing else in the assembly changes.
+
+## Amendment A1 (2026-11-01, before any cell record exists) — disclosure
+Two launch attempts were refused by the host guard on self-matches of my own command line (no process started),
+and the first real launch (`2fd8004`) crashed at pre-flight on a bound-name recursion in the `SEL-81` checkpoint
+resolver (the in-process smoke had covered only the `SEL3-80` path). **No cell record was written**; the stop rule
+is intact. Fixed, the smoke test now covers both learned resolvers; relaunched from the corrected commit.

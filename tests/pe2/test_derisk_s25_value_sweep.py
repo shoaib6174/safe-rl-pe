@@ -189,7 +189,9 @@ class TestSmoke:
     def test_one_episode_per_row_kind_into_a_tmp_dir(self, monkeypatch):
         tmp = pathlib.Path(tempfile.mkdtemp(prefix="s25_test_"))
         monkeypatch.setattr(M, "OUT", tmp)
-        names = [M.cell_name("FULLOBS", "GREEDY", "NONE"), M.cell_name("SEL3-80", "TACTIC-V0", "d0.05")]
+        # all three row kinds AND both learned checkpoint resolvers (SEL-81 via S24.1, SEL3-80 via S24.2b):
+        # the first launch died on a bound-name recursion in the SEL-81 path the smoke had not covered
+        names = [M.cell_name("FULLOBS", "GREEDY", "NONE"), M.cell_name("SEL3-80", "TACTIC-V0", "d0.05"), M.cell_name("SEL-81", "HUG", "d0.20")]
         M.run_cells(names, "cpu", n_episodes=1)
         for n in names:
             r = json.loads((tmp / "s25_cells" / f"{n}.json").read_text())
