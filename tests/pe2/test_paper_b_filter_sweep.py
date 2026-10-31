@@ -38,7 +38,7 @@ def _rec(name, cap=None, dl=None, **extra):
     return {"name": name, "policy": s["policy"], "opponent": s["opponent"], "setting": s["setting"], "group": s["group"],
             "n_episodes": 500, "seed0": M.GATE_SEED0, "obs_width": M.expected_width(s["policy"]), "capture_ind": cap, "deadlock_ind": dl,
             "capture_rate": sum(cap) / 500, "deadlock_episode_rate": sum(dl) / 500, "immobile_step_rate": 0.05, "violation_steps": 0,
-            "recoveries": 100, "escape_times": [5, 7, 9, 12], "n_engagements": 4, "n_cycles": 0, "cg_b4": None} | extra
+            "recoveries": 100, "escape_times": [{"t": x, "remaining": 1000} for x in (5, 7, 9, 12)], "n_engagements": 4, "n_cycles": 0, "cg_b4": None} | extra
 
 
 class TestCells:
@@ -149,7 +149,7 @@ class TestEpisodeLog:
         assert out["kinds"] == {"forward": 5, "policy": 0, "rotation": 1, "perturbation": 0}
         # first engagement: trigger at t = 10 (x = 0); the body is 0.05 away when step 12 starts and 0.10 away when
         # step 13 starts -- the recorder reads the pose at the START of a step, so the escape time is 3
-        assert out["escape_times"][0] == 3
+        assert out["escape_times"][0]["t"] == 3 and out["escape_times"][0]["remaining"] == len(plan) - 10
         # the rotation firing (v = 0) plus the 50 quiet immobile steps form the longest stall run: 51
         assert out["longest_stall_run"] == 51 and out["n_steps"] == len(plan) and len(log.trace) == len(plan)
 
@@ -205,7 +205,7 @@ class TestGatesAndVerdicts:
                     dl_rate = 0.25 if s == "PLAIN" else (pert_dead if s == "PERT-20" else (0.2 if s == "RECF-80" else 0.0))
                     recs[n] = _rec(n, cap=cap if o == "GREEDY" else _ind(500, 60), dl=_ind(500, int(round(dl_rate * 500))),
                                    recoveries=(5000 if s == "PERT-20" else 1000), immobile_step_rate=0.05,
-                                   escape_times=[5, 8, 12, 20, 30, None] if s.startswith("RECF") else [])
+                                   escape_times=[{"t": x, "remaining": 1000} for x in (5, 8, 12, 20, 30)] + [{"t": None, "remaining": 1000}] if s.startswith("RECF") else [])
         return recs
 
     def test_h_b2_1_and_h_b2_4_on_synthetic_records(self):
@@ -223,10 +223,10 @@ class TestGatesAndVerdicts:
     def test_h_b2_2_bound_and_h_b2_3_immobile_bar(self):
         recs = self._b2_records()
         v = M.h_b2_2(recs)
-        assert v["verdict"] == "FAIL"  # one censored of six = 83 % within bound
+        assert v["verdict"] == "FAIL"  # one censored-but-decidable (1000 steps left) of six = 83 % within bound
         for n, r in recs.items():
             if r["setting"] == "RECF-20":
-                r["escape_times"] = [5, 8, 12, 20, 30, 60]
+                r["escape_times"][-1] = {"t": None, "remaining": 30}  # A4.3: censored with < 65 steps left is undecidable, not a violation
         assert M.h_b2_2(recs)["verdict"] == "PASS"
         assert M.h_b2_3(recs)["verdict"] == "PASS"
         recs[M.cell_name("RC19", "ATK4-45", "RECF-20")]["immobile_step_rate"] = 0.2

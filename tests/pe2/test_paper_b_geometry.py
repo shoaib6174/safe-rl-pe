@@ -21,7 +21,7 @@ from pe2.shield import CBFShield  # noqa: E402
 
 
 def _row(t, immobile, stalled):
-    return {"immobile": immobile, "stalled": stalled, "t": t}
+    return {"immobile": immobile, "stalled": stalled, "t": t, "pose": [0.0, 0.0, 0.0]}
 
 
 class TestCells:
@@ -34,6 +34,7 @@ class TestCells:
         s = M.cut_states(rows)
         kinds = [(x["kind"], x["t"], x["run_at_sample"], x["run_length"], x["censored"]) for x in s]
         assert kinds == [("stalled", 49, 40, 160, False), ("stalled", 149, 140, 160, False), ("self_stop", 219, 40, 50, True)]
+        assert all("dwell_beyond_sample" in x for x in s)
 
 
 class TestProbes:
@@ -86,9 +87,13 @@ class TestVerdicts:
             states.append({"kind": "stalled", "tier": "exact", "trap_heading": True, "trap_position": False, "rot_admissible": True,
                            "qp": {"agree": True, "forward": False}, "leave": {"predicted_dwell_steps": None}, "branch": "law"})
             recs[M.cell_name(p, "det")] = {"states": states, "deadlock_episode_rate": dl_det, "episodes": [], "violation_steps": 0}
-            recs[M.cell_name(p, "stoch")] = {"states": [], "deadlock_episode_rate": dl_stoch, "violation_steps": 0,
-                                             "episodes": [{"stall_runs": [{"length": 40 + obs_len, "censored": False, "branch": "search"}, {"length": 10, "censored": False, "branch": "search"},
-                                                           {"length": 1100, "censored": True, "branch": "law"}]}]}
+            base = {"tier": "exact", "trap_heading": True, "trap_position": False, "rot_admissible": True, "qp": {"agree": True, "forward": False}}
+            stoch_states = [{"kind": "stalled", "run_at_sample": 40, "run_length": 40 + obs_len, "branch": "search", "dwell_beyond_sample": obs_len,
+                             "leave": {"predicted_dwell_steps": pred}, **base} for _ in range(5)]
+            stoch_states.append({"kind": "stalled", "run_at_sample": 40, "run_length": 1100, "branch": "law", "dwell_beyond_sample": None, "leave": {"predicted_dwell_steps": None}, **base})
+            stoch_states.append({"kind": "stalled", "run_at_sample": 140, "run_length": 400, "branch": "search", "dwell_beyond_sample": 1, "leave": {"predicted_dwell_steps": 1.0}, **base})
+            recs[M.cell_name(p, "stoch")] = {"states": stoch_states, "deadlock_episode_rate": dl_stoch, "violation_steps": 0,
+                                             "episodes": [{"stall_runs": [{"length": 40 + obs_len, "censored": False, "branch": "search"}]}]}
         return recs
 
     def test_h_b1_1_to_3_pass_and_fail(self):
@@ -103,9 +108,11 @@ class TestVerdicts:
         assert M.h_b1_3(cls)["verdict"] == "FAIL"
 
     def test_h_b1_4_factor_two_on_dwell_and_half_on_deadlock(self):
-        assert M.h_b1_4(self._records())["verdict"] == "PASS"
+        v = M.h_b1_4(self._records())
+        assert v["verdict"] == "PASS" and v["detail"]["BASE-61"]["n_onsets"] == 5  # law onset and the 140th-step sample excluded (A4.1)
         assert M.h_b1_4(self._records(obs_len=50, pred=200.0))["verdict"] == "FAIL"  # observed 50 vs predicted 200
         assert M.h_b1_4(self._records(dl_stoch=0.1))["verdict"] == "FAIL"  # 0.1 < 0.5 × 0.3
+        assert M.h_b1_4(self._records(dl_det=0.0, dl_stoch=0.0))["clause1_pass"]["BASE-61"] is True  # A4: a zero deterministic rate passes trivially
 
     def test_record_status(self):
         n = M.cell_name("BASE-61", "det")

@@ -263,10 +263,10 @@ class EpisodeLog:
         self.longest_stall = max(self.longest_stall, self._stall_run)
         if fired:
             self.kinds[kind] = self.kinds.get(kind, 0) + 1
-            if self.check_pred is not None:
-                self.cg_b4_checked += 1
-                if not self.check_pred._accept(np.asarray(u, dtype=np.float64), state, obstacles):
-                    self.cg_b4_failures += 1
+        if self.check_pred is not None:  # A4.2: EVERY executed command, firing or not
+            self.cg_b4_checked += 1
+            if not self.check_pred._accept(np.asarray(u, dtype=np.float64), state, obstacles):
+                self.cg_b4_failures += 1
         # engagements and cycles
         if fired:
             if self._open is None or (self._last_fire_step is not None and t - self._last_fire_step > ENGAGE_GAP):
@@ -295,7 +295,8 @@ class EpisodeLog:
 
     def _close_open(self, t: int) -> None:
         if self._open is not None:
-            self._open["end"] = self._last_fire_step if self._last_fire_step is not None else t
+            # A1.3 / A4.3: the engagement ends ENGAGE_GAP steps after its last firing
+            self._open["end"] = (self._last_fire_step if self._last_fire_step is not None else t) + ENGAGE_GAP
             self._open.setdefault("escape_time", None)
             self.engagements.append(self._open)
             self._open = None
@@ -309,7 +310,9 @@ class EpisodeLog:
             "n_steps": self.n_steps, "n_immobile": self.n_immobile, "n_stalled": self.n_stalled,
             "longest_stall_run": self.longest_stall, "kinds": dict(self.kinds),
             "n_engagements": len(self.engagements), "n_cycles": int(sum(e["cycle"] for e in self.engagements)),
-            "escape_times": [e["escape_time"] for e in self.engagements],
+            # A4.3: each trigger carries the steps that remained in the episode, so a censored escape whose window
+            # ran past the episode end is not counted as a bound violation
+            "escape_times": [{"t": e["escape_time"], "remaining": self.n_steps - e["start"]} for e in self.engagements],
             "recoveries": int(getattr(self.shield, "n_recoveries", 0)),
             "cg_b4": {"checked": self.cg_b4_checked, "failures": self.cg_b4_failures} if self.check_pred is not None else None,
         }
@@ -433,7 +436,8 @@ def evaluate_cell(name: str, device: str = "cpu", n_episodes: int = GATE_N, seed
         "n_engagements": int(sum(e["n_engagements"] for e in eps)),
         "n_cycles": int(sum(e["n_cycles"] for e in eps)),
         "engagements_per_episode": [e["n_engagements"] for e in eps],
-        "escape_times": esc,  # None = censored at episode end
+        "cycles_per_episode": [e["n_cycles"] for e in eps],
+        "escape_times": esc,  # {"t": steps or None (censored), "remaining": steps left in the episode at the trigger}
         "cg_b4": cg_b4,
         "traces": traces,
         "provenance": provenance(device),
@@ -469,12 +473,18 @@ def record_status(rec: dict) -> tuple[str, str]:
     return "MEASURABLE", ""
 
 
+_REAL_OUT = pathlib.Path("results/derisk")
+
+
 def run_cells(names: list[str] | None, device: str = "cpu", n_episodes: int = GATE_N) -> None:
+    if n_episodes != GATE_N and OUT.resolve() == _REAL_OUT.resolve():
+        raise SystemExit(f"REFUSED: N = {n_episodes} against the real record root would write an INVALID record that blocks the cell")
     names = names or CELL_ORDER
     bad = [n for n in names if n not in CELLS]
     if bad:
         raise SystemExit(f"unknown cells: {bad}")
     cells_dir().mkdir(parents=True, exist_ok=True)
+    crashes = 0
     for name in names:
         path = cells_dir() / f"{name}.json"
         if path.exists():
@@ -483,12 +493,16 @@ def run_cells(names: list[str] | None, device: str = "cpu", n_episodes: int = GA
         print(f"[{name}] running N = {n_episodes}", flush=True)
         try:
             rec = evaluate_cell(name, device, n_episodes)
-        except Exception as exc:  # noqa: BLE001 — the crash policy: UNDETERMINED, never re-run
+        except Exception as exc:  # noqa: BLE001 — the crash policy (A4.9): UNDETERMINED, never re-run, the chain goes on
             spec = CELLS[name]
             rec = {"name": name, **spec, "verdict": UNDETERMINED, "reason": f"{type(exc).__name__}: {exc}", "provenance": provenance(device)}
             _write_json(path, rec)
             print(f"[{name}] UNDETERMINED: {rec['reason']}", flush=True)
-            raise
+            crashes += 1
+            if crashes >= 2:
+                raise SystemExit("two consecutive crashed cells: aborting the chain (systemic failure, not a cell)") from exc
+            continue
+        crashes = 0
         _write_json(path, rec)
         print(f"[{name}] capture {rec['capture_rate']:.3f} deadlock {rec['deadlock_episode_rate']:.3f} immobile {rec['immobile_step_rate']:.3f} "
               f"firings {rec['recoveries']} eng {rec['n_engagements']} cycles {rec['n_cycles']} viol {rec['violation_steps']}", flush=True)
@@ -498,9 +512,14 @@ def scan_records() -> tuple[dict, dict, dict]:
     measurable, rejected, undetermined = {}, {}, {}
     if not cells_dir().exists():
         return measurable, rejected, undetermined
+    hashes = {name: _sha256(spec["ckpt"]) for name, spec in POLICIES.items() if spec["ckpt"].exists()}
     for p in sorted(cells_dir().glob("*.json")):
         rec = json.loads(p.read_text())
         st, why = record_status(rec)
+        if p.stem != rec.get("name"):
+            st, why = "INVALID", f"file name {p.stem} != record name {rec.get('name')!r} (duplicate rule: reject)"
+        elif st == "MEASURABLE" and rec.get("ckpt_sha256") != hashes.get(rec["policy"]):
+            st, why = "INVALID", "checkpoint hash differs from the frozen checkpoint"
         if st == "MEASURABLE":
             measurable[rec["name"]] = rec
         elif st == UNDETERMINED:
@@ -596,25 +615,32 @@ def h_b2_1(records: dict) -> dict:
 
 
 def h_b2_2(records: dict) -> dict:
-    """Bound: >= 95 % of RECF-20 triggers escape within 20 + T_TURN on every cell; median escape < N + T_TURN generally."""
-    per, medians = {}, {}
+    """Bound: >= 95 % of RECF-20 triggers escape within 20 + T_TURN on every cell; median escape < N + T_TURN generally.
+    A4.3: a censored trigger counts as a violation only if the episode had >= N + T_TURN steps left at the trigger."""
+    per, medians, vacuous = {}, {}, []
     for p in B2_POLICIES:
         for o in OPPONENTS:
             for n in RECF_NS:
                 r = _rec(records, p, o, f"RECF-{n}")
                 if r is None:
                     continue
-                esc = r["escape_times"]
+                bound = n + T_TURN
+                esc = [e for e in r["escape_times"] if e["t"] is not None or e["remaining"] >= bound]  # decidable triggers
                 if not esc:
+                    if n == 20:
+                        per[f"{p}_{o}"] = 1.0
+                        vacuous.append(f"{p}_{o}")
                     continue
-                within = sum(1 for t in esc if t is not None and t <= n + T_TURN) / len(esc)
-                med = float(np.median([t if t is not None else np.inf for t in esc]))
-                medians[f"{p}_{o}@RECF-{n}"] = {"median": med, "bound": n + T_TURN, "n_triggers": len(esc), "censored": sum(t is None for t in esc), "within_bound": within}
+                within = sum(1 for e in esc if e["t"] is not None and e["t"] <= bound) / len(esc)
+                med = float(np.median([e["t"] if e["t"] is not None else np.inf for e in esc]))
+                medians[f"{p}_{o}@RECF-{n}"] = {"median": med, "bound": bound, "n_triggers": len(r["escape_times"]), "n_decidable": len(esc),
+                                                "censored_undecidable": len(r["escape_times"]) - len(esc), "within_bound": within}
                 if n == 20:
                     per[f"{p}_{o}"] = within
     complete = len(per) == len(B2_POLICIES) * len(OPPONENTS)
     ok = complete and all(v >= 0.95 for v in per.values())
-    return {"hypothesis": "H-B2-2", "verdict": "INCOMPLETE" if not complete else ("PASS" if ok else "FAIL"), "recf20_within_bound": per, "bound_recf20": 20 + T_TURN, "all": medians}
+    return {"hypothesis": "H-B2-2", "verdict": "INCOMPLETE" if not complete else ("PASS" if ok else "FAIL"), "recf20_within_bound": per,
+            "vacuous_cells": vacuous, "bound_recf20": 20 + T_TURN, "all": medians}
 
 
 def h_b2_3(records: dict) -> dict:
@@ -640,9 +666,10 @@ def h_b2_4(records: dict) -> dict:
         t = _paired(records, p, CAPTURE_OPPONENT, "RECF-20", "PERT-20")
         if t is not None:
             beats[p] = t["pass"]
-        a, b = _rec(records, p, CAPTURE_OPPONENT, "RECF-20"), _rec(records, p, CAPTURE_OPPONENT, "PERT-20")
-        if a is not None and b is not None:
-            fewer[p] = a["recoveries"] < b["recoveries"]
+        ra = [_rec(records, p, o, "RECF-20") for o in OPPONENTS]
+        rb = [_rec(records, p, o, "PERT-20") for o in OPPONENTS]
+        if all(x is not None for x in ra + rb):  # A4.4: firings summed over both opponents
+            fewer[p] = sum(x["recoveries"] for x in ra) < sum(x["recoveries"] for x in rb)
     complete = len(clears) == len(beats) == len(fewer) == len(B2_POLICIES)
     ok = complete and sum(clears.values()) >= 4 and sum(beats.values()) >= 3 and all(fewer.values())
     return {"hypothesis": "H-B2-4", "verdict": "INCOMPLETE" if not complete else ("PASS" if ok else "FAIL"), "pert_clears": clears, "recf_beats_capture": beats, "recf_fewer_firings": fewer}
@@ -667,7 +694,17 @@ def h_b3_1(records: dict) -> dict:
     rows = {p: _rec(records, p, DEADLOCK_OPPONENT, "PRED-PLAIN")["deadlock_episode_rate"] for p in B34_POLICIES if _rec(records, p, DEADLOCK_OPPONENT, "PRED-PLAIN")}
     complete = len(rows) == len(B34_POLICIES)
     n = sum(v >= DEADLOCK_BAR for v in rows.values())
-    return {"hypothesis": "H-B3-1", "verdict": "INCOMPLETE" if not complete else ("PASS" if n >= 3 else "FAIL"), "deadlock_pred_plain": rows, "n_at_or_above_bar": n}
+    reported = {}
+    for p in B34_POLICIES:
+        for o in OPPONENTS:
+            a, b = _rec(records, p, o, "PRED-PLAIN"), _rec(records, p, o, "PLAIN")
+            if a is None or b is None:
+                continue
+            reported[f"{p}_{o}"] = {"capture_pred": a["capture_rate"], "capture_cbf": b["capture_rate"], "capture_test_pred_gt_cbf": _paired(records, p, o, "PRED-PLAIN", "PLAIN"),
+                                    "deadlock_pred": a["deadlock_episode_rate"], "deadlock_cbf": b["deadlock_episode_rate"], "deadlock_test_cbf_gt_pred": _paired(records, p, o, "PLAIN", "PRED-PLAIN", key="deadlock_ind"),
+                                    "immobile_pred": a["immobile_step_rate"], "immobile_cbf": b["immobile_step_rate"], "backup_rate_pred": a["backup_rate"]}
+    return {"hypothesis": "H-B3-1", "verdict": "INCOMPLETE" if not complete else ("PASS" if n >= 3 else "FAIL"), "deadlock_pred_plain": rows, "n_at_or_above_bar": n,
+            "reported_pred_vs_cbf": reported}
 
 
 def h_b4_1(records: dict) -> dict:
@@ -783,7 +820,7 @@ def write_figure(records: dict, path: pathlib.Path) -> None:
         ax.grid(alpha=0.3)
     axes[1].axhline(DEADLOCK_BAR, ls=":", color="k")
     axes[0].legend(fontsize=7)
-    esc = [t for p in B2_POLICIES for o in OPPONENTS for t in (records.get(cell_name(p, o, "RECF-20"), {}).get("escape_times") or []) if t is not None]
+    esc = [e["t"] for p in B2_POLICIES for o in OPPONENTS for e in (records.get(cell_name(p, o, "RECF-20"), {}).get("escape_times") or []) if e["t"] is not None]
     if esc:
         axes[2].hist(esc, bins=60, color="#444")
         axes[2].axvline(20 + T_TURN, color="r", ls="--", label=f"N + one turn = {20 + T_TURN}")

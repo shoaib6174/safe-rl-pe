@@ -184,3 +184,37 @@ oracle was "u is admissible iff filter(u) returns u unchanged". Ruling, before a
 position-trap and rotation-admissible use D126's oracle (what will be executed), on a 21 × 21 grid at the sampled
 heading and an 11 × 11 grid per swept heading; the exact-tier versions are computed on the 41 × 41 grid and reported
 beside them** (`*_exact` fields). H-B1-1 (tier) is unchanged and is what scopes Prop 1 to the exact tier. Bars unchanged.
+
+## Amendment A4 (2026-11-02, before any cell record exists): the pre-launch review's fixes
+**Disclosure.** The independent reviewer ran, in memory and writing no record, 20 gate-stream episodes each of
+`BASE-61_ATK4-45_RECF-20` and `BASE-62_ATK4-45_PLAIN` (bit-identical to S17's indicators and traces — the identity path
+is confirmed), and 5 episodes each of `BASE-61_ATK4-45_PRED-RECF-20` and `BASE-61_ATK4-45_PERT-20`. In the latter the
+perturbation baseline deadlocked 3 of 5 episodes against 0 of 5 under `PLAIN`: it fires on self-stop runs (its trigger
+is `immobile`, as V2's is) and pushes the body into a trap at its heading where no random draw moves. That is the
+baseline behaving as specified; H-B2-4's bars are unchanged and that expectation may now fail. No bar below moves.
+1. **H-B1-4 clause 2 (ROUND-CHANGING, fixed):** the prediction is taken from the STOCHASTIC arm's own search-branch
+   stall onsets (`run_at_sample == 40`), not from the deterministic arm's states and not from 140th-step samples; a
+   deterministic-arm state carries no survival selection, a stochastic onset does, so mixing arms biases the predicted
+   median short inside a factor-2 bar.
+2. **CG-B4-1** re-filters EVERY executed command of the first 5 episodes through a fresh `PredictiveShield._accept`,
+   not only firing steps (a cell with no firings would otherwise pass on zero checks).
+3. **H-B2-2 censoring:** a trigger whose escape was censored by the episode end counts as a bound violation only if
+   ≥ N + 45 steps remained at the trigger; otherwise it is undecidable and excluded. Each trigger records the steps
+   remaining. An engagement ends 5 steps after its last firing (A1.3 made literal in the cycle window).
+4. **H-B2-4 firings clause:** firings are summed over both opponents per policy.
+5. **Like with like in H-B1-4:** the observed dwell is the time from the sampled onset until the body has moved
+   ≥ 0.10 m from the sampled pose (the event p_leave counts), censored at the episode end and then counted at the rest
+   of the run; a stall run ending because the sampled command fell below 0.5 v_max is NOT a leave.
+6. **One trap rule for both tests:** a heading admits forward motion if the exact 41 × 41 grid OR the oracle grid
+   (21 × 21 at the sampled heading, 11 × 11 per swept heading) contains a moving admissible action.
+7. **H-B1-3 pools exact-tier stalled states only** (the projection characterisation is for the exact tier; the
+   non-exact share is H-B1-1's quantity). Rotation admissibility is tested at v = 0 exactly. Self-stop states are also
+   sampled at the 140th step.
+8. **B1 GIFs:** a policy without a deterministic deadlock episode renders its longest-stall episode instead, so the
+   gate cannot block the summary vacuously.
+9. **Crash policy made explicit:** a crashed cell writes UNDETERMINED and the chain continues to its next cell; two
+   consecutive crashes abort the chain (systemic). A non-default N against the real record root is refused. Records
+   whose file name differs from their `name`, or whose checkpoint hash differs from the frozen checkpoint, are
+   rejected. A zero deterministic deadlock rate satisfies H-B1-4 clause 1 trivially; a `RECF-20` cell with no
+   decidable trigger is vacuously within the bound and is flagged. Cycles per episode are stored; the summary reports
+   the paired PRED-PLAIN vs PLAIN comparison and the predictive tiers for B3.

@@ -178,7 +178,7 @@ def cut_states(rows: list[dict]) -> list[dict]:
         immobile_only_run = immobile_only_run + 1 if (r["immobile"] and not r["stalled"]) else 0
         if stall_run in (K, LATE):
             out.append({"kind": "stalled", "t": t, "run_at_sample": stall_run})
-        if immobile_only_run == K:
+        if immobile_only_run in (K, LATE):
             out.append({"kind": "self_stop", "t": t, "run_at_sample": immobile_only_run})
     # the length of the run each sample belongs to, and whether it was censored by the episode end
     for s in out:
@@ -189,6 +189,10 @@ def cut_states(rows: list[dict]) -> list[dict]:
             end += 1
         s["run_length"] = end - (t - s["run_at_sample"] + 1) + 1
         s["censored"] = end == len(rows) - 1
+        # A4.5: the dwell the leave probability predicts -- steps from this sample until the body has moved
+        # >= LEAVE_DIST from the sampled pose (None = censored at the episode end); the same event p_leave counts
+        x0, y0 = rows[t]["pose"][0], rows[t]["pose"][1]
+        s["dwell_beyond_sample"] = next((u - t for u in range(t + 1, len(rows)) if math.hypot(rows[u]["pose"][0] - x0, rows[u]["pose"][1] - y0) >= LEAVE_DIST), None)
     return out
 
 
@@ -291,9 +295,10 @@ def probe_state(model, shield: CBFShield, cfg: EnvConfig, row: dict, obstacles, 
     Uc = action_grid(cfg, COARSE)
     orc = oracle_mask(shield, state, obstacles, Uc)
     fwd_c = Uc[:, 0] > v_eps
-    rot_c = (~fwd_c) & (np.abs(Uc[:, 1]) >= 0.5 * cfg.omega_max)
+    rot_c = (Uc[:, 0] == 0.0) & (np.abs(Uc[:, 1]) >= 0.5 * cfg.omega_max)  # a pure turn: v = 0 exactly (spec section 1 (e))
     trap_heading_exact = not bool((adm & fwd).any())
-    trap_heading = not bool((orc & fwd_c).any())
+    # A4.6: one rule for both tests -- a heading admits forward motion if the exact 41 x 41 grid or the oracle grid does
+    trap_heading = not (bool((orc & fwd_c).any()) or bool((adm & fwd).any()))
     headings_fwd_exact = headings_fwd = 0
     Uq = action_grid(cfg, 11)
     fwd_q = Uq[:, 0] > v_eps
@@ -314,7 +319,7 @@ def probe_state(model, shield: CBFShield, cfg: EnvConfig, row: dict, obstacles, 
         "trap_heading": trap_heading, "trap_heading_exact": trap_heading_exact,
         "trap_position": headings_fwd == 0, "trap_position_exact": headings_fwd_exact == 0,
         "headings_with_forward": headings_fwd, "headings_with_forward_exact": headings_fwd_exact,
-        "rot_admissible": bool((orc & rot_c).any()), "rot_admissible_exact": bool((adm & (~fwd) & (np.abs(U[:, 1]) >= 0.5 * cfg.omega_max)).any()),
+        "rot_admissible": bool((orc & rot_c).any()), "rot_admissible_exact": bool((adm & (U[:, 0] == 0.0) & (np.abs(U[:, 1]) >= 0.5 * cfg.omega_max)).any()),
         "n_admissible_grid": int(adm.sum()), "n_oracle_grid": int(orc.sum()),
         "admissible_grid": [int(i) for i in np.flatnonzero(adm)] if len(np.flatnonzero(adm)) <= 400 else None,
         "oracle_grid": [int(i) for i in np.flatnonzero(orc)],
@@ -347,7 +352,7 @@ def evaluate_cell(name: str, device: str = "cpu", n_episodes: int = N_EPISODES, 
         for s in samples:
             r = rows[s["t"]]
             obs = ep["decisions"][r["decision_idx"] - 1] if r["decision_idx"] > 0 else None
-            probe = probe_state(model, shield, cfg, r, ep["obstacles"], obs, seed * 1000 + s["t"], with_leave=obs is not None)
+            probe = probe_state(model, shield, cfg, r, ep["obstacles"], obs, seed * 10_000 + s["t"], with_leave=obs is not None)
             states.append({"seed": seed, **s, "pose": r["pose"], "v_nom": r["v_nom"], "w_nom": r["w_nom"], "method_at_step": r["method"],
                            "branch": r.get("branch"), "visible": r.get("visible"),
                            "obstacles": ep["obstacles"], "has_decision_obs": obs is not None, **probe})
@@ -409,11 +414,17 @@ def record_status(rec: dict) -> tuple[str, str]:
     return "MEASURABLE", ""
 
 
+_REAL_OUT = pathlib.Path("results/derisk")
+
+
 def run_cells(names: list[str] | None, device: str = "cpu", n_episodes: int = N_EPISODES) -> None:
+    if n_episodes != N_EPISODES and OUT.resolve() == _REAL_OUT.resolve():
+        raise SystemExit(f"REFUSED: N = {n_episodes} against the real record root would write an INVALID record that blocks the cell")
     names = names or CELL_ORDER
     bad = [n for n in names if n not in CELLS]
     if bad:
         raise SystemExit(f"unknown cells: {bad}")
+    crashes = 0
     for name in names:
         path = cells_dir() / f"{name}.json"
         if path.exists():
@@ -421,9 +432,14 @@ def run_cells(names: list[str] | None, device: str = "cpu", n_episodes: int = N_
             continue
         try:
             rec = evaluate_cell(name, device, n_episodes)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — A4.9: UNDETERMINED, never re-run, the chain goes on
             _write_json(path, {"name": name, **CELLS[name], "verdict": UNDETERMINED, "reason": f"{type(exc).__name__}: {exc}", "provenance": sweep().provenance(device)})
-            raise
+            print(f"[{name}] UNDETERMINED: {type(exc).__name__}: {exc}", flush=True)
+            crashes += 1
+            if crashes >= 2:
+                raise SystemExit("two consecutive crashed cells: aborting the chain") from exc
+            continue
+        crashes = 0
         _write_json(path, rec)
         print(f"[{name}] deadlock {rec['deadlock_episode_rate']:.3f} immobile {rec['immobile_step_rate']:.3f} stalled {rec['stall_step_rate']:.3f} states {len(rec['states'])} viol {rec['violation_steps']}", flush=True)
 
@@ -432,9 +448,15 @@ def scan_records() -> tuple[dict, dict, dict]:
     measurable, rejected, undetermined = {}, {}, {}
     if not cells_dir().exists():
         return measurable, rejected, undetermined
+    S = sweep()
+    hashes = {name: S._sha256(spec["ckpt"]) for name, spec in S.POLICIES.items() if spec["ckpt"].exists()}
     for p in sorted(cells_dir().glob("*.json")):
         rec = json.loads(p.read_text())
         st, why = record_status(rec)
+        if p.stem != rec.get("name"):
+            st, why = "INVALID", f"file name {p.stem} != record name {rec.get('name')!r}"
+        elif st == "MEASURABLE" and rec.get("ckpt_sha256") != hashes.get(rec["policy"]):
+            st, why = "INVALID", "checkpoint hash differs from the frozen checkpoint"
         if st == "MEASURABLE":
             measurable[rec["name"]] = rec
         elif st == UNDETERMINED:
@@ -470,8 +492,10 @@ def classification(records: dict) -> dict:
             "trap_position": sum(s["trap_position"] for s in st) / n,
             "pair_trap": sum(s["trap_heading"] and not s["trap_position"] for s in st) / n,
             "rot_admissible": sum(s["rot_admissible"] for s in st) / n,
-            "qp_agree": sum(s["qp"]["agree"] for s in st) / n,
-            "qp_forward": sum(s["qp"]["forward"] for s in st) / n,
+            # A4.7: the projection characterisation is for the exact tier, so QP agreement is pooled over exact-tier states
+            "n_exact": sum(s["tier"] == "exact" for s in st),
+            "qp_agree": (sum(s["qp"]["agree"] for s in st if s["tier"] == "exact") / max(1, sum(s["tier"] == "exact" for s in st))),
+            "qp_forward": (sum(s["qp"]["forward"] for s in st if s["tier"] == "exact") / max(1, sum(s["tier"] == "exact" for s in st))),
             "n_self_stop": sum(s["kind"] == "self_stop" for s in rec["states"]),
             "law_branch_share": sum(s.get("branch") == "law" for s in st) / n,  # A2: law pins (D142) vs policy stalls
         }
@@ -496,36 +520,41 @@ def h_b1_3(cls: dict) -> dict:
 
 
 def _pooled(cls: dict, key: str) -> float:
-    num = sum(c[key] * c["n"] for c in cls.values() if c.get("n"))
-    den = sum(c["n"] for c in cls.values() if c.get("n"))
+    nkey = "n_exact" if key.startswith("qp_") else "n"  # A4.7
+    num = sum(c[key] * c[nkey] for c in cls.values() if c.get(nkey))
+    den = sum(c[nkey] for c in cls.values() if c.get(nkey))
     return num / den if den else float("nan")
 
 
 def h_b1_4(records: dict) -> dict:
-    """Clause 1: stochastic deadlock rate >= 0.5 × deterministic on >= 3/4.
-    Clause 2 (A1): median observed stall-run length BEYOND ONSET in the stochastic
-    arm (runs >= K; censored runs at their censored length) within a factor 2 of
-    the median predicted dwell 10/p_leave over the deterministic arm's stalled
-    states, on >= 3/4."""
+    """Clause 1: stochastic deadlock rate >= 0.5 x deterministic on >= 3/4 (a deterministic rate of 0 passes trivially).
+    Clause 2 (A1, A2, A4.1, A4.5): over the STOCHASTIC arm's own search-branch stall ONSETS (run_at_sample == K), the
+    median observed dwell beyond the sample (steps until the body moved >= 0.10 m; censored at the episode end counted
+    at the censored length) is within a factor 2 of the median predicted 10/p_leave at those same states, on >= 3/4."""
     c1, c2, detail = {}, {}, {}
     for p in POLICIES:
         d, s = records.get(cell_name(p, "det")), records.get(cell_name(p, "stoch"))
         if d is None or s is None:
             continue
-        c1[p] = bool(s["deadlock_episode_rate"] >= 0.5 * d["deadlock_episode_rate"]) if d["deadlock_episode_rate"] > 0 else None
-        # A2: clause 2 is about the POLICY's noise, so only search-branch stalls enter on both sides
-        obs = [r["length"] - K for e in s["episodes"] for r in e["stall_runs"] if r["length"] >= K and r.get("branch", "search") == "search"]
-        pred = [st["leave"]["predicted_dwell_steps"] for st in _stalled(d) if st.get("leave") and st.get("branch", "search") == "search"]
+        c1[p] = True if d["deadlock_episode_rate"] == 0 else bool(s["deadlock_episode_rate"] >= 0.5 * d["deadlock_episode_rate"])
+        onsets = [st for st in _stalled(s) if st.get("run_at_sample") == K and st.get("branch", "search") == "search" and st.get("leave")]
+        obs = []
+        for st in onsets:
+            dw = st.get("dwell_beyond_sample")
+            obs.append(dw if dw is not None else (st["run_length"] - st["run_at_sample"]))  # censored: at least the rest of the run
+        pred = [st["leave"]["predicted_dwell_steps"] for st in onsets]
         pred_f = [np.inf if x is None else x for x in pred]
         mo = float(np.median(obs)) if obs else None
         mp = float(np.median(pred_f)) if pred_f else None
         ok = None
         if mo is not None and mp is not None:
-            ok = bool(mp == np.inf and mo >= 0.5 * 1e9) if mp == np.inf else bool(0.5 * mp <= mo <= 2.0 * mp)
+            ok = bool(0.5 * mp <= mo <= 2.0 * mp) if np.isfinite(mp) else None
         c2[p] = ok
-        detail[p] = {"deadlock_det": d["deadlock_episode_rate"], "deadlock_stoch": s["deadlock_episode_rate"], "median_observed_beyond_onset": mo,
-                     "median_predicted": None if mp is None or mp == np.inf else mp, "predicted_infinite_share": float(np.mean([x == np.inf for x in pred_f])) if pred_f else None,
-                     "n_obs_runs": len(obs), "n_pred": len(pred_f)}
+        detail[p] = {"deadlock_det": d["deadlock_episode_rate"], "deadlock_stoch": s["deadlock_episode_rate"], "n_onsets": len(onsets),
+                     "median_observed_beyond_onset": mo, "median_predicted": None if mp is None or not np.isfinite(mp) else mp,
+                     "predicted_infinite_share": float(np.mean([not np.isfinite(x) for x in pred_f])) if pred_f else None,
+                     "censored_share": float(np.mean([st.get("dwell_beyond_sample") is None for st in onsets])) if onsets else None,
+                     "law_branch_onsets": sum(1 for st in _stalled(s) if st.get("run_at_sample") == K and st.get("branch") == "law")}
     complete = len(c1) == len(POLICIES)
     n1 = sum(bool(v) for v in c1.values())
     n2 = sum(bool(v) for v in c2.values())
@@ -561,10 +590,7 @@ def write_gifs(device: str = "cpu", fps: float = 15.0) -> list[pathlib.Path]:
         path = gifs_dir() / f"{p}_det.gif"
         if path.exists():
             continue
-        ep = next((e for e in rec["episodes"] if e["deadlock"]), None)
-        if ep is None:
-            print(f"{p}: no deadlock episode to render", flush=True)
-            continue
+        ep = next((e for e in rec["episodes"] if e["deadlock"]), None) or max(rec["episodes"], key=lambda e: e["longest_stall_run"])  # A4.8
         model = S._model(S.POLICIES[p]["ckpt"], device)
         r = Recorder(cfg, S.opponent_factory(OPPONENT, device), label=f"{p} vs {OPPONENT} · plain CBF · ep {ep['seed']}", every=GIF_EVERY, hold=HOLD, shield=CBFShield(cfg), shield_obs=S.POLICIES[p]["shield_obs"])
         log = r.play_episode(model.predict, ep["seed"])

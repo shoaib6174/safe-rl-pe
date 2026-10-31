@@ -1,0 +1,78 @@
+\documentclass{l4dc2027}
+% If your paper is accepted, please use the "final" option
+% for the camera-ready version
+% \documentclass[final]{l4dc2027}
+
+% The following packages will be automatically loaded:
+% amsmath, amssymb, natbib, graphicx, url, algorithm2e
+
+\title[Short Title]{Full Title of Article}
+\usepackage{times}
+% Use \Name{Author Name} to specify the name.
+% If the surname contains spaces, enclose the surname
+% in braces, e.g. \Name{John {Smith Jones}} similarly
+% if the name has a "von" part, e.g \Name{Jane {de Winter}}.
+% If the first letter in the forenames is a diacritic
+% enclose the diacritic in braces, e.g. \Name{{\'E}louise Smith}
+
+% Two authors with the same address
+% \coltauthor{\Name{Author Name1} \Email{abc@sample.com}\and
+%  \Name{Author Name2} \Email{xyz@sample.com}\\
+%  \addr Address}
+
+% Three or more authors with the same address:
+% \coltauthor{\Name{Author Name1} \Email{an1@sample.com}\\
+%  \Name{Author Name2} \Email{an2@sample.com}\\
+%  \Name{Author Name3} \Email{an3@sample.com}\\
+%  \addr Address}
+
+% Authors with different addresses:
+\author{%
+ \Name{Author Name1} \Email{abc@sample.com}\\
+ \addr Address 1
+ \AND
+ \Name{Author Name2} \Email{xyz@sample.com}\\
+ \addr Address 2%
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}%
+ An abstract would go here.%
+\end{abstract}
+
+\begin{keywords}%
+  List of keywords%
+\end{keywords}
+
+\section{Introduction}
+
+\begin{itemize}
+  \item Limit the main text (not counting acknowledgments or references) to 10 PMLR-formatted pages, using this template.
+  \item Include {\em in the main text} enough details, including proof details, to convince the reviewers of the contribution, novelty and significance of the submissions.
+  \item Make sure to cite references for related literature and for any claims that are not established in the paper using the \texttt{\textbackslash citep} and \texttt{\textbackslash citet} commands, e.g. \citep{levine2016end}, \citet{doyle2003guaranteed}, \citet[Theorem 2.2.1]{vershynin2018high}. We have provided a sample \texttt{.bib} file.
+\end{itemize}
+
+\subsection*{Generative AI Use}
+
+If generative AI tools were used in preparing this work, authors should briefly
+describe their use here. Relevant categories may include research ideation or
+methodology, mathematical derivations or proofs, coding or experimental
+implementation, writing or editing, and literature search or synthesis.
+Authors remain responsible for the accuracy and integrity of all submitted
+content.
+
+\textit{Example:} Generative AI tools were used for [purpose(s)]. The authors
+reviewed and verified all AI-assisted content and take responsibility for the
+final content of the paper.
+
+If no generative AI tools were used, authors may state:
+\textit{No generative AI tools were used in preparing this work.}
+\acks{We thank a bunch of people.}
+
+
+\bibliography{l4dc2027-sample}
+
+\end{document}
