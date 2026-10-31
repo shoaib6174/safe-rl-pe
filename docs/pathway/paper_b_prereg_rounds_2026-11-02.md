@@ -145,3 +145,42 @@ runners `scripts/paper_b_geometry.py`, `scripts/paper_b_filter_sweep.py`; launch
 Nothing is re-run, re-seeded, re-cut or re-thresholded after any number of a round is seen. A crashed cell is
 UNDETERMINED and is not re-run. Duplicate records → reject both. Amendments are dated and precede the number they
 concern. GIFs are watched before `--summarize`; the construct gates refuse the summary, they are not advisory.
+
+## Amendment A1 (2026-11-01, before any cell of any round has run): three implementation clarifications
+1. **H-B1-4 clause 2 compares like with like.** The predicted dwell 10/p_leave is the expected time BEYOND the sampled
+   onset; the observed quantity is therefore the stochastic arm's stall-run length MINUS K = 40 (runs ≥ 40; censored
+   runs at their censored length). States whose p_leave = 0 predict an infinite dwell and are counted as such in the
+   predicted median (the `predicted_infinite_share` is reported).
+2. **p_leave's hold simulation re-filters the held command at every step** (as `SearchMDP` does during a hold) and the
+   body is stepped with `pe2.env.pursuer_step` on the env's inset bounds; `leave` = displacement ≥ 0.10 m from the
+   sampled pose within the 10 steps.
+3. **Engagements (B2):** an engagement ends when 5 consecutive steps pass without a firing (`ENGAGE_GAP = 5`); its
+   escape time is measured from its first firing step. B2 settings `RECF-N` keep `RecoveryShieldV2`'s default
+   `move_eps` (= the immobility threshold), as in S17.
+
+## Amendment A2 (2026-11-01, before any cell record exists): the driving branch is recorded, and H-B1-4 clause 2 is scoped to policy stalls
+**Disclosure.** The B1 runner's smoke (4 deterministic + 2 stochastic episodes of `BASE-61` on seeds 3 000 000–3 000 003,
+written to a scratch directory, no record under `results/`) showed stall runs of 445 and 773 steps in the stochastic arm
+whose sampled states had p_leave ≈ 0.4–0.5 — i.e. the policy's own noise would leave in ~20 steps, yet the run lasted
+hundreds. The likely reason is that those steps were driven by the **intercept law** (the scripted branch `SearchMDP`
+uses when the evader is visible), whose command is deterministic — the law pin of D142 — and the runner did not record
+which branch drove each step. **No bar is moved.** Changes, all before any record exists:
+1. Every recorded step carries `branch ∈ {law, search}` and `visible` (from `SearchMDP.trace`, appended once per filter call).
+2. Each sampled state and each stall run carries the branch at its K-th step. The classification reports the
+   `law_branch_share` of stalled states per policy.
+3. **H-B1-4 clause 2 (dwell prediction) is evaluated on `search`-branch stalls only, on both sides** — the prediction
+   is about the policy's Gaussian, and a law-driven stall has no policy noise to leave by. Clause 1 (deadlock rate
+   under stochastic sampling) is unchanged and counts all stalls. Law-branch stalls are reported as their own line:
+   they are the same closed-loop fixed point (Prop 1 applies to any memoryless controller) and the paper says so.
+4. B1 runs as two chains (det / stoch) of 4 cells each; B1's smoke seeds are the stream's first seeds and are NOT
+   excluded (the smoke wrote no record and read no gated quantity; the geometry probes it printed are not reported).
+
+## Amendment A3 (2026-11-01, before any cell record exists): two admissibility definitions, the oracle decides the trap classification
+Section 0 said "passes the filter's exact one-step test". A unit test on a constructed pose (body 5 mm from an obstacle,
+heading into it — no stream episode) showed the two readings of that phrase differ: under the EXACT TIER (every DCBF
+row satisfied on the true successor, the projection set of Prop 1) no rotation is admissible there because the
+virtual-control-point soft row fails, yet the filter EXECUTES the rotation unchanged on its relaxed tier. D126's
+oracle was "u is admissible iff filter(u) returns u unchanged". Ruling, before any number: **trap-at-heading,
+position-trap and rotation-admissible use D126's oracle (what will be executed), on a 21 × 21 grid at the sampled
+heading and an 11 × 11 grid per swept heading; the exact-tier versions are computed on the 41 × 41 grid and reported
+beside them** (`*_exact` fields). H-B1-1 (tier) is unchanged and is what scopes Prop 1 to the exact tier. Bars unchanged.
