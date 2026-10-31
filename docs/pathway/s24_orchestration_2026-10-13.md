@@ -116,3 +116,4 @@ Revised estimate ≈ 0.9 M (the prereg's 0.5 M assumed pure derivatives; the fla
 
 ## S25 value sweep (2026-11-01) — user: "do them" (margin sweep + full-observation pursuer)
 - Prereg `value_sweep_prereg_s25_2026-11-01.md` (+A1 disclosure); runner `scripts/derisk_s25_value_sweep.py` (mine, 15 tests), launcher `launch_s25.sh`. Two guard self-matches (my own command lines carried pattern text) and one pre-flight recursion crash (`2fd8004`, no record written) before the live launch at **`3c65449`**: 80 eval cells, 5 chains, N = 500. No subagent; budget ≈ 6.8 M / 7.0 M. Next: 80 records → `--gifs` (12) → watch → amendment → `--summarize` → D158.
+- **2026-11-01 — research ledger CLOSED at ≈ 6.8 M / 7.0 M.** New phase: Paper B → L4DC 2027 (deadline Nov 13), **budget 5.0 M** (user). Plan + formal-section critique + B1/B2 definitions: `docs/pathway/paper_b_l4dc_plan_2026-11-01.md`. S25 (Paper A's sweep) still running at `3c65449`; closed with own steps when done (D158).
