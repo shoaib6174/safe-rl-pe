@@ -1,0 +1,35 @@
+# Paper B — verified citations (2026-11-01; primary sources: arXiv abstract pages, PMLR, Crossref, USENIX)
+
+Rule: only entries marked VERIFIED enter the draft; DOIs resolved via Crossref. Relevance notes are for the related-work map.
+
+## Deadlock / undesired equilibria of CBF-QP controllers (Prop 1's prior art)
+- Grover, Liu, Sycara. "Why Does Symmetry Cause Deadlocks?" IFAC-PapersOnLine 53(2):9746–9753, 2020 (21st IFAC WC). DOI 10.1016/j.ifacol.2020.12.2644. VERIFIED.
+- Grover, Liu, Sycara. "Deadlock Analysis and Resolution for Multi-robot Systems." WAFR 2020, Springer Proc. Adv. Robotics, pp. 294–312, 2021. DOI 10.1007/978-3-030-66723-8_18; arXiv:1911.09146. VERIFIED.
+- Grover, Liu, Sycara. "The Before, During, and After of Multi-robot Deadlock." IJRR 42(6):317–336, 2023. DOI 10.1177/02783649221074718; arXiv:2206.01781. VERIFIED. **Key result (full text checked):** QP projection form u* = argmin ‖u − û‖² s.t. a_ijᵀu ≤ b_ij; Def. 2 deadlock iff u* = 0 and p ≠ p^d; KKT stationarity at u* = 0 gives û = ½ Σ_{j∈A(0)} μ_ij a_ij, μ ≥ 0 — the nominal lies in the conic hull of the active constraint normals ("force equilibrium"; they do not use the words "normal cone" — that is our gloss, equivalent to û ∈ N_C(0) ⇔ Proj_C(û) = 0). Theorem 5: the system deadlock set has zero measure. There is NO IJRR paper titled "Deadlock analysis and resolution".
+- Reis, Aguiar, Tabuada. "Control Barrier Function-Based Quadratic Programs Introduce Undesirable Asymptotically Stable Equilibria." IEEE L-CSS 5(2):731–736, 2021. DOI 10.1109/LCSYS.2020.3004797; arXiv:2003.07819. VERIFIED. Single agent, one convex obstacle, linear system: CLF-CBF QPs create spurious stable equilibria on the unsafe-set boundary.
+- Tan, Dimarogonas. "On the undesired equilibria induced by control barrier function based quadratic programs." Automatica 159:111359, 2024. DOI 10.1016/j.automatica.2023.111359; arXiv:2104.14895. VERIFIED. Characterises all closed-loop equilibria of CBF-QPs; modified QP removes every undesired equilibrium while keeping forward invariance.
+- Reis, Aguiar. "On the stability of undesirable equilibria in the quadratic program framework for safety-critical control." Automatica 190:113032, 2026. DOI 10.1016/j.automatica.2026.113032; arXiv:2402.08027. VERIFIED.
+- Reis, Carvalho, Aguiar. "A Unified Stability Analysis of Safety-Critical Control using Multiple Control Barrier Functions." arXiv:2503.15823 (2025, no DOI). VERIFIED (preprint). States explicitly: safety guaranteed, liveness not.
+
+## Safety filters and shields (framing)
+- Hsu, Hu, Fisac. "The Safety Filter: A Unified View of Safety-Critical Control in Autonomous Systems." Annu. Rev. Control Robot. Auton. Syst. 7(1):47–72, 2024. DOI 10.1146/annurev-control-071723-102940; arXiv:2309.05837. VERIFIED.
+- Ames, Coogan, Egerstedt, Notomista, Sreenath, Tabuada. "Control Barrier Functions: Theory and Applications." ECC 2019, pp. 3420–3431. DOI 10.23919/ECC.2019.8796030; arXiv:1903.11199. VERIFIED.
+- Alshiekh, Bloem, Ehlers, Könighofer, Niekum, Topcu. "Safe Reinforcement Learning via Shielding." AAAI-18, 32(1):2669–2678. DOI 10.1609/aaai.v32i1.11797; arXiv:1708.08611. VERIFIED.
+- Cheng, Orosz, Murray, Burdick. "End-to-End Safe Reinforcement Learning through Barrier Functions for Safety-Critical Continuous Control Tasks." AAAI-19, 33(01):3387–3395. DOI 10.1609/aaai.v33i01.33013387; arXiv:1903.08792. VERIFIED.
+
+## L4DC 2025 neighbours (same venue)
+- Kim, Corsi, Rodríguez, Lanier, Parellada, Baldi, Sánchez, Fox. "Realizable Continuous-Space Shields for Safe Reinforcement Learning." L4DC 2025, PMLR 283:932–945; arXiv:2410.02038. https://proceedings.mlr.press/v283/kim25c.html VERIFIED. Realizability (a safe action always exists) incl. stateful requirements such as loop avoidance; targets over-conservative shield behaviour on the specification side.
+- Wang, He, Pajic. "Neuro-Symbolic Deadlock Resolution in Multi-Robot Systems." L4DC 2025, PMLR 283:1066–1077. https://proceedings.mlr.press/v283/wang25f.html VERIFIED. Resolves multi-robot deadlocks after they occur; no-persistent-deadlock guarantee.
+- Dawood, Shokry, Bennewitz. "A Dynamic Safety Shield for Safe and Efficient Reinforcement Learning of Navigation Tasks." L4DC 2025, PMLR 283:686–697; arXiv:2412.04153. VERIFIED. MPC shield whose weights an RL supervisor adapts to reduce conservativeness.
+- Arnström, Teixeira. "Data-Driven and Stealthy Deactivation of Safety Filters." L4DC 2025, PMLR 283:456–468; arXiv:2412.01346. VERIFIED. (ECC 2024 predecessor arXiv:2403.17861.)
+
+## Learning through / with the filter (2025–2026)
+- Oh, Nguyen, Hu, Fisac. "Provably Optimal Reinforcement Learning under Safety Filtering." arXiv:2510.18082; Proc. IASEAI'26 2(1):488–500. VERIFIED. Filter-unaware policy chatters against the filter; treating the filter as part of the MDP and training through it is optimal when the filter is permissive enough — closest formal statement to our D113 "filter-aware observation" result.
+- Wu, Yang, Oh, Nguyen, Hu. "Turning Safety into Competence: Minimally Exploitable Robot Policies via Safety-Filtered Reinforcement Learning." arXiv:2609.27312 (23 Sep 2026, cs.RO, 8 pp., no venue). VERIFIED. (S2C; exploitability in touchdown games — Paper A's neighbour, cite in B's related work for the filtered-RL line.)
+- Georgescu, Goodall, Alrajeh, Belardinelli, Uchitel. "Adaptive GR(1) Specification Repair for Liveness-Preserving Shielding in Reinforcement Learning." arXiv:2511.02605, NeSy 2026. VERIFIED. Static shields block task completion when assumptions fail; online spec repair keeps liveness achievable.
+- Nakamura et al. "How to Train Your Latent Control Barrier Function: Smooth Safety Filtering Under Hard-to-Model Constraints." arXiv:2511.18606 (no venue). VERIFIED abstract. Switching filters hurt task completion.
+- Lee et al. "Merry-Go-Round: Safe Control of Decentralized Multi-Robot Systems with Deadlock Prevention." IROS 2025; arXiv:2503.05848. VERIFIED abstract.
+
+## Corrections to earlier notes
+- Yeke, Pant, Ozmen, Kim, Goppert, Hwang, Bianchi, Celik. "Automated Discovery of Semantic Attacks in Multi-Robot Navigation Systems." USENIX Security 2025, pp. 3959–3978 (tool Raven; ORCA and GLAS). VERIFIED citation, but **the abstract names position deviation, herding and collisions — NOT deadlock**. The memory note "deadlock as an adversarial objective" is unsupported until the full PDF is checked; do not assert it.
+- No 2024–2026 paper names "safety-filter-induced deadlock for RL agents" as such; the GR(1)-repair and Oh et al. lines are the nearest.

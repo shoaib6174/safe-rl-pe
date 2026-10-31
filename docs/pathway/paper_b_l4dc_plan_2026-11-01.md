@@ -90,3 +90,12 @@ User-only items: author list/affiliation; rotate the niro-2 password (public rep
 | 10 | Nov 12 | **Submit** (one day inside the firm deadline); D159 "Paper B submitted"; worklog/tracker/memory | — | user submits on OpenReview | 0.05 M |
 | — | after Nov 13 | Resume: Paper A write-up for RA-L (S25/D158 in hand); playable-site brainstorm (pending question: who plays first) | — | — | reserve ≈ 0.6 M |
 Hard cuts: B4 dropped if not composing by Nov 3 evening; any B round not summarised by Nov 6 is reported as "in progress" in the draft and excluded from claims. User-only items, needed by Nov 3: author list/affiliation; niro-2 password rotation; confirmation of blind policy handling.
+
+## Venue facts — VERIFIED 2026-11-01 from the 2027 CFP (site l4dc2027.control.ee.ethz.ch, OpenReview L4DC.org/2027)
+- Deadline **Nov 13 2026, 23:59 AoE** (OpenReview `duedate` = 2026-11-14 11:59 UTC); site: "WILL NOT BE EXTENDED". No separate abstract deadline.
+- **10 pages** in PMLR format including figures/tables/conclusions; references unlimited; the flyer says appendices unlimited, the author page says reviews are based on the 10 pages only and supplementary goes in the same portal → everything that must be reviewed stays inside 10 pages; proofs/extra results after the references. Template `L4DC2027_template.zip` (l4dc2027.cls = jmlr/pmlr; options `anon`, `final`). PDF only, max 50 (MB).
+- **Single-blind.** The public repo and frozen commits may be linked (rotate the CLAUDE.md password first).
+- Supplementary: allowed (long proofs, extra results) in the portal; no size or video policy stated; no separate OpenReview field → single PDF. Generative-AI use allowed with transparency.
+- Decisions Jan 25 2027; camera-ready Apr 19; conference June 16–18 2027, KTH Stockholm; proceedings PMLR; all papers posters, selected orals.
+- Topics 2027: "Reinforcement learning and adaptive control", "Agentic AI and algorithmic robustness", data-driven control, applications in robotics. **"Safe RL" is NOT in the 2027 list** (it was in 2025/2026) → frame as RL + robustness of the learning–control interface, robotics as the application.
+- Dual-submission/arXiv policy: not stated in any year; 2025 explicitly allowed arXiv-hosted supplements.
