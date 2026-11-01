@@ -67,3 +67,6 @@ Two launch attempts were refused by the host guard on self-matches of my own com
 and the first real launch (`2fd8004`) crashed at pre-flight on a bound-name recursion in the `SEL-81` checkpoint
 resolver (the in-process smoke had covered only the `SEL3-80` path). **No cell record was written**; the stop rule
 is intact. Fixed, the smoke test now covers both learned resolvers; relaunched from the corrected commit.
+
+## Outcome (2026-11-01 08:25) — see D158
+80/80 records, CG-V1/V3 PASS, 12 GIFs watched (no amendment), H-SAFE HOLDS; H-VAL-1 FAIL 2/4, H-VAL-2 FAIL 1/4, H-VAL-3 and H-VAL-4 reported. Full numbers in `docs/decisions.md` D158 and `results/derisk/s25_round.json`.

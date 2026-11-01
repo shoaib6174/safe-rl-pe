@@ -104,5 +104,5 @@ Hard cuts: B4 dropped if not composing by Nov 3 evening; any B round not summari
 ## Status 2026-11-02 04:00 (after the night session)
 Steps 1 (audit), 2 (prereg B1–B4 + A1–A3), 3 (runners, tests, launcher — opus review pending; launch waits for S25 to
 release the host), 4 (skeleton `docs/paper_b/skeleton_2026-11-02.md` — **awaiting user approval**) and the archived
-figures F1–F5 are DONE. Step 0 (S25 close → D158) pending the sweep (25/80). Step 5 venue facts DONE (above); the author
+figures F1–F5 are DONE. Step 0 DONE 2026-11-01 08:25 (S25 closed, D158: the filter's role QUALIFIED; EVS-80 minimax without the filter). S26 LAUNCHED 08:30 from `b535af6` (7 chains; GIFs → watch → summarize next). Step 5 venue facts DONE (above); the author
 block and the password rotation remain the user's.
