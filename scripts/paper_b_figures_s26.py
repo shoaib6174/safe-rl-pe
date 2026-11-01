@@ -35,6 +35,8 @@ POL = ("BASE-60", "BASE-61", "BASE-62", "STR14", "RC19")
 B34 = ("BASE-60", "BASE-61", "BASE-62", "RC19")
 MARK = {"BASE-60": "o", "BASE-61": "s", "BASE-62": "^", "STR14": "D", "RC19": "v"}
 ALPHA = {"BASE-60": 0.55, "BASE-61": 0.75, "BASE-62": 1.0, "STR14": 1.0, "RC19": 1.0}
+# Paper names (records and DATA keep the internal identifiers; the supplement carries the crosswalk).
+NAME = {"BASE-60": "Base 1", "BASE-61": "Base 2", "BASE-62": "Base 3", "STR14": "Free", "RC19": "Aware"}
 RECF_NS = (5, 10, 20, 40, 80)
 XS = ("PLAIN", *(f"RECF-{n}" for n in RECF_NS))
 XLAB = ("plain", "5", "10", "20", "40", "80")
@@ -119,7 +121,7 @@ def f6(rnd: dict, cells: dict) -> None:
         c = cls.get(p, {})
         if not c.get("n"):
             continue
-        ax.bar(xs + (i - 1.5) * w, [c[k] for k in keys], width=w - 0.02, color=colour(p), alpha=ALPHA[p], label=f"{p} (n = {c['n']})")
+        ax.bar(xs + (i - 1.5) * w, [c[k] for k in keys], width=w - 0.02, color=colour(p), alpha=ALPHA[p], label=f"{NAME[p]} (n = {c['n']})")
     ax.set_xticks(xs, names, fontsize=5.8)
     ax.set_ylim(0, 1.22)
     ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
@@ -145,7 +147,7 @@ def f6(rnd: dict, cells: dict) -> None:
         allo += ob
         d = h4["detail"].get(p)
         if d and d["median_predicted"] is not None and d["median_observed_beyond_onset"] is not None:
-            ax.scatter([d["median_predicted"]], [max(d["median_observed_beyond_onset"], 1)], s=48, color=colour(p), marker=MARK[p], edgecolor=C["ink"], linewidths=0.6, zorder=5, label=f"{p} median (n = {d['n_onsets']})")
+            ax.scatter([d["median_predicted"]], [max(d["median_observed_beyond_onset"], 1)], s=48, color=colour(p), marker=MARK[p], edgecolor=C["ink"], linewidths=0.6, zorder=5, label=f"{NAME[p]} median (n = {d['n_onsets']})")
     lim = np.array([1.0, 5000.0])
     ax.fill_between(lim, 0.5 * lim, 2.0 * lim, color=C["light"], alpha=0.5, lw=0, label="within factor 2")
     ax.plot(lim, lim, color=C["ref"], lw=0.7, ls="--")
@@ -185,7 +187,7 @@ def f7(rnd: dict, cells: dict) -> None:
             fire.append(sum(r["recoveries"] for r in rs) / sum(r["n_episodes"] for r in rs))
             ne, nc = sum(r["n_engagements"] for r in rs), sum(r["n_cycles"] for r in rs)
             cyc.append(nc / ne if ne else np.nan)
-        kw = {"color": colour(p), "alpha": ALPHA[p], "marker": MARK[p], "ms": 3.6, "lw": 1.1, "label": p}
+        kw = {"color": colour(p), "alpha": ALPHA[p], "marker": MARK[p], "ms": 3.6, "lw": 1.1, "label": NAME[p]}
         ax_dead.plot(x, dead, **kw)
         ax_cap.plot(x, cap, **kw)
         ax_fire.plot(x, fire, **kw)
@@ -204,11 +206,11 @@ def f7(rnd: dict, cells: dict) -> None:
         DATA["F7"][p] = {"deadlock_ATK": dead, "capture_GREEDY": cap, "firings_per_episode": fire, "cycles_per_engagement": cyc, "immobile_ATK": imm,
                          "PERT-20": None if not (pert_d and pert_c) else {"deadlock": pert_d["deadlock_episode_rate"], "capture": pert_c["capture_rate"], "immobile": pert_d["immobile_step_rate"],
                                                                         "firings_per_episode": sum(r["recoveries"] for r in (pert_d, pert_c)) / sum(r["n_episodes"] for r in (pert_d, pert_c))}}
-    for ax, ttl, yl in ((ax_dead, "(a) deadlock episodes, vs attacker", "deadlock episode rate"), (ax_cap, "(b) capture, vs GREEDY", "capture rate"),
+    for ax, ttl, yl in ((ax_dead, "(a) deadlock episodes, vs attacker", "deadlock episode rate"), (ax_cap, "(b) capture, vs greedy evader", "capture rate"),
                         (ax_fire, "(c) recovery firings per episode", "firings / episode"), (ax_cyc, "(d) cycles per engagement", "cycle share"),
                         (ax_imm, "(e) immobile steps, vs attacker", "immobile step rate")):
         ax.set_xticks(x, XLAB)
-        ax.set_xlabel("recovery_after N", fontsize=7)
+        ax.set_xlabel("recovery parameter N", fontsize=7)
         ax.set_ylabel(yl)
         ax.set_title(ttl, loc="left", fontsize=7)
         ax.grid(axis="y")
@@ -228,7 +230,7 @@ def f7(rnd: dict, cells: dict) -> None:
         ax_esc.hist(np.clip(esc, 0, bins[-1]), bins=bins, color=C["BASE"], alpha=0.85)
         ax_esc.axvline(20 + T_TURN, color=C["STR14"], lw=1.0, ls="--")
         ax_esc.annotate(f"N + one turn = {20 + T_TURN}", xy=(20 + T_TURN, ax_esc.get_ylim()[1] * 0.95), xytext=(4, 0), textcoords="offset points", fontsize=6, color=C["STR14"], va="top")
-    ax_esc.set_xlabel("steps from trigger to 0.10 m (RECF-20, all cells)", fontsize=7)
+    ax_esc.set_xlabel("steps from trigger to 0.10 m (N = 20, all cells)", fontsize=7)
     ax_esc.set_ylabel("triggers")
     ax_esc.set_title("(f) escape time after a recovery trigger", loc="left", fontsize=7)
     h22 = rnd["hypotheses"].get("H-B2-2", {})
@@ -248,11 +250,11 @@ def f8(rnd: dict, cells: dict) -> None:
     for p in B34:
         dead = [(cell(cells, p, "ATK4-45", s) or {}).get("deadlock_episode_rate", np.nan) for s in sets]
         cap = [(cell(cells, p, "GREEDY", s) or {}).get("capture_rate", np.nan) for s in sets]
-        kw = {"color": colour(p), "alpha": ALPHA[p], "marker": MARK[p], "ms": 4, "lw": 1.1, "label": p}
+        kw = {"color": colour(p), "alpha": ALPHA[p], "marker": MARK[p], "ms": 4, "lw": 1.1, "label": NAME[p]}
         axes[0].plot(x, dead, **kw)
         axes[1].plot(x, cap, **kw)
         DATA["F8"][p] = {"deadlock_ATK": dead, "capture_GREEDY": cap}
-    for ax, ttl, yl in ((axes[0], "(a) deadlock episodes vs the learned attacker", "deadlock episode rate"), (axes[1], "(b) capture vs GREEDY", "capture rate")):
+    for ax, ttl, yl in ((axes[0], "(a) deadlock episodes vs the learned attacker", "deadlock episode rate"), (axes[1], "(b) capture vs greedy evader", "capture rate")):
         ax.set_xticks(x, [lab[s] for s in sets], fontsize=7)
         ax.set_ylabel(yl)
         ax.set_title(ttl, loc="left", fontsize=7)

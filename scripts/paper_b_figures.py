@@ -30,6 +30,9 @@ OUT = pathlib.Path("docs/paper_b/figures")
 C = {"BASE": "#52514e", "OBS": "#2a78d6", "GAM": "#eb6834", "OBSGAM": "#1baf7a", "ink": "#0b0b0b", "muted": "#8a8984", "grid": "#e6e5e1", "bar": "#b0afa9"}
 FAM = ("BASE", "OBS", "GAM", "OBSGAM")
 SEEDS = (60, 61, 62)
+# Paper names (the records keep the internal identifiers; the supplement carries the crosswalk).
+NAME = {"BASE": "Base", "OBS": "Obs", "GAM": "Hor", "OBSGAM": "ObsHor"}
+SEEDIDX = {60: 1, 61: 2, 62: 3}
 plt.rcParams.update({"font.size": 8, "axes.spines.top": False, "axes.spines.right": False, "axes.edgecolor": "#52514e", "axes.linewidth": 0.6,
                      "xtick.color": "#52514e", "ytick.color": "#52514e", "axes.labelcolor": "#0b0b0b", "grid.color": C["grid"], "grid.linewidth": 0.5,
                      "legend.frameon": False, "pdf.fonttype": 42})
@@ -53,7 +56,7 @@ def f1() -> None:
     bare = arm("OBS-61")["final"]["gate"]["HUG7"]["traces"][3]
     recf = arm("RECF-OBS-61")["final"]["gate"]["HUG7"]["traces"][3]
     fig, axes = plt.subplots(2, 1, figsize=(6.8, 3.4), sharex=True, gridspec_kw={"height_ratios": [1, 1]})
-    for ax, tr, title in ((axes[0], bare, "plain CBF filter (OBS-61, episode 1 740 003 vs HUG7)"), (axes[1], recf, "same policy, same episode, forward-offering recovery (N = 20)")):
+    for ax, tr, title in ((axes[0], bare, "plain CBF filter (Obs seed 2, episode 1 740 003 vs the wall-hugging evader)"), (axes[1], recf, "same policy, same episode, forward-offering recovery (N = 20)")):
         t = np.arange(len(tr))
         vn = np.array([s["v_nom"] for s in tr])
         ve = np.array([s["v_exec"] for s in tr])
@@ -88,7 +91,7 @@ def f2() -> None:
     for b, v in zip(bars, vals, strict=True):
         axes[0].text(b.get_x() + b.get_width() / 2, v + 0.01, f"{v:.3f}", ha="center", fontsize=7.5)
     axes[0].set_ylabel("P(capture | stall entry)")
-    axes[0].set_title(f"(a) escaping multiplies capture {rnd['capture_rate_escaped'] / rnd['capture_rate_not_escaped']:.1f}×\nS15, {rnd['n_entries']} stall entries", fontsize=7.5, loc="left")
+    axes[0].set_title(f"(a) escaping multiplies capture {rnd['capture_rate_escaped'] / rnd['capture_rate_not_escaped']:.1f}×\nExperiment 2, {rnd['n_entries']} stall entries", fontsize=7.5, loc="left")
     axes[0].set_ylim(0, 0.36)
     # (b) delay distribution
     delays = np.array([e["steps_remaining"] for e in esc])
@@ -104,7 +107,7 @@ def f2() -> None:
     axes[2].plot(g, A * g ** T, color=C["OBS"], lw=1.4)
     axes[2].axhline(0.05, color=C["muted"], lw=0.8, ls=":")
     axes[2].text(0.9852, 0.055, "0.05 bar", fontsize=7, color=C["muted"])
-    for gg, lab in ((0.99, "γ = 0.99\n(training)"), (0.999, "γ = 0.999\n(GAM arm)")):
+    for gg, lab in ((0.99, "γ = 0.99\n(training)"), (0.999, "γ = 0.999\n(Hor family)")):
         axes[2].scatter([gg], [A * gg ** T], s=22, color=C["ink"], zorder=3)
         axes[2].annotate(lab, (gg, A * gg ** T), textcoords="offset points", xytext=(4, 6), fontsize=7)
     axes[2].set_xlabel("discount γ")
@@ -141,18 +144,18 @@ def f3() -> None:
             ax.annotate("", xy=(x1, y1), xytext=(x0, y0), arrowprops={"arrowstyle": "-", "color": C[fam], "lw": 0.6, "alpha": 0.5})
     ax.axvline(0.05, color=C["muted"], lw=0.8, ls=":")
     ax.text(0.055, 0.33, "deadlock bar 0.05", fontsize=7, color=C["muted"], rotation=90, va="bottom")
-    ax.set_xlabel("deadlock-episode rate vs learned attacker (ATK4-45)")
-    ax.set_ylabel("capture rate vs GreedyEvader")
+    ax.set_xlabel("deadlock-episode rate vs learned attacker")
+    ax.set_ylabel("capture rate vs greedy evader")
     ax.set_xlim(-0.02, 0.65)
     ax.set_ylim(0.3, 0.76)
     ax.grid()
     # legends: hue = family (direct labels), shape = recovery
     for fam, (lx, ly) in zip(FAM, ((0.30, 0.37), (0.40, 0.52), (0.50, 0.44), (0.40, 0.60)), strict=True):
-        ax.text(lx, ly, {"BASE": "BASE (reference)", "OBS": "OBS: admissible-turn features", "GAM": "GAM: γ = 0.999", "OBSGAM": "OBSGAM: both"}[fam], color=C[fam], fontsize=7)
+        ax.text(lx, ly, {"BASE": "Base (reference)", "OBS": "Obs: admissible-turn features", "GAM": "Hor: γ = 0.999", "OBSGAM": "ObsHor: both"}[fam], color=C[fam], fontsize=7)
     h1 = ax.scatter([], [], marker="o", color=C["ink"], s=30, label="bare policy")
     h2 = ax.scatter([], [], marker="D", facecolors="white", edgecolors=C["ink"], s=30, label="+ forward-offering recovery (N = 20)")
     ax.legend(handles=[h1, h2], loc="upper right", fontsize=7)
-    ax.set_title("S17: 7 families × 3 seeds, N = 500 paired, 0 violations", fontsize=8, loc="left")
+    ax.set_title("Experiment 4: 7 families × 3 seeds, N = 500 paired, 0 violations", fontsize=8, loc="left")
     DATA["F3"] = {"source": "s17_arm_*.json final.gate", "points": pts}
     _save(fig, "F3_remedies")
 
@@ -160,13 +163,14 @@ def f3() -> None:
 # ---------------------------------------------------------------- F4 firings (layering)
 def f4() -> None:
     fig, ax = plt.subplots(figsize=(4.4, 2.4))
-    labels, fw, rot, cols = [], [], [], []
+    labels, ids, fw, rot, cols = [], [], [], [], []
     for fam in FAM:
         if fam == "GAM":
             continue  # no RECF-GAM arm in S17
         for s in SEEDS:
             k = arm(f"RECF-{fam}-{s}")["final"]["recovery_kinds"]
-            labels.append(f"{fam}-{s}")
+            labels.append(f"{NAME[fam]} {SEEDIDX[s]}")
+            ids.append(f"RECF-{fam}-{s}")
             fw.append(k["forward"])
             rot.append(k["rotation"])
             cols.append(C[fam])
@@ -180,9 +184,9 @@ def f4() -> None:
     for i, (a, b) in enumerate(zip(fw, rot, strict=True)):
         ax.text(i, (a + b) * 1.25, f"{a + b:,}", ha="center", fontsize=6.5)
     ax.legend(loc="upper right", fontsize=7, ncol=2)
-    ax.set_title("the learned half cuts how often the escape is needed (RECF-OBSGAM-61: 363)", fontsize=8, loc="left")
+    ax.set_title("the learned half cuts how often the escape is needed (ObsHor seed 2 with the recovery: 363)", fontsize=8, loc="left")
     ax.grid(axis="y")
-    DATA["F4"] = {"source": "s17_arm_RECF-*.json final.recovery_kinds", "forward": dict(zip(labels, fw, strict=True)), "rotation": dict(zip(labels, rot, strict=True))}
+    DATA["F4"] = {"source": "s17_arm_RECF-*.json final.recovery_kinds", "forward": dict(zip(ids, fw, strict=True)), "rotation": dict(zip(ids, rot, strict=True))}
     _save(fig, "F4_firings")
 
 
@@ -191,7 +195,7 @@ def f5() -> None:
     fig, axes = plt.subplots(1, 3, figsize=(7.8, 2.5), gridspec_kw={"wspace": 0.45})
     # (a) S16 PEN vs BASE as dumbbells: the penalised quantity falls, immobility and capture move the wrong way
     s16 = {a: json.loads((R / f"s16_arm_{a}.json").read_text())["final"]["gate"] for a in [f"{f}-{s}" for f in ("BASE", "PEN") for s in SEEDS]}
-    names = ["stall-step\n(penalised)", "immobile-step", "capture\nvs GREEDY"]
+    names = ["stall-step\n(penalised)", "immobile-step", "capture\nvs greedy"]
     for j, s in enumerate(SEEDS):
         b, p = s16[f"BASE-{s}"], s16[f"PEN-{s}"]
         vb = [b["ATK4-45"]["pursuer"]["stall_step_rate"], b["ATK4-45"]["pursuer"]["immobile_step_rate"], b["GREEDY"]["capture_rate"]]
@@ -202,12 +206,12 @@ def f5() -> None:
             axes[0].scatter([x], [vb[i]], s=18, color=C["BASE"], zorder=3)
             axes[0].scatter([x], [vp[i]], s=18, color=C["GAM"], zorder=3)
         DATA.setdefault("F5a", {})[f"seed{s}"] = {"BASE": vb, "PEN": vp}
-    axes[0].scatter([], [], s=18, color=C["BASE"], label="BASE")
-    axes[0].scatter([], [], s=18, color=C["GAM"], label="PEN (10× stall penalty)")
+    axes[0].scatter([], [], s=18, color=C["BASE"], label="Base")
+    axes[0].scatter([], [], s=18, color=C["GAM"], label="penalty (10× stall penalty)")
     axes[0].legend(fontsize=6.5, loc="upper left")
     axes[0].set_xticks(range(3), names, fontsize=6.5)
     axes[0].set_ylim(0, 0.95)
-    axes[0].set_title("(a) S16: penalising the stall, 3 seeds", fontsize=7.5, loc="left")
+    axes[0].set_title("(a) Exp. 3: stall penalty, 3 seeds", fontsize=7.5, loc="left")
     # (b) S18 DVARY: deadlock down, capture down
     s18 = json.loads((R / "s18_round.json").read_text())["arms"]
     for s in (70, 71, 72):
@@ -217,14 +221,14 @@ def f5() -> None:
         axes[1].scatter([xb], [yb], s=18, color=C["BASE"], zorder=3)
         axes[1].scatter([xp], [yp], s=18, color=C["GAM"], zorder=3)
         DATA.setdefault("F5b", {})[f"seed{s}"] = {"BASE": [xb, yb], "PEN": [xp, yp]}
-    axes[1].scatter([], [], s=18, color=C["BASE"], label="BASE")
+    axes[1].scatter([], [], s=18, color=C["BASE"], label="Base")
     axes[1].scatter([], [], s=18, color=C["GAM"], label="+ intervention penalty")
     axes[1].legend(fontsize=6.5, loc="lower right")
     axes[1].set_xlabel("deadlock-episode rate")
-    axes[1].set_ylabel("capture vs GREEDY")
+    axes[1].set_ylabel("capture vs greedy evader")
     axes[1].set_xlim(0.05, 0.26)
     axes[1].set_ylim(0.15, 0.6)
-    axes[1].set_title("(b) S18: deadlock improves, capture falls", fontsize=7.5, loc="left")
+    axes[1].set_title("(b) Exp. 5: deadlock down, capture down", fontsize=7.5, loc="left")
     # (c) S19 law pins removed, capture flat
     v = json.loads((R / "s19_round.json").read_text())["verdicts"]
     opps = ("GREEDY", "HUG", "ATK")
@@ -233,14 +237,14 @@ def f5() -> None:
     cap_l = [v["h_plan_1"]["opponents"][o]["capture_line"] for o in opps]
     cap_p = [v["h_plan_1"]["opponents"][o]["capture_plan"] for o in opps]
     x = np.arange(3)
-    axes[2].bar(x - 0.2, pin_l, width=0.18, color=C["bar"], label="law-pinned episodes, LINE")
-    axes[2].bar(x - 0.0, pin_p, width=0.18, color=C["OBS"], label="law-pinned episodes, PLAN")
-    axes[2].scatter(x + 0.22, cap_l, marker="_", s=120, color=C["BASE"], label="capture, LINE")
-    axes[2].scatter(x + 0.22, cap_p, marker="_", s=120, color=C["GAM"], label="capture, PLAN")
-    axes[2].set_xticks(x, opps)
+    axes[2].bar(x - 0.2, pin_l, width=0.18, color=C["bar"], label="law held at a stall, line law")
+    axes[2].bar(x - 0.0, pin_p, width=0.18, color=C["OBS"], label="law held at a stall, planner")
+    axes[2].scatter(x + 0.22, cap_l, marker="_", s=120, color=C["BASE"], label="capture, line law")
+    axes[2].scatter(x + 0.22, cap_p, marker="_", s=120, color=C["GAM"], label="capture, planner")
+    axes[2].set_xticks(x, ["greedy", "hugging", "attacker"])
     axes[2].set_ylim(0, 0.62)
     axes[2].legend(fontsize=5.8, loc="upper right", ncol=2)
-    axes[2].set_title("(c) S19: pins −94…−99 %, capture flat", fontsize=7.5, loc="left")
+    axes[2].set_title("(c) Exp. 6: law stalls −94…−99 %, capture flat", fontsize=7.5, loc="left")
     DATA["F5c"] = {"pin_line": pin_l, "pin_plan": pin_p, "capture_line": cap_l, "capture_plan": cap_p}
     for ax in axes:
         ax.grid(axis="y")

@@ -109,26 +109,26 @@
  "F4": {
   "source": "s17_arm_RECF-*.json final.recovery_kinds",
   "forward": {
-   "BASE-60": 10065,
-   "BASE-61": 144362,
-   "BASE-62": 24006,
-   "OBS-60": 750,
-   "OBS-61": 4829,
-   "OBS-62": 1543,
-   "OBSGAM-60": 33508,
-   "OBSGAM-61": 20,
-   "OBSGAM-62": 129
+   "RECF-BASE-60": 10065,
+   "RECF-BASE-61": 144362,
+   "RECF-BASE-62": 24006,
+   "RECF-OBS-60": 750,
+   "RECF-OBS-61": 4829,
+   "RECF-OBS-62": 1543,
+   "RECF-OBSGAM-60": 33508,
+   "RECF-OBSGAM-61": 20,
+   "RECF-OBSGAM-62": 129
   },
   "rotation": {
-   "BASE-60": 2970,
-   "BASE-61": 8313,
-   "BASE-62": 3968,
-   "OBS-60": 403,
-   "OBS-61": 2439,
-   "OBS-62": 27106,
-   "OBSGAM-60": 2247,
-   "OBSGAM-61": 343,
-   "OBSGAM-62": 384
+   "RECF-BASE-60": 2970,
+   "RECF-BASE-61": 8313,
+   "RECF-BASE-62": 3968,
+   "RECF-OBS-60": 403,
+   "RECF-OBS-61": 2439,
+   "RECF-OBS-62": 27106,
+   "RECF-OBSGAM-60": 2247,
+   "RECF-OBSGAM-61": 343,
+   "RECF-OBSGAM-62": 384
   }
  },
  "F5a": {
