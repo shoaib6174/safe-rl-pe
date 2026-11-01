@@ -113,3 +113,5 @@ stochastic dwell law is dropped, R3 becomes an exploration remark (H-B1-4); Prop
 (H-B2-2); the perturbation baseline cannot leave a heading trap — the recovery's contribution is the rotation candidate
 (H-B2-4); the loop is present but weaker under the predictive filter (H-B3-1) and the composition clears it 4/4 (H-B4-1, B4 IN).
 Next: the user's remaining skeleton decisions, then drafting.
+
+**Status 2026-11-01 (late, D161):** draft, figures and supplement now use paper-facing names (Experiments 1–9; \textsc{Base/Obs/Hor/ObsHor/Free/Aware}; G/H/A); the archive keeps the internal identifiers and `draft/supplement.tex` carries the crosswalk. The paper's `[repository URL]` will point at a SEPARATE release repository (`safe-and-stuck`, assembled at `/home/niro-1/Codes/safe-and-stuck`, private until the Nov 10 go/no-go; the user creates it on GitHub — no `gh`/token here). Password rotation of THIS repository's history remains the Nov 10 item. Next: review (in-pair evaluator or `/ars-reviewer` panel).
