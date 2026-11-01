@@ -75,18 +75,18 @@ This is not the multi-robot deadlock of the CBF literature, a force equilibrium 
 \caption{Pre-registered rounds: frozen commit, hypotheses and bars fixed before any number, paired seeds on a fresh stream, records under version control. H-SAFE held (zero contact steps) in every filtered cell of every round.}
 \label{tab:rounds}
 \setlength{\tabcolsep}{3pt}
-\begin{tabular}{@{}l >{\raggedright\arraybackslash}p{5.3cm} >{\raggedright\arraybackslash}p{4.3cm} >{\raggedright\arraybackslash}p{2.5cm} r@{}}
+\begin{tabular}{@{}l >{\raggedright\arraybackslash}p{5.0cm} >{\raggedright\arraybackslash}p{4.6cm} >{\raggedright\arraybackslash}p{2.5cm} r@{}}
 \toprule
 Round & Measures & Policies & Opponents & $N$ / cell \\
 \midrule
 S4, S5 & filter cost; first remedies & STR14; RA, RB, RC & six & 500 paired \\
 S15 & mechanism (772 stall entries) & FT-B-41, RC19 & ATK4-45, Greedy & 200 \\
 S16 & five learned remedies; rotation recovery & BASE, PEN, MEM, OBS, GAM, REC & ATK4-45, HUG7, Greedy & 500 paired \\
-S17 & forward-offering recovery, seven families & BASE, OBS, GAM, OBSGAM, RECF & ATK4-45, HUG7, Greedy & 500 paired \\
+S17 & forward-offering recovery, 7 families & BASE, OBS, GAM, OBSGAM, RECF & ATK4-45, HUG7, Greedy & 500 paired \\
 S18 & correction-magnitude penalty, 18 arms & BASE, DVARY, SPARSE, DRARE & Greedy & 500 \\
 S19 & law pins removed (planner law) & LINE, PLAN & Greedy, HUG, ATK4-45 & 500 paired \\
 B1 & stall geometry; dwell (det.\ / stoch.) & BASE-60/61/62, RC19 & ATK4-45 & 100 \\
-B2--B4 & $N$ sweep; baseline; second filter (86 cells) & BASE-60/61/62, STR14, RC19 & Greedy, ATK4-45 & 500 paired \\
+B2--B4 & $N$ sweep, baseline, second filter & BASE-60/61/62, STR14, RC19 & Greedy, ATK4-45 & 500 paired \\
 \bottomrule
 \end{tabular}
 \end{table}
