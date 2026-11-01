@@ -84,7 +84,7 @@ def f6(rnd: dict, cells: dict) -> None:
     cfg = EnvConfig()
     cls = rnd["classification"]
     h4 = rnd["hypotheses"]["H-B1-4"]
-    fig, axes = plt.subplots(1, 3, figsize=(7.8, 2.6), gridspec_kw={"wspace": 0.45, "width_ratios": [1.05, 1.3, 1.0]})
+    fig, axes = plt.subplots(1, 3, figsize=(8.2, 2.7), gridspec_kw={"wspace": 0.42, "width_ratios": [1.0, 1.45, 1.0]})
     # (a) one real stalled state's admissible set in (v, omega)
     cand = [s for p in ("BASE-61", "BASE-60", "BASE-62", "RC19") for s in cells.get(f"{p}_det", {}).get("states", [])
             if s["kind"] == "stalled" and s.get("admissible_grid") is not None]
@@ -105,14 +105,14 @@ def f6(rnd: dict, cells: dict) -> None:
         ax.set_xlim(-cfg.omega_max * 1.05, cfg.omega_max * 1.05)
         ax.set_ylim(-0.04, cfg.v_max * 1.05)
         pol = next(p for p in B34 if any(s is st for s in cells[f"{p}_det"]["states"]))
-        ax.set_title(f"(a) a stalled state ({pol}, step {st['t']}): tier {st['tier']}, trap at heading {st['trap_heading']}, position trap {st['trap_position']}", loc="left", fontsize=7)
-        ax.legend(fontsize=6, loc="upper right", handletextpad=0.3, labelspacing=0.3)
+        ax.set_title("(a) admissible set, one stalled state", loc="left", fontsize=7)
+        ax.legend(fontsize=6, loc="upper center", bbox_to_anchor=(0.5, -0.3), ncol=2, handletextpad=0.3, labelspacing=0.3, columnspacing=0.8)
         DATA["F6a"] = {"policy": pol, "seed": st["seed"], "t": st["t"], "tier": st["tier"], "v_nom": st["v_nom"], "w_nom": st["w_nom"], "u_shield": st["u_shield"],
                        "qp": st["qp"], "n_admissible_grid": st["n_admissible_grid"], "trap_heading": st["trap_heading"], "trap_position": st["trap_position"]}
     # (b) classification of the deterministic arm's stalled states
     ax = axes[1]
     keys = ("exact_tier", "trap_heading", "trap_position", "pair_trap", "rot_admissible", "qp_agree")
-    names = ("exact\ntier", "trap at\nheading", "position\ntrap", "pair\ntrap", "rotation\nadmissible", "QP\nagrees")
+    names = ("exact\ntier", "trap at\nheading", "position\ntrap", "pair\ntrap", "rotation\nadmiss.", "QP\nagrees")
     xs = np.arange(len(keys))
     w = 0.19
     for i, p in enumerate(B34):
@@ -120,11 +120,12 @@ def f6(rnd: dict, cells: dict) -> None:
         if not c.get("n"):
             continue
         ax.bar(xs + (i - 1.5) * w, [c[k] for k in keys], width=w - 0.02, color=colour(p), alpha=ALPHA[p], label=f"{p} (n = {c['n']})")
-    ax.set_xticks(xs, names, fontsize=6.5)
-    ax.set_ylim(0, 1.0)
+    ax.set_xticks(xs, names, fontsize=5.8)
+    ax.set_ylim(0, 1.22)
+    ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
     ax.set_ylabel("share of stalled states")
-    ax.set_title("(b) classification, deterministic arm (traps under the oracle test)", loc="left", fontsize=7)
-    ax.legend(fontsize=6, loc="upper right", ncol=2, handletextpad=0.3, columnspacing=0.6)
+    ax.set_title("(b) classification, deterministic arm", loc="left", fontsize=7)
+    ax.legend(fontsize=5.5, loc="upper center", ncol=4, handletextpad=0.3, columnspacing=0.6, handlelength=1.2)
     ax.grid(axis="y")
     DATA["F6b"] = {p: {k: cls[p].get(k) for k in (*keys, "n", "n_exact", "law_branch_share", "n_self_stop")} for p in B34 if cls.get(p, {}).get("n")}
     # (c) dwell: predicted 10/p_leave vs observed, stochastic arm's search-branch onsets
@@ -152,10 +153,10 @@ def f6(rnd: dict, cells: dict) -> None:
     ax.set_yscale("log")
     ax.set_xlim(*lim)
     ax.set_ylim(*lim)
-    ax.set_xlabel("predicted dwell beyond onset, 10 / p_leave (steps)")
+    ax.set_xlabel("predicted dwell 10 / p_leave (steps)")
     ax.set_ylabel("observed dwell (steps)")
-    ax.set_title("(c) stochastic arm: dwell at stall onsets", loc="left", fontsize=7)
-    ax.legend(fontsize=5.5, loc="lower right", handletextpad=0.3, labelspacing=0.25)
+    ax.set_title("(c) dwell at stall onsets, stochastic arm", loc="left", fontsize=7)
+    ax.legend(fontsize=5.5, loc="upper left", handletextpad=0.3, labelspacing=0.25)
     DATA["F6c"] = {"detail": h4["detail"], "verdict": h4["verdict"], "n_points": len(allp)}
     _save(fig, "F6_geometry")
 
@@ -203,18 +204,21 @@ def f7(rnd: dict, cells: dict) -> None:
         DATA["F7"][p] = {"deadlock_ATK": dead, "capture_GREEDY": cap, "firings_per_episode": fire, "cycles_per_engagement": cyc, "immobile_ATK": imm,
                          "PERT-20": None if not (pert_d and pert_c) else {"deadlock": pert_d["deadlock_episode_rate"], "capture": pert_c["capture_rate"], "immobile": pert_d["immobile_step_rate"],
                                                                         "firings_per_episode": sum(r["recoveries"] for r in (pert_d, pert_c)) / sum(r["n_episodes"] for r in (pert_d, pert_c))}}
-    for ax, ttl, yl in ((ax_dead, "(a) deadlock episodes vs the learned attacker", "deadlock episode rate"), (ax_cap, "(b) capture vs GREEDY", "capture rate"),
-                        (ax_fire, "(c) recovery firings per episode (both opponents)", "firings / episode"), (ax_cyc, "(d) cycles per engagement", "cycle share"),
-                        (ax_imm, "(e) immobile steps vs the learned attacker", "immobile step rate")):
+    for ax, ttl, yl in ((ax_dead, "(a) deadlock episodes, vs attacker", "deadlock episode rate"), (ax_cap, "(b) capture, vs GREEDY", "capture rate"),
+                        (ax_fire, "(c) recovery firings per episode", "firings / episode"), (ax_cyc, "(d) cycles per engagement", "cycle share"),
+                        (ax_imm, "(e) immobile steps, vs attacker", "immobile step rate")):
         ax.set_xticks(x, XLAB)
-        ax.set_xlabel("recovery_after N (open marker: perturbation baseline, N = 20)", fontsize=6.5)
+        ax.set_xlabel("recovery_after N", fontsize=7)
         ax.set_ylabel(yl)
         ax.set_title(ttl, loc="left", fontsize=7)
         ax.grid(axis="y")
     ax_dead.axhline(DEADLOCK_BAR, color=C["ref"], lw=0.7, ls=":")
     ax_dead.annotate("bar 0.05", xy=(4.6, DEADLOCK_BAR), xytext=(0, 2), textcoords="offset points", fontsize=6, color=C["ref"])
     ax_fire.set_yscale("symlog", linthresh=1.0)
-    ax_cap.legend(fontsize=6, loc="lower right", ncol=2, handletextpad=0.3, columnspacing=0.6)
+    handles, labels = ax_cap.get_legend_handles_labels()
+    handles.append(plt.Line2D([], [], marker="o", ls="none", color=C["ref"], markerfacecolor="none", ms=4))
+    labels.append("open marker: perturbation baseline, N = 20")
+    fig.legend(handles, labels, fontsize=6.5, loc="lower center", ncol=6, bbox_to_anchor=(0.5, -0.02), handletextpad=0.3, columnspacing=1.0)
     # (f) escape time after a trigger, RECF-20, all ten cells, with the N + one-turn bound
     esc = [e["t"] for p in POL for o in ("ATK4-45", "GREEDY") for e in ((cell(cells, p, o, "RECF-20") or {}).get("escape_times") or []) if e["t"] is not None]
     cens = sum(1 for p in POL for o in ("ATK4-45", "GREEDY") for e in ((cell(cells, p, o, "RECF-20") or {}).get("escape_times") or []) if e["t"] is None)
@@ -222,9 +226,8 @@ def f7(rnd: dict, cells: dict) -> None:
         bins = np.arange(0, max(200, min(max(esc), 400)) + 5, 5)
         ax_esc.hist(np.clip(esc, 0, bins[-1]), bins=bins, color=C["BASE"], alpha=0.85)
         ax_esc.axvline(20 + T_TURN, color=C["STR14"], lw=1.0, ls="--")
-        ax_esc.annotate(f"N + one turn = {20 + T_TURN}", xy=(20 + T_TURN, 1), xytext=(4, 0), textcoords="offset points", fontsize=6, color=C["STR14"], rotation=90, va="bottom")
-        ax_esc.set_yscale("log")
-    ax_esc.set_xlabel("steps from trigger to a 0.10 m displacement (RECF-20, all cells)", fontsize=6.5)
+        ax_esc.annotate(f"N + one turn = {20 + T_TURN}", xy=(20 + T_TURN, ax_esc.get_ylim()[1] * 0.95), xytext=(4, 0), textcoords="offset points", fontsize=6, color=C["STR14"], va="top")
+    ax_esc.set_xlabel("steps from trigger to 0.10 m (RECF-20, all cells)", fontsize=7)
     ax_esc.set_ylabel("triggers")
     ax_esc.set_title("(f) escape time after a recovery trigger", loc="left", fontsize=7)
     h22 = rnd["hypotheses"].get("H-B2-2", {})
@@ -254,7 +257,7 @@ def f8(rnd: dict, cells: dict) -> None:
         ax.set_title(ttl, loc="left", fontsize=7)
         ax.grid(axis="y")
     axes[0].axhline(DEADLOCK_BAR, color=C["ref"], lw=0.7, ls=":")
-    axes[1].legend(fontsize=6.5, loc="best", ncol=2, handletextpad=0.3, columnspacing=0.6)
+    fig.legend(*axes[1].get_legend_handles_labels(), fontsize=6.5, loc="lower center", ncol=4, bbox_to_anchor=(0.5, -0.14), handletextpad=0.3, columnspacing=1.0)
     h3, h4 = rnd["hypotheses"].get("H-B3-1", {}), rnd["hypotheses"].get("H-B4-1", {})
     DATA["F8"]["verdicts"] = {"H-B3-1": h3.get("verdict"), "H-B4-1": h4.get("verdict"), "CG-B4-1": rnd["gates"]["CG-B4-1"].get("verdict")}
     _save(fig, "F8_predictive")
