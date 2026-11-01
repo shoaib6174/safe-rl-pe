@@ -1,0 +1,471 @@
+{
+ "F6a": {
+  "policy": "BASE-61",
+  "seed": 3000004,
+  "t": 213,
+  "tier": "exact",
+  "v_nom": 1.0,
+  "w_nom": 0.12912869349122047,
+  "u_shield": [
+   8.214472881747187e-06,
+   8.059101430237534e-06
+  ],
+  "qp": {
+   "found": true,
+   "u": [
+    8.21596173712105e-06,
+    8.081902927985241e-06
+   ],
+   "dist_w": 2.9196093029385322e-08,
+   "agree": true,
+   "forward": false
+  },
+  "n_admissible_grid": 21,
+  "trap_heading": true,
+  "trap_position": false
+ },
+ "F6b": {
+  "BASE-60": {
+   "exact_tier": 1.0,
+   "trap_heading": 1.0,
+   "trap_position": 0.0,
+   "pair_trap": 1.0,
+   "rot_admissible": 1.0,
+   "qp_agree": 1.0,
+   "n": 74,
+   "n_exact": 74,
+   "law_branch_share": 1.0,
+   "n_self_stop": 46
+  },
+  "BASE-61": {
+   "exact_tier": 1.0,
+   "trap_heading": 0.9743589743589743,
+   "trap_position": 0.0,
+   "pair_trap": 0.9743589743589743,
+   "rot_admissible": 1.0,
+   "qp_agree": 0.9743589743589743,
+   "n": 39,
+   "n_exact": 39,
+   "law_branch_share": 0.9743589743589743,
+   "n_self_stop": 98
+  },
+  "BASE-62": {
+   "exact_tier": 1.0,
+   "trap_heading": 1.0,
+   "trap_position": 0.0,
+   "pair_trap": 1.0,
+   "rot_admissible": 1.0,
+   "qp_agree": 1.0,
+   "n": 42,
+   "n_exact": 42,
+   "law_branch_share": 1.0,
+   "n_self_stop": 61
+  },
+  "RC19": {
+   "exact_tier": 1.0,
+   "trap_heading": 0.9626168224299065,
+   "trap_position": 0.0,
+   "pair_trap": 0.9626168224299065,
+   "rot_admissible": 1.0,
+   "qp_agree": 0.9626168224299065,
+   "n": 107,
+   "n_exact": 107,
+   "law_branch_share": 0.5700934579439252,
+   "n_self_stop": 0
+  }
+ },
+ "F6c": {
+  "detail": {
+   "BASE-60": {
+    "deadlock_det": 0.38,
+    "deadlock_stoch": 0.42,
+    "n_onsets": 1,
+    "median_observed_beyond_onset": 14.0,
+    "median_predicted": 162.60162601626016,
+    "predicted_infinite_share": 0.0,
+    "censored_share": 0.0,
+    "law_branch_onsets": 42
+   },
+   "BASE-61": {
+    "deadlock_det": 0.2,
+    "deadlock_stoch": 0.24,
+    "n_onsets": 0,
+    "median_observed_beyond_onset": null,
+    "median_predicted": null,
+    "predicted_infinite_share": null,
+    "censored_share": null,
+    "law_branch_onsets": 24
+   },
+   "BASE-62": {
+    "deadlock_det": 0.21,
+    "deadlock_stoch": 0.29,
+    "n_onsets": 0,
+    "median_observed_beyond_onset": null,
+    "median_predicted": null,
+    "predicted_infinite_share": null,
+    "censored_share": null,
+    "law_branch_onsets": 29
+   },
+   "RC19": {
+    "deadlock_det": 0.55,
+    "deadlock_stoch": 0.57,
+    "n_onsets": 15,
+    "median_observed_beyond_onset": 30.0,
+    "median_predicted": 92.16589861751152,
+    "predicted_infinite_share": 0.4666666666666667,
+    "censored_share": 0.4666666666666667,
+    "law_branch_onsets": 49
+   }
+  },
+  "verdict": "FAIL",
+  "n_points": 16
+ },
+ "F7": {
+  "BASE-60": {
+   "deadlock_ATK": [
+    0.298,
+    0.0,
+    0.0,
+    0.0,
+    0.356,
+    0.346
+   ],
+   "capture_GREEDY": [
+    0.466,
+    0.668,
+    0.66,
+    0.64,
+    0.616,
+    0.606
+   ],
+   "firings_per_episode": [
+    0.0,
+    19.487,
+    12.565,
+    9.36,
+    8.002,
+    6.458
+   ],
+   "cycles_per_engagement": [
+    NaN,
+    0.5642424242424242,
+    0.6159887798036465,
+    0.49916943521594687,
+    0.0192497532082922,
+    0.0
+   ],
+   "immobile_ATK": [
+    0.47589599568508567,
+    0.018558121981502043,
+    0.040739846587729216,
+    0.07201142991810523,
+    0.11546535654620593,
+    0.1834629001395809
+   ],
+   "PERT-20": {
+    "deadlock": 0.304,
+    "capture": 0.472,
+    "immobile": 0.4447988543158443,
+    "firings_per_episode": 3.234
+   }
+  },
+  "BASE-61": {
+   "deadlock_ATK": [
+    0.186,
+    0.0,
+    0.0,
+    0.0,
+    0.232,
+    0.226
+   ],
+   "capture_GREEDY": [
+    0.366,
+    0.702,
+    0.704,
+    0.718,
+    0.696,
+    0.662
+   ],
+   "firings_per_episode": [
+    0.0,
+    142.243,
+    139.804,
+    101.947,
+    91.872,
+    82.412
+   ],
+   "cycles_per_engagement": [
+    NaN,
+    0.2977667493796526,
+    0.2807250221043324,
+    0.17423806785508913,
+    0.07560355781448538,
+    0.0
+   ],
+   "immobile_ATK": [
+    0.4572161505545239,
+    0.017230414563376924,
+    0.034022044023232285,
+    0.05035409610403724,
+    0.07946501797993817,
+    0.11990435125475382
+   ],
+   "PERT-20": {
+    "deadlock": 0.226,
+    "capture": 0.626,
+    "immobile": 0.20562357483062016,
+    "firings_per_episode": 98.858
+   }
+  },
+  "BASE-62": {
+   "deadlock_ATK": [
+    0.252,
+    0.0,
+    0.0,
+    0.0,
+    0.298,
+    0.286
+   ],
+   "capture_GREEDY": [
+    0.402,
+    0.484,
+    0.46,
+    0.442,
+    0.452,
+    0.444
+   ],
+   "firings_per_episode": [
+    0.0,
+    56.16,
+    36.237,
+    21.536,
+    17.541,
+    15.245
+   ],
+   "cycles_per_engagement": [
+    NaN,
+    0.6344433872502379,
+    0.6391579731743666,
+    0.5414761593729589,
+    0.07022607022607022,
+    0.0
+   ],
+   "immobile_ATK": [
+    0.48716392037016626,
+    0.038113567907617746,
+    0.06847733837518202,
+    0.10105805227958163,
+    0.13817795781737918,
+    0.19911962425429613
+   ],
+   "PERT-20": {
+    "deadlock": 0.28,
+    "capture": 0.404,
+    "immobile": 0.432301334295524,
+    "firings_per_episode": 11.856
+   }
+  },
+  "STR14": {
+   "deadlock_ATK": [
+    0.71,
+    0.008,
+    0.022,
+    0.014,
+    0.75,
+    0.74
+   ],
+   "capture_GREEDY": [
+    0.426,
+    0.714,
+    0.716,
+    0.728,
+    0.712,
+    0.704
+   ],
+   "firings_per_episode": [
+    0.0,
+    10.607,
+    11.324,
+    3.195,
+    2.919,
+    2.601
+   ],
+   "cycles_per_engagement": [
+    NaN,
+    0.4735968116904683,
+    0.40590551181102363,
+    0.3909871244635193,
+    0.16892840430510062,
+    0.0
+   ],
+   "immobile_ATK": [
+    0.5937403244504288,
+    0.023894504585012244,
+    0.046510090024717926,
+    0.0708323740891642,
+    0.11583765168083372,
+    0.192491982644784
+   ],
+   "PERT-20": {
+    "deadlock": 0.486,
+    "capture": 0.574,
+    "immobile": 0.40548069330169834,
+    "firings_per_episode": 1.752
+   }
+  },
+  "RC19": {
+   "deadlock_ATK": [
+    0.586,
+    0.0,
+    0.0,
+    0.002,
+    0.58,
+    0.586
+   ],
+   "capture_GREEDY": [
+    0.56,
+    0.656,
+    0.656,
+    0.654,
+    0.656,
+    0.652
+   ],
+   "firings_per_episode": [
+    0.0,
+    1.512,
+    1.244,
+    1.097,
+    1.003,
+    0.857
+   ],
+   "cycles_per_engagement": [
+    NaN,
+    0.31316187594553707,
+    0.24469964664310953,
+    0.0920666013712047,
+    0.026652452025586353,
+    0.0
+   ],
+   "immobile_ATK": [
+    0.3984487807387213,
+    0.008925394752763676,
+    0.01579502213108244,
+    0.031568250241829424,
+    0.05547575682188378,
+    0.09269791653353247
+   ],
+   "PERT-20": {
+    "deadlock": 0.56,
+    "capture": 0.582,
+    "immobile": 0.3861335939423109,
+    "firings_per_episode": 0.178
+   }
+  },
+  "escape": {
+   "n_decided": 10466,
+   "n_censored": 94,
+   "median": 5.0,
+   "bound": 65,
+   "share_within_bound": 0.9785973628893561,
+   "H-B2-2": {
+    "verdict": "FAIL",
+    "recf20_within_bound": {
+     "BASE-60_ATK4-45": 0.9893546240851631,
+     "BASE-60_GREEDY": 0.9853273137697517,
+     "BASE-61_ATK4-45": 0.9966178128523112,
+     "BASE-61_GREEDY": 0.985731272294887,
+     "BASE-62_ATK4-45": 0.9447261663286004,
+     "BASE-62_GREEDY": 0.9232981783317353,
+     "STR14_ATK4-45": 1.0,
+     "STR14_GREEDY": 1.0,
+     "RC19_ATK4-45": 1.0,
+     "RC19_GREEDY": 1.0
+    },
+    "vacuous_cells": []
+   }
+  },
+  "verdicts": {
+   "H-B2-1": "PASS",
+   "H-B2-2": "FAIL",
+   "H-B2-3": "PASS",
+   "H-B2-4": "FAIL",
+   "H-B2-5": "PASS",
+   "H-B3-1": "FAIL",
+   "H-B4-1": "PASS"
+  }
+ },
+ "F8": {
+  "settings": [
+   "PLAIN",
+   "RECF-20",
+   "PRED-PLAIN",
+   "PRED-RECF-20"
+  ],
+  "b4_included": true,
+  "BASE-60": {
+   "deadlock_ATK": [
+    0.298,
+    0.0,
+    0.104,
+    0.0
+   ],
+   "capture_GREEDY": [
+    0.466,
+    0.64,
+    0.468,
+    0.628
+   ]
+  },
+  "BASE-61": {
+   "deadlock_ATK": [
+    0.186,
+    0.0,
+    0.036,
+    0.0
+   ],
+   "capture_GREEDY": [
+    0.366,
+    0.718,
+    0.454,
+    0.702
+   ]
+  },
+  "BASE-62": {
+   "deadlock_ATK": [
+    0.252,
+    0.0,
+    0.046,
+    0.002
+   ],
+   "capture_GREEDY": [
+    0.402,
+    0.442,
+    0.396,
+    0.432
+   ]
+  },
+  "RC19": {
+   "deadlock_ATK": [
+    0.586,
+    0.002,
+    0.468,
+    0.014
+   ],
+   "capture_GREEDY": [
+    0.56,
+    0.654,
+    0.554,
+    0.668
+   ]
+  },
+  "verdicts": {
+   "H-B3-1": "FAIL",
+   "H-B4-1": "PASS",
+   "CG-B4-1": "PASS"
+  }
+ },
+ "sources": {
+  "B1": "results/derisk/s26_b1_round.json + s26_b1_cells/*.json",
+  "B2-B4": "results/derisk/s26_b2_round.json + s26_b2_cells/*.json"
+ }
+}

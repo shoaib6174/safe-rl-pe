@@ -215,6 +215,7 @@ def f7(rnd: dict, cells: dict) -> None:
     ax_dead.axhline(DEADLOCK_BAR, color=C["ref"], lw=0.7, ls=":")
     ax_dead.annotate("bar 0.05", xy=(4.6, DEADLOCK_BAR), xytext=(0, 2), textcoords="offset points", fontsize=6, color=C["ref"])
     ax_fire.set_yscale("symlog", linthresh=1.0)
+    ax_fire.set_ylim(bottom=0)
     handles, labels = ax_cap.get_legend_handles_labels()
     handles.append(plt.Line2D([], [], marker="o", ls="none", color=C["ref"], markerfacecolor="none", ms=4))
     labels.append("open marker: perturbation baseline, N = 20")

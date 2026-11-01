@@ -218,3 +218,12 @@ baseline behaving as specified; H-B2-4's bars are unchanged and that expectation
    rejected. A zero deterministic deadlock rate satisfies H-B1-4 clause 1 trivially; a `RECF-20` cell with no
    decidable trigger is vacuously within the bound and is flagged. Cycles per episode are stored; the summary reports
    the paired PRED-PLAIN vs PLAIN comparison and the predictive tiers for B3.
+
+## Outcome (2026-11-01 11:22–12:00) — see D159 (B1) and D160 (B2–B4)
+Rows of §5 that fired: H-B1-1..2 hold (Fig. 6 as planned, Prop 1 stated for the exact tier — H-B1-3 missed its bar by 1 %
+and the 2 % enumeration share is reported); H-B1-4 fails (the stochastic refinement becomes a remark; the long stalls are
+the intercept law's; where the head is in control the evader's motion ends the stall sooner than the geometric model);
+H-B2-1 holds; H-B2-2 fails (97.8 % within the bound, tail reported, Prop 3(b) "typically"); H-B2-4 fails in the opposite
+direction to the pre-stated expectation (PERT-20 clears 0/5 — it accepts only moving candidates and none exists at a
+heading trap; RECF-20 beats it on capture 5/5 and fires more 5/5); H-B3-1 fails at the bar (2/4) — reported as present but
+weaker, not filter-specific; H-B4-1 holds and CG-B4-1 is clean, so B4 is in. H-SAFE held in all 94 cells. No re-run.

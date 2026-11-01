@@ -106,3 +106,10 @@ Steps 1 (audit), 2 (prereg B1–B4 + A1–A3), 3 (runners, tests, launcher — o
 release the host), 4 (skeleton `docs/paper_b/skeleton_2026-11-02.md` — **awaiting user approval**) and the archived
 figures F1–F5 are DONE. Step 0 DONE 2026-11-01 08:25 (S25 closed, D158: the filter's role QUALIFIED; EVS-80 minimax without the filter). S26 LAUNCHED 08:22 from `b535af6` (7 chains; GIFs → watch → summarize next). Step 5 venue facts DONE (above); the author
 block and the password rotation remain the user's.
+
+**Status 2026-11-01 12:00:** S26 CLOSED (D159, D160; 94/94 cells, H-SAFE everywhere, all construct gates PASS). Figures F6–F8
+rendered. Outcomes that change the draft: Prop 1 scoped to the exact tier with a 2 % enumeration share (H-B1-3); the
+stochastic dwell law is dropped, R3 becomes an exploration remark (H-B1-4); Prop 3(b) is "typically" with 97.8 % and the tail
+(H-B2-2); the perturbation baseline cannot leave a heading trap — the recovery's contribution is the rotation candidate
+(H-B2-4); the loop is present but weaker under the predictive filter (H-B3-1) and the composition clears it 4/4 (H-B4-1, B4 IN).
+Next: the user's remaining skeleton decisions, then drafting.
