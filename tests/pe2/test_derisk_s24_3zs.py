@@ -313,13 +313,29 @@ class TestCGZ1:
             R.cg_z1("SEL-80_HUG_r0.8")
 
     def test_run_cells_sweeps_the_gate_before_the_first_episode(self, monkeypatch):
+        # hermetic: the sweep covers cells with NO measurable record, so the real
+        # results directory (which holds the round's 36 records) is stubbed out
         seen: list[str] = []
         monkeypatch.setattr(R, "cg_z1", lambda n, d="cpu": seen.append(n))
+        monkeypatch.setitem(R._ORIG, "scan_records", lambda: ({}, {}, {}))
         monkeypatch.setitem(
             R._ORIG, "run_cells", lambda *a, **k: seen.append("CHAIN") or []
         )
         R.run_cells(["RULES-V0_HUG_r0.8", "SEL-80_HUG_r1.0"])
         assert seen == ["RULES-V0_HUG_r0.8", "SEL-80_HUG_r1.0", "CHAIN"]
+
+    def test_run_cells_never_rebuilds_a_recorded_cell(self, monkeypatch):
+        # the stop rule: a cell that already has a measurable record is not gated again
+        seen: list[str] = []
+        monkeypatch.setattr(R, "cg_z1", lambda n, d="cpu": seen.append(n))
+        monkeypatch.setitem(
+            R._ORIG, "scan_records", lambda: ({"RULES-V0_HUG_r0.8": {}}, {}, {})
+        )
+        monkeypatch.setitem(
+            R._ORIG, "run_cells", lambda *a, **k: seen.append("CHAIN") or []
+        )
+        R.run_cells(["RULES-V0_HUG_r0.8", "SEL-80_HUG_r1.0"])
+        assert seen == ["SEL-80_HUG_r1.0", "CHAIN"]
 
     def test_an_unknown_cell_name_refuses(self):
         with pytest.raises(SystemExit, match="unknown cell"):
