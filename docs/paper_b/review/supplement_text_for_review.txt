@@ -1,0 +1,100 @@
+Proceedings of Machine Learning Research vol vvv:1–2, 2027
+
+
+
+
+    Supplementary Material for “The Guarantee Holds and the Task
+     Fails: Absorbing Stalls of Learned Policies under CBF Filters”
+
+Mohammad Shoaib                                                                                           [ TO CONFIRM ]
+NSU Intelligent Robotics Lab, North South University, Dhaka, Bangladesh
+Shahnewaz Siddique                                        SHAHNEWAZ . SIDDIQUE @ NORTHSOUTH . EDU
+Department of Electrical and Computer Engineering, North South University, Dhaka, Bangladesh
+
+
+
+
+1. Stall classification per policy (Experiment 7)
+Table 1 gives the per-policy shares summarised in Figure 3(b) of the main text.
+
+Table 1: Experiment 7, deterministic arm: shares of the n stalled states. Trap: no admissible com-
+         mand moves the body at the current heading. Position trap: no heading at the position
+         admits motion. Rotation: an admissible rotation with |ω| ≥ 0.5 ωmax exists. QP: the exact
+         weighted projection agrees with the filter. Law: the state arose on the intercept-law branch.
+         Self-stop: share of immobile steps on which the nominal itself was zero.
+
+            Policy                n   Exact tier   Trap      Position trap   Rotation    QP    Law    Self-stop
+            BASE seed 1       74           1.00    1.00              0.00       1.00    1.00   1.00       0.41
+            BASE seed 2       39           1.00    0.97              0.00       1.00    0.97   0.97       0.66
+            BASE seed 3       42           1.00    1.00              0.00       1.00    1.00   1.00       0.57
+            AWARE            107           1.00    0.96              0.00       1.00    0.96   0.57       0.00
+
+
+
+
+2. Names used in the paper and repository identifiers
+The experiments were run and archived under internal identifiers, which the released records, check-
+points and pre-registration documents keep unchanged. Tables 2 and 3 map the names used in the
+paper to those identifiers. Record paths are relative to the repository’s results/ directory; each
+record names the commit it was produced at and its seed stream.
+
+
+
+
+© 2027 M. Shoaib & S. Siddique.
+                                                 S HOAIB S IDDIQUE
+
+
+
+
+                                Table 2: Policies, remedies and opponents.
+Name in the paper                        Repository identifier                             Where it appears
+BASE seeds 1, 2, 3                       BASE-60, BASE-61, BASE-62                         Experiments 3, 4, 7, 8, 9
+O BS seeds 1, 2, 3                       OBS-60/61/62                                      Experiments 3, 4
+H OR seeds 1, 2, 3                       GAM-60/61/62                                      Experiments 3, 4
+O BS H OR seeds 1, 2, 3                  OBSGAM-60/61/62                                   Experiment 4
+penalty family (stall penalty)           PEN-60/61/62                                      Experiment 3
+memory family (recurrent)                MEM-60/61/62                                      Experiment 3
+rotation-only recovery                   REC on the BASE seeds                             Experiment 3
+forward-offering recovery, parameter N   RECF-N ; arms RECF-BASE/OBS/OBSGAM-6x             Experiments 4, 8, 9
+perturbation baseline                    PERT-20                                           Experiment 8
+predictive filter                        PRED-PLAIN, PRED-RECF-20                          Experiment 9
+F REE                                    STR14                                             Experiments 1, 8
+AWARE                                    RC19                                              Experiments 1, 2, 7, 8, 9
+anchored fine-tune of AWARE              FT-B-41                                           Experiment 2
+three remedies of Experiment 1           RA, RB, RC (seeds 19–21)                          Experiment 1
+three penalty schedules                  DVARY, SPARSE, DRARE (-BASE, -PEN, seeds 70–72)   Experiment 5
+line law, planner law                    LINE, PLAN                                        Experiment 6
+greedy evader (G)                        GREEDY                                            all
+wall-hugging evader (H)                  HUG7 (HUG)                                        Experiments 3, 4, 6
+learned attacker (A)                     ATK4-45                                           Experiments 2–4, 6–9
+safety hypothesis                        H-SAFE                                            all
+
+
+
+Table 3: Experiments, internal round identifiers, frozen commits, seed streams and records.
+    Exp.    Round           Frozen commit                Seed stream   Records
+    1       S4, S5          9ea99f2, 9a73105             1 090 000+    derisk/s4 cell *.json,
+                                                                       derisk/s5 arm *.json
+    2       S15             7fcf9ba                      1 710 000+    derisk/s15 round.json,
+                                                                       derisk/s15 cells/
+    3       S16             32caa57                      1 720 000+    derisk/s16 round.json,
+                                                                       derisk/s16 arm *.json
+    4       S17             d1ed3aa                      1 740 000+    derisk/s17 round.json,
+                                                                       derisk/s17 arm *.json
+    5       S18             0ed69e6                      1 900 000+    derisk/s18 round.json,
+                                                                       derisk/s18 arm *.json
+    6       S19             a252bc8                      2 000 000+    derisk/s19 round.json,
+                                                                       derisk/s19 cells/
+    7       S26 B1          b535af6                      3 000 000+    derisk/s26 b1 round.json,
+                                                                       derisk/s26 b1 cells/
+    8       S26 B2          b535af6                      1 740 000+    derisk/s26 b2 round.json,
+                                                                       derisk/s26 b2 cells/
+    9       S26 B3, B4      b535af6                      1 740 000+    same files as Experiment 8 (PRED-*
+                                                                       cells)
+
+
+
+
+                                                             2
+

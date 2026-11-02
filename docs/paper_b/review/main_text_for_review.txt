@@ -1,0 +1,846 @@
+Proceedings of Machine Learning Research vol vvv:1–12, 2027
+
+
+
+
+The Guarantee Holds and the Task Fails: Absorbing Stalls of Learned
+                   Policies under CBF Filters
+Mohammad Shoaib                                                                                 [ TO CONFIRM ]
+NSU Intelligent Robotics Lab, North South University, Dhaka, Bangladesh
+Shahnewaz Siddique                                        SHAHNEWAZ . SIDDIQUE @ NORTHSOUTH . EDU
+Department of Electrical and Computer Engineering, North South University, Dhaka, Bangladesh
+
+
+
+                                                        Abstract
+     A safety filter that projects a learned policy’s command onto an admissible set guarantees forward
+     invariance of the safe set, and nothing about progress. We show that a control barrier function
+     (CBF) filter in front of a memoryless learned pursuer creates a closed-loop fixed point at which the
+     guarantee holds, violations are zero, and the task fails silently: the filter zeroes the command, the
+     body stops, the observation freezes, and the policy re-emits the same command for the rest of the
+     episode. We state the fixed point as the normal-cone condition for CBF-QP deadlock applied to a
+     learned nominal and measure it: 98% of stalled states are traps at the current heading, none is a trap
+     of the position. We measure why learning does not remove it: the reward for escaping arrives 629
+     steps later and is worth 0.009 at γ = 0.99. Across nine pre-registered experiments, every learning-
+     side remedy improves the task and none removes the failure, a stall penalty makes it worse, and
+     a one-counter recovery that offers filtered forward and rotation candidates after N immobile steps
+     clears the deadlock on three of three policy families (0.19–0.30 to 0.000), raises capture on nine of
+     nine seeds with zero violations, is insensitive to N over 5–80 steps, and composes onto a second
+     filter. Three dissociations show liveness metrics improving while the task collapses.
+     Keywords: safety filters; control barrier functions; shielding; safe reinforcement learning; dead-
+     lock; liveness; pursuit–evasion
+
+
+1. Introduction
+Safety filters wrap a learned policy with a guarantee. A control barrier function (CBF) filter, a shield,
+or a predictive filter takes the policy’s command, tests it against a safe set, and replaces it with the
+nearest admissible command when the test fails (Hsu et al., 2024; Ames et al., 2019; Alshiekh et al.,
+2018; Cheng et al., 2019). The guarantee is forward invariance of the safe set; it says nothing about
+the task, and the two can come apart in a way no violation count reveals.
+    Figure 1 shows the failure in one archived episode. A PPO-trained pursuer behind a CBF filter
+drives toward an obstacle between it and the evader; the filter zeroes its forward command. The
+body stops, the observation stops changing, and the memoryless policy emits the same full-speed
+command at each of the next 1 106 steps (standard deviation 0.000) while the executed speed stays
+at zero. The episode ends in a timeout. The same episode under the recovery of Section 4, same
+seed and same evader, ends in a capture at step 262. The violation count is zero in both.
+    This is not the multi-robot deadlock of the CBF literature, a force equilibrium between agents
+whose constraint normals cancel the nominal (Grover et al., 2020, 2021, 2023); here one agent
+stands against static geometry. The nearest prior objects are the undesired equilibria that CBF
+quadratic programs introduce into the closed loop of a fixed nominal controller (Reis et al., 2021;
+Tan and Dimarogonas, 2024). Ours is a nominal trained through the filter that sees the world only
+through an observation the stall has frozen: the trap is in observation space, and that is why learning
+does not escape it.
+
+© 2027 M. Shoaib & S. Siddique.
+                                           S HOAIB S IDDIQUE
+
+
+
+
+Contributions. (C1) A characterisation of filter-induced stalls for learned memoryless policies,
+separating a trap of the position from a trap of the policy–filter pair at a heading, measured on 262
+stalled states (Proposition 1, Experiment 7). (C2) The mechanism that defeats learning: a frozen
+input and a reward for escape that arrives about 630 steps later (Experiment 2). (C3) A pre-registered
+comparison in which every learning-side remedy improves the task and none removes the failure,
+a stall penalty backfires, and a one-counter forward-offering recovery removes the failure with the
+guarantee untouched, across three policy families, a parameter sweep, a perturbation baseline, and a
+second filter class (Proposition 3, Experiments 3, 4, 8 and 9). (C4) Three pre-registered dissociations
+between filter-adjacent liveness metrics and the task (Experiments 3, 5 and 6).
+
+
+2. Related work
+Deadlock and undesired equilibria of CBF-QP controllers. Grover et al. (2020, 2021, 2023)
+characterise multi-robot deadlock under CBF quadratic programs through the Karush–Kuhn–Tucker
+conditions: the projected command is zero exactly when the nominal lies in the conic hull of the
+active constraint normals. Reis et al. (2021) showed that CLF–CBF programs create spurious stable
+equilibria on the unsafe set’s boundary for a single agent and one obstacle; Tan and Dimarogonas
+(2024) characterised all closed-loop equilibria and modified the program to remove the undesired
+ones while keeping forward invariance; Reis and Aguiar (2026); Reis et al. (2025) extended the
+analysis, the latter noting that liveness is not guaranteed. These works fix the filter; we keep it and its
+guarantee untouched, show that a learned nominal makes the equilibrium absorbing in observation
+space, and remove it with a stateful shield outside the filter.
+
+Shield conservativeness. Kim et al. (2025) require that a continuous-space shield always has
+a safe action to offer, including stateful requirements such as loop avoidance, and note that the
+shield alone is overly conservative; Dawood et al. (2025) adapt an MPC shield’s weights with a
+learned supervisor; Wang et al. (2025) resolve multi-robot deadlocks after they occur; Arnström
+and Teixeira (2025) study adversarial filter deactivation. Our remedy is one counter, evaluated on
+learned policies in an adversarial game; Proposition 1 predicts the oscillations and timeouts these
+papers report.
+
+Learning through the filter. Oh et al. (2026) show that a filter-unaware policy chatters against
+the filter and that training through it is optimal when the filter is permissive enough; Wu et al.
+(2026) train through a filter for minimally exploitable game policies; Georgescu et al. (2026) repair
+a shield’s specification online to keep liveness achievable; Pizarro Bejarano et al. (2025) penalise
+the filter’s correction during training. We measure the case in which training through the filter still
+fails: at the stall the filter is not permissive, and the signal that would teach the escape is discounted
+away. We found no prior work that separates filter-adjacent liveness metrics from task success under
+pre-registration (Section 6).
+
+
+3. Setting and definitions
+Game. A unicycle pursuer (v ≤ 1 m/s, |ω| ≤ 2.84 rad/s, ∆t = 0.05 s) hunts an evader in a
+10 × 10 m arena with two circular obstacles, sensing within a 90◦ , 8 m field of view; capture is
+contact within 0.30 m; episodes last 1 200 steps. The evaders are a greedy flee policy, an obstacle-
+hugging policy, and a learned full-state attacker trained to stall filtered pursuers. The pursuers are
+
+                                                    2
+                                               S AFE AND S TUCK
+
+
+
+
+Table 1: Pre-registered experiments (frozen commit, hypotheses and bars fixed before any number,
+         paired seeds on a fresh stream). Opponents: G greedy evader, H wall-hugging evader, A
+         learned attacker. The safety hypothesis (zero contact steps) held in every filtered cell of
+         every experiment.
+
+ Exp. Measures                                 Policies                                 Opponents     N / cell
+ 1     filter cost; first remedies              F REE; three remedies                   six         500 paired
+ 2     mechanism (772 stall entries)            AWARE; its anchored fine-tune           A, G              200
+ 3     five learned remedies; rotation recovery BASE, O BS, H OR, penalty, memory       A, H, G     500 paired
+ 4     forward-offering recovery, 7 families    BASE, O BS, H OR, O BS H OR; recovery   A, H, G     500 paired
+ 5     correction-magnitude penalty, 18 arms BASE; three penalty schedules              G                 500
+ 6     intercept law replaced by a planner      line law, planner law                   G, H, A     500 paired
+ 7     stall geometry; dwell (det. / stoch.)    BASE (three seeds), AWARE               A                 100
+ 8     N sweep; perturbation baseline           BASE (three seeds), F REE, AWARE        G, A        500 paired
+ 9     second filter; composition               BASE (three seeds), AWARE               G, A        500 paired
+
+structured search policies: a PPO head whose search action is held for 10 steps while the evader is
+out of view, and a fixed intercept law when it is visible; both are memoryless.
+Filter. The base filter is a discrete-time CBF projection: a command is admissible if the exact
+one-step barrier condition holds on the true Euler successor, and the filter executes the admissible
+command nearest to the nominal in the weighted norm wv (∆v)2 + wω (∆ω)2 (wv = 150, wω = 1),
+with barrier rate 0.2 and a virtual control point 0.1 m ahead of the axle; it has exact, relaxed and
+backup tiers, and every stalled state in this paper lies on the exact tier. The second filter (Section 5.3)
+is a sampling lookahead through the simulator with horizon 4. A violation is the simulator’s contact
+flag; the safety hypothesis requires zero contact steps in every filtered cell.
+Definitions. A step is immobile if the executed speed is at most 0.05 vmax ; stalled if immobile
+while the nominal speed is at least 0.5 vmax ; a self-stop if immobile and not stalled. A stall run is a
+maximal sequence of stalled steps; a deadlock episode contains a stall run of at least K = 40 steps
+(2 s). A state is a filter trap at heading if no admissible command at the current pose moves the
+body (speed above 0.05 vmax ), a position trap if this holds at every heading there, and a pair trap if
+it is the former and not the latter. An escape is a displacement of 0.10 m from the stalled pose; an
+engagement is a cluster of recovery firings fewer than five steps apart; a cycle is an engagement that
+ends in a stall within 40 steps of the previous one.
+Policies and experiments. Table 1 lists the experiments. The BASE, O BS, H OR and O BS H OR
+families (three seeds each) are trained from scratch for 5 M steps behind the filter; O BS adds the
+filter’s admissible-turn features to the observation, H OR raises the discount to 0.999, O BS H OR does
+both. F REE and AWARE are 10 M-step policies from the experiments in which the failure was first
+seen: F REE was trained without the filter, AWARE behind it with the filter’s state in its observation.
+All policies are frozen before evaluation.
+
+4. Why a filtered memoryless policy stops
+Let s be the pursuer’s state, o(s) its observation, uπ = π(o(s)) the nominal command, and A(s) ⊂
+[0, vmax ] × [−ωmax , ωmax ] the set of commands that pass the exact one-step barrier test at s: the
+command box intersected with the half-spaces of the linearised barrier rows, hence convex. On
+
+                                                          3
+                                           S HOAIB S IDDIQUE
+
+
+
+
+the exact tier the filter executes PA(s) (uπ ), the unique projection of the nominal onto A(s) in the
+weighted norm.
+
+Proposition 1 (Stall characterisation) On the exact tier the executed speed is zeroP    if and only if
+uπ lies in the weighted normal cone of A(s) at the zero-speed face, equivalently uπ = j∈J(s) µj aj
+with µj ≥ 0 over the active barrier normals aj . If moreover o(s) is constant along the stall, the
+closed loop is at a fixed point and the stall is absorbing for the rest of the episode.
+
+Proof [Proof sketch] Projection onto a closed convex set returns the u⋆ with ⟨uπ −u⋆ , u−u⋆ ⟩W ≤ 0
+for all admissible u; on the zero-speed face this is the normal-cone condition, and stationarity of
+the Lagrangian gives the conic combination of active normals, the force-equilibrium condition of
+Grover et al. (2023) for one agent and static constraints. If o(s) is constant, so are uπ , the projection,
+and s.
+
+    The characterisation is known; the learned setting adds four refinements, measured in Section 5.
+(R1) Position trap versus pair trap. A stall at pose (p, θ) can be a trap at heading θ while another
+heading at p admits forward motion; what is trapped is the pair (policy, filter): the policy asks for
+the blocked direction, and the filter admits only commands the policy never asks for. (R2) Eventual
+constancy. The observation depends on the pose, the opponent’s visibility, and bounded filter fea-
+tures whose stall counter saturates at 80 steps, so with the opponent out of view the input is constant
+after at most 80 stalled steps; filter-state features (the O BS family, AWARE) therefore move the fixed
+point without removing it. (R3) Exploration. One might expect a Gaussian head’s stall to end once
+a sampled action displaces the body, with a geometric dwell. Experiment 7 does not support this:
+the long stalls belong to the intercept law, which samples nothing, and where the head is in control
+the evader’s motion ends the stall sooner than sampling would; what survives is that deadlock un-
+der stochastic sampling is no rarer than under deterministic actions. (R4) Two kinds of zero. The
+nominal may itself be zero; a policy that has learned not to ask reaches the same fixed point as one
+whose request is blocked (Section 6).
+
+Remark 2 (Why learning does not remove it) Let A0 be the undiscounted capture advantage of
+escaping a stall and T the delay from the escape to the capture. By (R2) the advantage attaches to
+one shared input vector, and under the training discount it is at most γ T A0 . Experiment 2 measured
+A0 = 0.257 and T ≈ 629 steps: 0.0005 at γ = 0.99 (measured discounted advantage 0.0092)
+and 0.137 at γ = 0.999. This bounds a learning signal; it does not prove failure. The H OR family
+(γ = 0.999) is the test: it raises the task and does not clear the deadlock.
+
+The recovery. After N consecutive immobile steps, the shield filters the candidates (vmax , 0),
+( 21 vmax , 0), the nominal, and (0, ±ωmax ) in that order and executes the first whose filtered speed
+exceeds 0.05 vmax ; if none moves, it executes the larger admissible rotation. The counter resets on
+any mobile step.
+
+Proposition 3 (Recovery) (a) Every command the recovery executes is an output of the base filter
+on the current state, so the forward-invariance guarantee is exactly the base filter’s. (b) If the stalled
+position is not a position trap, some heading admits forward motion; the admissible rotation reaches
+it within Tturn = 45 steps at ωmax , after which the forward candidate passes, so the body typically
+leaves the position within N + Tturn steps. (c) Nothing in (a)–(b) excludes a stall–recover–stall
+cycle; it is measured, not bounded.
+
+                                                    4
+                                                                                                                              S AFE AND S TUCK
+
+
+
+                                                                                  plain CBF filter (Obs seed 2, episode 1 740 003 vs the wall-hugging evader)
+                                                                           1.00
+
+
+
+
+                                                             speed (m/s)
+                                                                           0.75
+
+                                                                           0.50                                                                           stalled 1 106 steps: v_nom = 1.000 ± 0.000, v_exec = 0
+
+                                                                           0.25
+
+                                                                           0.00
+
+                                                                                  same policy, same episode, forward-offering recovery (N = 20)
+                                                                           1.00                       commanded speed v_nom                                    executed speed v_exec                                  recovery fires
+
+
+
+
+                                                             speed (m/s)
+                                                                           0.75
+
+                                                                           0.50                            captured at step 262
+
+                                                                           0.25
+
+                                                                           0.00
+
+                                                                                  0             200                                      400           600             800                                        1000            1200
+                                                                                                                                           environment step (dt = 0.05 s)
+
+
+
+
+Figure 1: Frozen input: nominal and executed speed over one archived episode under the plain filter
+          (Experiment 4) and the same seed under the recovery, which captures after one firing.
+
+                                                      (a) escaping multiplies capture 7.1×                                               (b) the consequence arrives late                                          (c) advantage 0.257 · γ^629
+                                                      Experiment 2, 383 stall entries                                                    208 escapes, 8-cell pool                                                  vs the discount
+                                               0.35                                                                                 30
+
+
+
+
+                                                                                                                                                                             discounted escape advantage
+                                                                                                                                              mean 629
+                                                         0.299
+                                               0.30                                                                                 25                                                                                                        γ = 0.999
+                                                                                                      stall entries (all 8 cells)
+                    P(capture | stall entry)
+
+
+
+
+                                                                                                                                                                                                           0.15                               (Hor family)
+                                               0.25
+                                                                                                                                    20
+                                               0.20                                                                                                                                                        0.10
+                                                                                                                                    15
+                                               0.15
+                                                                                                                                    10                                                                              0.05 bar
+                                               0.10                                                                                                                                                        0.05
+
+                                                                                      0.042                                          5                                                                                          γ = 0.99
+                                               0.05                                                                                                                                                                             (training)
+                                                                                                                                                                                                           0.00
+                                               0.00                                                                                  0
+                                                  escaped the stall                   did not                                          0        500       1000                                                    0.985   0.990 0.995        1.000
+                                                                                                                                    steps from escape to episode end                                                       discount γ
+
+
+
+
+Figure 2: Mechanism (Experiment 2). (a) Capture rate after an escaped stall versus not. (b) Delay
+          from escape to capture. (c) The bound γ T A0 against γ.
+
+
+    Part (b) says “typically” because Experiment 8 found 97.8% of 10 475 triggers within the bound;
+the tail is reported, not explained. Any filter that executes the nearest admissible command, includ-
+ing the closest-safe-action shield of Kim et al. (2025), satisfies the hypothesis of Proposition 1; the
+recovery is the minimal state that breaks (R2) without changing A(s).
+
+
+5. Experiments
+Protocol. Each experiment was specified before any number existed: hypotheses, bars, verdict
+rules, and the sentence to write if a hypothesis failed. Code was frozen at a commit, cells used the
+same seeds across arms on fresh streams, and paired differences were tested with the exact two-sided
+binomial test on discordant pairs at p < 0.05. Construct gates refuse to summarise an experiment
+until shared cells reproduce the earlier records bit for bit and designated animated episodes have
+been watched; a stop rule forbids re-running or re-cutting a cell after its number exists. Every
+verdict below is the registered one, including the failures.
+
+5.1. Phenomenon and mechanism
+The filter’s cost is large before any remedy: in Experiment 1 the pursuer F REE, trained without the
+filter, captured the greedy evader in 0.728 of 500 paired episodes without the filter and 0.396 with it
+(p = 3 × 10−44 ), and 0.540 of the filtered episodes were deadlock episodes. In the same experiment
+a stall penalty alone recovered nothing (0.426, 0.464, 0.436 against 0.426) while filter-state features
+
+                                                                                                                                                      5
+                                                                                                    S HOAIB S IDDIQUE
+
+
+
+
+                                  (a) admissible set, one stalled state                               (b) classification, deterministic arm                                                  (c) dwell at stall onsets, stochastic arm
+
+                            1.0                                                               Base 1 (n = 74)   Base 2 (n = 39)    Base 3 (n = 42)   Aware (n = 107)                              Base 1 median (n = 1)
+                                                                                                                                                                                                  Aware median (n = 15)
+                                                                                                                                                                                                  within factor 2
+                                                                                              1.00                                                                                    103
+
+
+
+
+                                                                                                                                                             observed dwell (steps)
+                            0.8
+
+
+
+
+                                                                    share of stalled states
+                                                                                              0.75
+                            0.6
+
+
+
+
+                  v (m/s)
+                                                                                                                                                                                      102
+
+                            0.4                                                               0.50
+
+                                                                                                                                                                                      101
+                            0.2                                                               0.25
+
+
+                            0.0
+                                                                                              0.00                                                                                    100
+                                     −2         0         2                                              exact trap at position   pair   rotation QP                                        100    101      102      103
+                                                                                                          tier heading trap       trap   admiss. agrees
+                                            ω (rad/s)                                                                                                                                 predicted dwell 10 / p_leave (steps)
+
+
+                 inadmissible (exact one-step test)       filter output
+                 admissible                               weighted QP projection
+                 policy's command
+
+
+
+
+Figure 3: Stall geometry (Experiment 7). (a) Admissible set at one archived stalled state with the
+          policy’s command, the filter’s output and the exact projection. (b) Classification of stalled
+          states, deterministic arm. (c) Observed against predicted dwell, stochastic arm, factor-two
+          band.
+
+recovered part of the loss on three of three seeds (0.522, 0.512, 0.544; p ≤ 8 × 10−4 ) and left
+0.11–0.30 of episodes in deadlock.
+     Experiment 2 measured the mechanism on 772 stall entries (Figure 2). On the pre-registered
+hold-10 cells (383 entries, 97 escaped) an escaped stall is followed by a capture in 0.299 of cases
+against 0.042 otherwise, with a mean delay of 629 steps; the discounted return-to-go differs by
+0.0092. During a stall the world observation does not change (median change 0.000) and the evader
+is visible in 2.4% of stalled steps; reducing the decision hold from 10 steps to 1 changes immobility
+by less than 0.05. The input is frozen and the escape’s reward lies beyond the training horizon.
+     Experiment 7 measured Proposition 1 on four policies against the learned attacker, 100 episodes
+each with deterministic actions and the same seeds with stochastic sampling (Figure 3; per-policy
+shares in the supplement). All 262 stalled states lie on the exact tier; 98.1% are traps at the current
+heading, none is a position trap, and an admissible rotation exists at every one. The exact weighted
+projection agrees with the filter’s output in 98.1% of states and yields forward motion in the remain-
+ing 1.9%, the five states that are not traps at heading; the registered bar was 99%, so Proposition 1
+is stated with this share: in 98% of stalled states the stall is the admissible set’s, in 2% the filter’s
+enumeration’s. The registered dwell test failed: deadlock under stochastic sampling is 0.42, 0.24,
+0.29, 0.57 against 0.38, 0.20, 0.21, 0.55 deterministic, so the loop survives exploration on four of
+four policies, but the geometric prediction could not be tested on two policies, whose stochastic-arm
+onsets all occurred on the intercept-law branch, and over-predicted the observed median dwell 3- to
+12-fold on the other two. The intercept law produced 57 to 100% of the stalled states; the same stall
+was seen in a rule-based pursuer in a separate game. Self-stops are 41 to 66% of the BASE policies’
+immobile steps and absent for AWARE.
+
+5.2. Remedies
+Experiment 3 trained five learning-side remedies from scratch, three seeds each, plus a scripted
+rotation-only recovery. Observation features and a longer horizon lowered immobility and raised
+capture without clearing the deadlock; the recurrent arm was confounded by an amendment to its
+batch settings and licenses no conclusion about memory; the stall penalty backfired (Section 6).
+
+                                                                                                                          6
+                                                                                                                     S AFE AND S TUCK
+
+
+
+
+                                      Experiment 4: 7 families × 3 seeds, N = 500 paired, 0 violations
+
+                                                                                 bare policy
+                                                                                 + forward-offering recovery (N = 20)
+                                0.7
+capture rate vs greedy evader
+
+
+
+
+                                0.6                                                          ObsHor: both
+
+
+
+                                                                                             Obs: admissible-turn features
+                                0.5                                                                                                                                                    the learned half cuts how often the escape is needed (ObsHor seed 2 with the recovery: 363)
+
+
+
+
+                                                                                                                                        recovery firings per 1 500 episodes
+                                            deadlock bar 0.05
+
+
+
+
+                                                                                                                                                                                                                                               forward escape                    rotation
+                                                                                                                                                                              106
+                                                                                                       Hor: γ = 0.999                                                                                 152,675
+                                                                                                                                                                              105
+                                                                                                                                                                                                                        27,974                    28,649 35,755
+                                0.4                                                                                                                                                         13,035
+                                                                                                                                                                              104                                                         7,268
+                                                                                   Base (reference)
+                                                                                                                                                                                                                                  1,153
+                                                                                                                                                                                   3
+                                                                                                                                                                              10                                                                                                       513
+                                                                                                                                                                                                                                                                          363
+
+                                                                                                                                                                              102
+                                0.3
+                                      0.0                       0.1     0.2      0.3       0.4      0.5        0.6                                                            101
+                                                                                                                                                                                                 1             2             3     s1     s2      s3           1          2            3
+                                                                                                                                                                                            se            se            se                                or         or           or
+                                                                deadlock-episode rate vs learned attacker                                                                              Ba            Ba            Ba            Ob     Ob      Ob
+                                                                                                                                                                                                                                                     Ob
+                                                                                                                                                                                                                                                       sH
+                                                                                                                                                                                                                                                               Ob
+                                                                                                                                                                                                                                                                   sH
+                                                                                                                                                                                                                                                                           Ob
+                                                                                                                                                                                                                                                                                sH
+
+
+
+
+Figure 4: Experiment 4, N = 500 paired. Left: deadlock-episode rate against the learned attacker
+          versus capture against the greedy evader, 21 arms; hue marks the family, shape the pres-
+          ence of the recovery; the registered bar is 0.05. Right: recovery firings per family over
+          1 500 gate episodes, forward versus rotation candidates.
+
+
+The rotation-only recovery scored 0.000 deadlock episodes in all nine cells by spinning, up to 277
+firings per episode, although a straight command would have moved the body in every sampled
+stalled pose; hence forward candidates come first.
+     Experiment 4 compared seven families of three seeds (Figure 4). Against the learned attacker
+the BASE family’s deadlock-episode rate is 0.298, 0.186, 0.252; with the forward-offering recovery
+at N = 20 it is 0.000 on the three BASE and three O BS seeds and 0.006, 0.002, 0.002 on the
+three O BS H OR seeds, against a registered bar of 0.05. Capture against the greedy evader rises
+significantly on nine of nine recovery seeds (BASE 0.466, 0.366, 0.402 to 0.640, 0.718, 0.442;
+p ≤ 3.6 × 10−5 ); the bare learned families raise capture too (O BS 0.532, 0.520, 0.638; H OR 0.546,
+0.432, 0.414; O BS H OR 0.560, 0.634, 0.636) and leave deadlock between 0.26 and 0.61. Every
+remedy that learns improves the task; only the escape removes the failure. Learning changes how
+often the escape is needed: with the recovery the BASE seeds fire 13 035, 152 675 and 27 974 times
+over 1 500 episodes and the O BS H OR seeds 35 755, 363 and 513, for equal capture. A registered
+anti-spin test passed on every arm and is uninformative, since the arm it was written to catch was
+not in the round.
+     Experiment 8 swept N ∈ {5, 10, 20, 40, 80} on five policies and added a perturbation baseline
+(Figure 5). Capture against the greedy evader is significantly above the plain filter at every N on
+all five policies and never significantly below it; deadlock against the attacker is at most 0.022 for
+N ≤ 20 on all five (BASE 0.000; F REE 0.008, 0.022, 0.014; AWARE 0.000, 0.000, 0.002) against
+0.186 to 0.710 plain. For N ≥ 40 the 40-step indicator is insensitive by construction; runs of at
+least 80 steps are 0.000 to 0.020 of episodes at N = 40 and runs of at least 160 steps 0.000 to 0.016
+at N = 80, against 0.176 to 0.682 plain. For the policies of the discovery, F REE’s capture rises from
+0.426 to 0.728 (p = 7 × 10−46 ) and its immobile-step rate falls from 0.594 to 0.071; AWARE’s rise
+from 0.560 to 0.654 (p = 10−14 ) and fall from 0.398 to 0.032.
+     The bound of Proposition 3(b) holds for 97.8% of the 10 475 decidable triggers at N = 20;
+eight of ten cells exceed 98.5%, and the third BASE seed’s two cells sit at 94.5 and 92.3%, below
+the registered 95%. The median escape takes 4 to 8 steps at every N . The cost is cycles, not
+
+                                                                                                                             7
+                                                                                                              S HOAIB S IDDIQUE
+
+
+
+
+                                                (a) deadlock episodes, vs attacker                                   (b) capture, vs greedy evader                                      (c) recovery firings per episode
+
+                                                                                                                                                                                102
+
+
+
+
+                 deadlock episode rate
+                                                                                                              0.7
+
+
+
+
+                                                                                                                                                            firings / episode
+                                         0.6
+
+
+
+
+                                                                                         capture rate
+                                                                                                              0.6                                                               101
+                                         0.4
+                                                                                                              0.5
+                                                                                                                                                                                100
+                                         0.2
+                                                                              bar 0.05                        0.4
+                                         0.0
+                                                                                                                                                                                   0
+                                               plain    5    10   20   40     80                                    plain    5    10   20   40     80                                  plain    5    10   20     40      80
+                                                       recovery parameter N                                                 recovery parameter N                                               recovery parameter N
+
+
+                                                (d) cycles per engagement                                            (e) immobile steps, vs attacker                                    (f) escape time after a recovery trigger
+                                                                                                              0.6                                                                                    N + one turn = 65
+                                         0.6                                                                                                                              4000
+
+
+
+
+                                                                                         immobile step rate
+                 cycle share
+
+
+
+
+                                                                                                              0.4                                                         3000
+                                         0.4
+
+
+
+
+                                                                                                                                                        triggers
+                                                                                                                                                                          2000
+                                         0.2                                                                  0.2
+                                                                                                                                                                          1000
+
+                                         0.0                                                                  0.0                                                                  0
+                                           plain       5    10    20   40      80                                   plain    5    10   20   40     80                                   0              100               200
+                                                       recovery parameter N                                                 recovery parameter N                                steps from trigger to 0.10 m (N = 20, all cells)
+                                                             Base 1     Base 2               Base 3                     Free       Aware      open marker: perturbation baseline, N = 20
+
+
+
+
+Figure 5: Experiment 8, five policies, N = 500 paired, against the recovery parameter:
+          (a) deadlock-episode rate (attacker), (b) capture (greedy evader), (c) firings per episode,
+          (d) cycles per engagement, (e) immobile-step rate (attacker); open markers are the per-
+          turbation baseline at N = 20. (f) Steps from trigger to a 0.10 m displacement at N = 20,
+          with the N + Tturn bound.
+
+
+immobility: at N = 20 the immobile-step rate is 0.023 to 0.101 on every cell and 0.08 to 0.56 of
+engagements are cycles.
+     The perturbation baseline draws up to eight commands uniformly from the box after 20 im-
+mobile steps, filters each, and executes the first whose filtered speed exceeds 0.05 vmax : the usual
+random resolution of a deadlock, registered with the expectation that it would clear the deadlock and
+lose on capture and firings. It clears the deadlock on none of the five policies (0.304, 0.226, 0.280,
+0.486, 0.560 against 0.298, 0.186, 0.252, 0.710, 0.586 plain); the recovery captures more on five of
+five and fires more on five of five. Figure 3(a) explains both: at a trap at heading the admissible set
+is the zero-speed segment, no sampled command moves, and a baseline that executes only moving
+commands can never rotate out; its firings land on self-stops and never on the trap (one policy fires
+it 99 times per episode with deadlock unchanged), whereas 5 to 89% of the recovery’s firings at
+N = 20 are rotations. The recovery’s contribution is the rotation candidate, not the trigger.
+
+
+5.3. A second filter
+Experiment 9 replaced the CBF projection with a sampling lookahead of horizon 4 (Figure 6).
+Deadlock against the attacker is 0.104, 0.036, 0.046, 0.468 on the four policies against 0.298, 0.186,
+0.252, 0.586 under the CBF filter; paired, the CBF filter deadlocks more on seven of eight cells
+(p ≤ 0.002), the exception being AWARE against the greedy evader (0.386 against 0.284). The
+registered bar, at least 0.05 on three of four policies, was met on two: the loop is present but weaker
+under the predictive filter at this lookahead. The experiment then composed the recovery onto the
+predictive filter so that every candidate is accepted or rejected by the predictive test (a construct
+gate re-filtered all 39 162 commands of the first five episodes of each cell without a rejection).
+The composition clears the deadlock (0.000, 0.000, 0.002, 0.014) and raises capture over the plain
+
+                                                                                                                                   8
+                                                                                                                              S AFE AND S TUCK
+
+
+
+                                                                        (a) deadlock episodes vs the learned attacker                                                            (b) capture vs greedy evader
+                                                                  0.6
+                                                                                                                                                                          0.70
+                                                                  0.5
+
+
+
+
+                                          deadlock episode rate
+                                                                                                                                                                          0.65
+                                                                  0.4                                                                                                     0.60
+
+
+
+
+                                                                                                                                                           capture rate
+                                                                  0.3                                                                                                     0.55
+
+                                                                                                                                                                          0.50
+                                                                  0.2
+                                                                                                                                                                          0.45
+                                                                  0.1
+                                                                                                                                                                          0.40
+                                                                  0.0
+                                                                                                                                                                          0.35
+                                                                        CBF           CBF +                               predictive      predictive +                           CBF              CBF +         predictive    predictive +
+                                                                        plain        recovery                               plain           recovery                             plain           recovery         plain         recovery
+
+                                                                                                                                       Base 1     Base 2                   Base 3        Aware
+
+
+
+
+Figure 6: Experiment 9, four policies, N = 500 paired: (a) deadlock-episode rate against the
+          attacker and (b) capture against the greedy evader under the CBF and predictive filters,
+          without and with the recovery at N = 20.
+
+                            (a) Exp. 3: stall penalty, 3 seeds                                                                (b) Exp. 5: deadlock down, capture down                              (c) Exp. 6: law stalls −94…−99 %, capture flat
+                                                                                                                        0.6
+                                   Base
+                                                                                                                                                                                             0.6law
+                                                                                                                                                                                    capture, line           law held at a stall, line law
+                                   penalty (10× stall penalty)                                                                                                                      capture, planner        law held at a stall, planner
+                     0.8
+                                                                                             capture vs greedy evader
+
+
+
+                                                                                                                        0.5                                                                 0.5
+
+
+                     0.6                                                                                                                                                                    0.4
+                                                                                                                        0.4
+                                                                                                                                                                                            0.3
+                     0.4
+                                                                                                                        0.3                                                                 0.2
+                     0.2
+                                                                                                                                         Base                                               0.1
+                                                                                                                        0.2
+                                                                                                                                         + intervention penalty
+                     0.0                                                                                                                                                                    0.0
+                            stall-step immobile-step capture                                                                       0.1         0.2                                                     greedy    hugging attacker
+                           (penalised)              vs greedy
+                                                                                                                                 deadlock-episode rate
+
+
+
+
+Figure 7: Three pre-registered dissociations. (a) Experiment 3: the stall penalty against its baseline,
+          three seeds. (b) Experiment 5: the correction-magnitude penalty, three seeds. (c) Exper-
+          iment 6: episodes with the law held at a stall, and capture, line law versus planner law,
+          three opponents.
+
+
+predictive filter on four of four policies (0.468 to 0.628, 0.454 to 0.702, 0.396 to 0.432, 0.554 to
+0.668; all p < 0.05).
+
+
+6. Three dissociations: liveness metrics versus the task
+Each of the following pre-registered hypotheses failed in the registered direction (Figure 7).
+
+A stall penalty teaches the agent to stop asking. In Experiment 3 the penalty family, trained
+with a stall penalty, halves the stalled-step rate (0.143–0.249 to 0.093–0.158) while its immobile-
+step rate rises from 0.436–0.448 to 0.633–0.833 and its capture against the greedy evader falls from
+0.384–0.478 to 0.204–0.348. The policy learns to emit a zero nominal (R4); the fixed point is the
+same.
+
+A correction-magnitude penalty improves the deadlock metric and hurts the task. Experi-
+ment 5 trained 18 arms with the penalty of Pizarro Bejarano et al. (2025) on the magnitude of the
+filter’s correction (they square it; we use the unsquared norm in normalised units, calibrated to an
+expected episode penalty of one). In their quadrotor tracking task the penalty raised return and re-
+duced chattering; standing still is never a local optimum there. In the dense-reward column capture
+falls on three of three seeds (0.442, 0.480, 0.528 to 0.338, 0.300, 0.212; pooled p = 3.6 × 10−51 )
+while zero-motion requests rise from 0.07, 0.16, 0.00 to 0.37, 0.78, 0.80, and the pre-registered
+deadlock metric improves in nine of nine cells (one seed from 0.224 to 0.106 while its immobile-
+
+                                                                                                                                                         9
+                                         S HOAIB S IDDIQUE
+
+
+
+
+step rate rises from 0.23 to 0.81). The penalty was also charged for the intercept law’s interventions,
+a registered confound.
+Removing the pins removes a symptom. Experiment 6 replaced the intercept law with a planner
+that avoids obstacles. Episodes with the law held at a stall for at least 40 steps fall from 0.170,
+0.132, 0.368 to 0.002, 0.008, 0.004 against the three opponents, while filtered capture changes by
++0.026, −0.018, −0.022 (p = 0.015, 0.035, 0.007). The pins were a symptom.
+Consequence. Evaluations of filtered learned policies should report the task, immobility and
+stalled steps separately, and firings per episode for any recovery; a liveness metric that improves
+under a penalty is a warning, not a result, until the task moves with it.
+
+7. Discussion and limitations
+The claims are about memoryless policies; the one recurrent arm was confounded before its number
+existed, so memory is untested. One game, one dynamics model, two filter constructions; three
+seeds per family, 500 paired episodes per cell. Remark 2 is a bound: the longer-horizon family
+shows the horizon is implicated and lengthening it insufficient. The intercept law’s stalls are the
+same fixed point as the learned head’s.
+    The recovery has a cost: cycles are 8 to 56% of engagements at N = 20, the escape bound fails
+on 2.2% of triggers, and the firing count varies by three orders of magnitude across policies that
+capture equally well. A random perturbation that accepts only moving commands cannot leave a
+trap at heading; one that accepted rotations would be a different baseline, not run here.
+    Fifteen specifications passed their bars while measuring the artefact this paper is about; the
+failure was found by a person watching the animated episodes (1 085 consecutive blocked requests,
+command standard deviation 0.002, an unregistered diagnostic of 100 episodes). Watching the
+behaviour is now a construct gate in our protocol. In practice: keep the filter, add the counter, log
+the firings, watch the episodes.
+
+8. Conclusion
+A minimal-intervention safety filter in front of a memoryless learned policy can create a closed-
+loop fixed point at which the guarantee holds, violations are zero, and the task fails silently. We
+characterised it, showed that its geometry is the admissible set’s, measured why the learner cannot
+see the way out, and showed across nine pre-registered experiments that learning-side remedies im-
+prove the task without removing the failure while a one-counter recovery from the same admissible
+set removes it with the guarantee untouched. The failure is cheap to remove and easy to miss; the
+second point is the one we would like this paper to change.
+Reproducibility. Environment, filters, policies, pre-registrations, frozen commits, per-cell records
+and animated episodes for every experiment are released at [repository URL], with a map from the
+names used here to the repository’s identifiers.
+
+Generative AI Use
+Generative AI tools were used for methodology drafting, coding and experimental implementation,
+literature search, and writing and editing. The authors reviewed and verified all AI-assisted content
+and take responsibility for the final content of the paper.
+
+                                                  10
+                                          S AFE AND S TUCK
+
+
+
+
+References
+Mohammed Alshiekh, Roderick Bloem, Rüdiger Ehlers, Bettina Könighofer, Scott Niekum, and
+ Ufuk Topcu. Safe reinforcement learning via shielding. In Proceedings of the AAAI Conference
+ on Artificial Intelligence, volume 32, pages 2669–2678, 2018. doi: 10.1609/aaai.v32i1.11797.
+
+Aaron D. Ames, Samuel Coogan, Magnus Egerstedt, Gennaro Notomista, Koushil Sreenath, and
+  Paulo Tabuada. Control barrier functions: Theory and applications. In Proceedings of the
+  18th European Control Conference (ECC), pages 3420–3431, 2019. doi: 10.23919/ECC.2019.
+  8796030.
+
+Daniel Arnström and André M. H. Teixeira. Data-driven and stealthy deactivation of safety filters. In
+  Proceedings of the 7th Annual Learning for Dynamics and Control Conference (L4DC), volume
+  283 of Proceedings of Machine Learning Research, pages 456–468, 2025.
+
+Richard Cheng, Gábor Orosz, Richard M. Murray, and Joel W. Burdick. End-to-end safe reinforce-
+  ment learning through barrier functions for safety-critical continuous control tasks. In Proceed-
+  ings of the AAAI Conference on Artificial Intelligence, volume 33, pages 3387–3395, 2019. doi:
+  10.1609/aaai.v33i01.33013387.
+
+Murad Dawood, Ahmed Shokry, and Maren Bennewitz. A dynamic safety shield for safe and
+ efficient reinforcement learning of navigation tasks. In Proceedings of the 7th Annual Learning
+ for Dynamics and Control Conference (L4DC), volume 283 of Proceedings of Machine Learning
+ Research, pages 686–697, 2025.
+
+Tiberiu Georgescu, Tom Goodall, Dalal Alrajeh, Francesco Belardinelli, and Sebastian Uchitel.
+  Adaptive GR(1) specification repair for liveness-preserving shielding in reinforcement learn-
+  ing. In Proceedings of the International Conference on Neuro-symbolic Systems (NeSy), 2026.
+  arXiv:2511.02605.
+
+Jaskaran Grover, Changliu Liu, and Katia Sycara. Why does symmetry cause deadlocks? IFAC-
+  PapersOnLine, 53(2):9746–9753, 2020. doi: 10.1016/j.ifacol.2020.12.2644.
+
+Jaskaran Grover, Changliu Liu, and Katia Sycara. Deadlock analysis and resolution for multi-robot
+  systems. In Algorithmic Foundations of Robotics XIV (WAFR 2020), Springer Proceedings in
+  Advanced Robotics, pages 294–312, 2021. doi: 10.1007/978-3-030-66723-8 18.
+
+Jaskaran Grover, Changliu Liu, and Katia Sycara. The before, during, and after of multi-robot
+  deadlock. The International Journal of Robotics Research, 42(6):317–336, 2023. doi: 10.1177/
+  02783649221074718.
+
+Kai-Chieh Hsu, Haimin Hu, and Jaime F. Fisac. The safety filter: A unified view of safety-critical
+  control in autonomous systems. Annual Review of Control, Robotics, and Autonomous Systems,
+  7(1):47–72, 2024. doi: 10.1146/annurev-control-071723-102940.
+
+Kyungmin Kim, Davide Corsi, Andoni Rodrı́guez, Nicholas Lanier, Benjami Parellada, Pierre
+  Baldi, César Sánchez, and Roy Fox. Realizable continuous-space shields for safe reinforce-
+  ment learning. In Proceedings of the 7th Annual Learning for Dynamics and Control Conference
+  (L4DC), volume 283 of Proceedings of Machine Learning Research, pages 932–945, 2025.
+
+                                                  11
+                                        S HOAIB S IDDIQUE
+
+
+
+
+Donggeon David Oh, Duy P. Nguyen, Haimin Hu, and Jaime F. Fisac. Provably optimal reinforce-
+  ment learning under safety filtering. In Proceedings of the International Association for Safe and
+  Ethical AI Conference (IASEAI’26), volume 2, pages 488–500, 2026. arXiv:2510.18082.
+
+Federico Pizarro Bejarano, Lukas Brunke, and Angela P. Schoellig. Safety filtering while train-
+  ing: Improving the performance and sample efficiency of reinforcement learning agents. IEEE
+  Robotics and Automation Letters, 10(1):788–795, 2025. doi: 10.1109/LRA.2024.3512374.
+
+Matheus F. Reis and A. Pedro Aguiar. On the stability of undesirable equilibria in the quadratic
+ program framework for safety-critical control. Automatica, 190:113032, 2026. doi: 10.1016/j.
+ automatica.2026.113032.
+
+Matheus F. Reis, A. Pedro Aguiar, and Paulo Tabuada. Control barrier function-based quadratic
+ programs introduce undesirable asymptotically stable equilibria. IEEE Control Systems Letters,
+ 5(2):731–736, 2021. doi: 10.1109/LCSYS.2020.3004797.
+
+Matheus F. Reis, Gonçalo Carvalho, and A. Pedro Aguiar. A unified stability analysis of safety-
+ critical control using multiple control barrier functions. arXiv:2503.15823, 2025.
+
+Xiao Tan and Dimos V. Dimarogonas. On the undesired equilibria induced by control barrier func-
+  tion based quadratic programs. Automatica, 159:111359, 2024. doi: 10.1016/j.automatica.2023.
+  111359.
+
+Yuhao Wang, Xiaoyu He, and Miroslav Pajic. Neuro-symbolic deadlock resolution in multi-robot
+  systems. In Proceedings of the 7th Annual Learning for Dynamics and Control Conference
+  (L4DC), volume 283 of Proceedings of Machine Learning Research, pages 1066–1077, 2025.
+
+Yuxuan Wu, Zhaoyang Yang, Donggeon David Oh, Duy P. Nguyen, and Haimin Hu. Turning safety
+  into competence: Minimally exploitable robot policies via safety-filtered reinforcement learning.
+  arXiv:2609.27312, 2026.
+
+
+
+
+                                                12
+
