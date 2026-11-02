@@ -209,7 +209,7 @@ _HAVE_ARCHIVE = (ROOT / "results" / "derisk" / "s17_arm_BASE-60.json").exists() 
 
 @pytest.mark.skipif(not _HAVE_ARCHIVE, reason="archived records and checkpoints not present")
 class TestSmokeReplay:
-    @pytest.mark.parametrize("cell", ["BASE-60_GREEDY", "OBS-61_HUG7", "STR14_GREEDY"])
+    @pytest.mark.parametrize("cell", ["BASE-60_GREEDY", "OBS-61_HUG7", "STR14_GREEDY", "OBSGAM-60_GREEDY"])
     def test_three_episodes_equal_the_archive(self, cell, monkeypatch):
         monkeypatch.chdir(ROOT)
         out = N1.replay(cell, n_episodes=3)

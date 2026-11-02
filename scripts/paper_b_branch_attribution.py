@@ -198,7 +198,7 @@ def archived(cell: str) -> dict:
             "deadlock_ind": [bool(x) for x in g["deadlock_ind"]],
             "capture_rate": g["capture_rate"],
             **{k: g["pursuer"][k] for k in RATE_KEYS[1:]},
-            "sha256": rec["source_sha256"],
+            "sha256": _archived_sha_a(rec, spec["policy"]),
             "source": str(path),
         }
     path = OUT / "s26_b2_cells" / f"{spec['policy']}_{spec['opponent']}_PLAIN.json"
@@ -210,6 +210,16 @@ def archived(cell: str) -> dict:
         "sha256": rec["ckpt_sha256"],
         "source": str(path),
     }
+
+
+def _archived_sha_a(rec: dict, arm: str) -> str:
+    """Amendment A1: an S17 arm that TRAINED (OBSGAM) gated its own checkpoint and
+    archived no hash of it; the RECF arm of the same family and seed gated the
+    same file and archived it as `source_sha256`."""
+    if rec.get("source_sha256"):
+        return rec["source_sha256"]
+    twin = json.loads((OUT / f"s17_arm_RECF-{arm}.json").read_text())
+    return twin["source_sha256"]
 
 
 def compare_reproduction(replayed: dict, arch: dict, prefix: int | None = None) -> dict:

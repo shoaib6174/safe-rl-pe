@@ -62,3 +62,6 @@ No cell is re-run or re-cut after its record exists (the runner refuses). Amendm
 
 ## 10. Outputs
 `scripts/paper_b_branch_attribution.py` (runner, `--cells`, `--gifs`, `--summarize`), `tests/pe2/test_paper_b_branch_attribution.py`; records `results/derisk/s27_n1_cells/{CELL}.json`, GIFs `results/derisk/s27_n1_gifs/`, round `results/derisk/s27_n1_round.json`; decision entry in `docs/decisions.md`.
+
+## Amendment A1 (2026-11-03 03:25, before any OBSGAM or Set B attribution existed)
+The first launch (frozen 27d9c71) wrote 27 records, all PASS on CG-N1-1, CG-N1-2 and CG-N1-4 (BASE, OBS, GAM × 3 seeds × 3 opponents). Every OBSGAM cell then raised `KeyError: 'source_sha256'` in `archived()` after its replay and BEFORE its record was written: the OBSGAM arms trained in S17 and their records archive no hash of their own checkpoint. Each chain stopped there, so the four Set B cells queued after them never ran. No attribution of these 13 cells was written, printed or read. Fix (harness only, CG-N1-4's reference, nothing else): for an S17 arm without `source_sha256`, the archived hash is the `source_sha256` of `s17_arm_RECF-{arm}.json`, the recovery arm that gated the same checkpoint file. The 13 missing cells are run once from a new frozen commit; the 27 existing records stand (stop rule).
