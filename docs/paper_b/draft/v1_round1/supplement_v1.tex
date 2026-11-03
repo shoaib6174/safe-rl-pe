@@ -1,0 +1,105 @@
+\documentclass{l4dc2027}
+% Paper B — supplementary material (L4DC 2027). Compiled separately from main.tex.
+\usepackage{times}
+\usepackage{booktabs}
+\usepackage{array}
+\newcommand{\wmax}{\omega_{\max}}
+\newcommand{\Base}{\textsc{Base}}
+\newcommand{\Obs}{\textsc{Obs}}
+\newcommand{\Hor}{\textsc{Hor}}
+\newcommand{\ObsHor}{\textsc{ObsHor}}
+\newcommand{\Free}{\textsc{Free}}
+\newcommand{\Aware}{\textsc{Aware}}
+
+\title[Safe and Stuck: Supplement]{Supplementary Material for ``The Guarantee Holds and the Task Fails: Absorbing Stalls of Learned Policies under CBF Filters''}
+
+\author{%
+ \Name{Mohammad Shoaib} \Email{[to confirm]}\\
+ \addr NSU Intelligent Robotics Lab, North South University, Dhaka, Bangladesh
+ \AND
+ \Name{Shahnewaz Siddique} \Email{shahnewaz.siddique@northsouth.edu}\\
+ \addr Department of Electrical and Computer Engineering, North South University, Dhaka, Bangladesh%
+}
+
+\begin{document}
+\maketitle
+
+\section{Stall classification per policy (Experiment 7)}
+
+Table~\ref{tab:b1} gives the per-policy shares summarised in Figure~3(b) of the main text.
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{Experiment 7, deterministic arm: shares of the $n$ stalled states. Trap: no admissible command moves the body at the current heading. Position trap: no heading at the position admits motion. Rotation: an admissible rotation with $|\omega| \ge 0.5\,\wmax$ exists. QP: the exact weighted projection agrees with the filter. Law: the state arose on the intercept-law branch. Self-stop: share of immobile steps on which the nominal itself was zero.}
+\label{tab:b1}
+\begin{tabular}{@{}lrrrrrrrr@{}}
+\toprule
+Policy & $n$ & Exact tier & Trap & Position trap & Rotation & QP & Law & Self-stop \\
+\midrule
+\Base\ seed 1 & 74 & 1.00 & 1.00 & 0.00 & 1.00 & 1.00 & 1.00 & 0.41 \\
+\Base\ seed 2 & 39 & 1.00 & 0.97 & 0.00 & 1.00 & 0.97 & 0.97 & 0.66 \\
+\Base\ seed 3 & 42 & 1.00 & 1.00 & 0.00 & 1.00 & 1.00 & 1.00 & 0.57 \\
+\Aware & 107 & 1.00 & 0.96 & 0.00 & 1.00 & 0.96 & 0.57 & 0.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Names used in the paper and repository identifiers}
+
+The experiments were run and archived under internal identifiers, which the released records, checkpoints and pre-registration documents keep unchanged. Tables~\ref{tab:names} and~\ref{tab:experiments} map the names used in the paper to those identifiers. Record paths are relative to the repository's \texttt{results/} directory; each record names the commit it was produced at and its seed stream.
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{Policies, remedies and opponents.}
+\label{tab:names}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Name in the paper & Repository identifier & Where it appears \\
+\midrule
+\Base\ seeds 1, 2, 3 & \texttt{BASE-60}, \texttt{BASE-61}, \texttt{BASE-62} & Experiments 3, 4, 7, 8, 9 \\
+\Obs\ seeds 1, 2, 3 & \texttt{OBS-60/61/62} & Experiments 3, 4 \\
+\Hor\ seeds 1, 2, 3 & \texttt{GAM-60/61/62} & Experiments 3, 4 \\
+\ObsHor\ seeds 1, 2, 3 & \texttt{OBSGAM-60/61/62} & Experiment 4 \\
+penalty family (stall penalty) & \texttt{PEN-60/61/62} & Experiment 3 \\
+memory family (recurrent) & \texttt{MEM-60/61/62} & Experiment 3 \\
+rotation-only recovery & \texttt{REC} on the \Base\ seeds & Experiment 3 \\
+forward-offering recovery, parameter $N$ & \texttt{RECF-}$N$; arms \texttt{RECF-BASE/OBS/OBSGAM-6x} & Experiments 4, 8, 9 \\
+perturbation baseline & \texttt{PERT-20} & Experiment 8 \\
+predictive filter & \texttt{PRED-PLAIN}, \texttt{PRED-RECF-20} & Experiment 9 \\
+\Free & \texttt{STR14} & Experiments 1, 8 \\
+\Aware & \texttt{RC19} & Experiments 1, 2, 7, 8, 9 \\
+anchored fine-tune of \Aware & \texttt{FT-B-41} & Experiment 2 \\
+three remedies of Experiment 1 & \texttt{RA}, \texttt{RB}, \texttt{RC} (seeds 19--21) & Experiment 1 \\
+three penalty schedules & \texttt{DVARY}, \texttt{SPARSE}, \texttt{DRARE} (\texttt{-BASE}, \texttt{-PEN}, seeds 70--72) & Experiment 5 \\
+line law, planner law & \texttt{LINE}, \texttt{PLAN} & Experiment 6 \\
+greedy evader (G) & \texttt{GREEDY} & all \\
+wall-hugging evader (H) & \texttt{HUG7} (\texttt{HUG}) & Experiments 3, 4, 6 \\
+learned attacker (A) & \texttt{ATK4-45} & Experiments 2--4, 6--9 \\
+safety hypothesis & \texttt{H-SAFE} & all \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{Experiments, internal round identifiers, frozen commits, seed streams and records.}
+\label{tab:experiments}
+\begin{tabular}{@{}llllp{5.2cm}@{}}
+\toprule
+Exp.\ & Round & Frozen commit & Seed stream & Records \\
+\midrule
+1 & S4, S5 & \texttt{9ea99f2}, \texttt{9a73105} & 1\,090\,000+ & \texttt{derisk/s4\_cell\_*.json}, \texttt{derisk/s5\_arm\_*.json} \\
+2 & S15 & \texttt{7fcf9ba} & 1\,710\,000+ & \texttt{derisk/s15\_round.json}, \texttt{derisk/s15\_cells/} \\
+3 & S16 & \texttt{32caa57} & 1\,720\,000+ & \texttt{derisk/s16\_round.json}, \texttt{derisk/s16\_arm\_*.json} \\
+4 & S17 & \texttt{d1ed3aa} & 1\,740\,000+ & \texttt{derisk/s17\_round.json}, \texttt{derisk/s17\_arm\_*.json} \\
+5 & S18 & \texttt{0ed69e6} & 1\,900\,000+ & \texttt{derisk/s18\_round.json}, \texttt{derisk/s18\_arm\_*.json} \\
+6 & S19 & \texttt{a252bc8} & 2\,000\,000+ & \texttt{derisk/s19\_round.json}, \texttt{derisk/s19\_cells/} \\
+7 & S26 B1 & \texttt{b535af6} & 3\,000\,000+ & \texttt{derisk/s26\_b1\_round.json}, \texttt{derisk/s26\_b1\_cells/} \\
+8 & S26 B2 & \texttt{b535af6} & 1\,740\,000+ & \texttt{derisk/s26\_b2\_round.json}, \texttt{derisk/s26\_b2\_cells/} \\
+9 & S26 B3, B4 & \texttt{b535af6} & 1\,740\,000+ & same files as Experiment 8 (\texttt{PRED-*} cells) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}

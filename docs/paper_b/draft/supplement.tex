@@ -1,8 +1,11 @@
 \documentclass{l4dc2027}
-% Paper B — supplementary material (L4DC 2027). Compiled separately from main.tex.
+% Paper B — supplementary material, revision 1. Compiled separately from main.tex. v1 kept at draft/v1_round1/.
 \usepackage{times}
 \usepackage{booktabs}
 \usepackage{array}
+\usepackage{siunitx}
+\renewcommand{\thetable}{S\arabic{table}}
+\renewcommand{\thefigure}{S\arabic{figure}}
 \newcommand{\wmax}{\omega_{\max}}
 \newcommand{\Base}{\textsc{Base}}
 \newcommand{\Obs}{\textsc{Obs}}
@@ -10,8 +13,9 @@
 \newcommand{\ObsHor}{\textsc{ObsHor}}
 \newcommand{\Free}{\textsc{Free}}
 \newcommand{\Aware}{\textsc{Aware}}
+\graphicspath{{../figures/}}
 
-\title[Safe and Stuck: Supplement]{Supplementary Material for ``The Guarantee Holds and the Task Fails: Absorbing Stalls of Learned Policies under CBF Filters''}
+\title[Safe and Stuck: Supplement]{Supplementary Material for ``The Guarantee Holds and the Task Fails: Absorbing Stalls of Learning-Enabled Controllers under CBF Filters''}
 
 \author{%
  \Name{Mohammad Shoaib} \Email{[to confirm]}\\
@@ -24,13 +28,46 @@
 \begin{document}
 \maketitle
 
-\section{Stall classification per policy (Experiment 7)}
+\section{The experiments and their registered verdicts}
 
-Table~\ref{tab:b1} gives the per-policy shares summarised in Figure~3(b) of the main text.
+\begin{table}[h]
+\centering\scriptsize
+\caption{The ten pre-registered experiments of the main text, numbered in reading order, with their registered verdicts; Table~\ref{tab:cross} maps them to the released records. Evaders: G greedy, H wall-hugging, L learned attacker. Every filtered evaluation had zero collision steps.}
+\label{tab:rounds}\vspace{2pt}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}l >{\raggedright\arraybackslash}p{3.3cm} >{\raggedright\arraybackslash}p{3.3cm} l >{\raggedright\arraybackslash}p{5.3cm}@{}}
+\toprule
+& Question & Policies & Evaders & Registered verdict \\
+\midrule
+1 & cost of the filter & \Free; 3 remedies & G & filter cost confirmed; filter features recover part, penalty alone none \\
+2 & geometry of stalled states & \Base\ $\times$3, \Aware & L & 98.1\% projection agreement (bar 99\%: missed); dwell test failed \\
+3 & who commands the stall & 4 families, \Free, \Aware & L, H, G & 3/3 predictions pass; rule D-2 \\
+4 & is there a signal to escape & \Aware\ and a fine-tune of it & L, G & ``no signal'' fails: signal present \\
+5 & five learned remedies & \Base, \Obs, \Hor, penalty, recurrent & L, H, G & primary (immobility) fails on every arm \\
+6 & recovery on four families & 4 families & L, H, G & recovery passes on 3/3 families \\
+7 & recovery parameter $N$; random baseline & \Base\ $\times$3, \Free, \Aware & L, G & capture gain at every $N$; bound bar missed on 2/10; baseline did not clear deadlock \\
+8 & second filter & \Base\ $\times$3, \Aware & L, G & stall present on 2/4 (bar 3/4); composition 4/4 \\
+9 & correction-magnitude penalty & 3 reward variants & G & cross-over fails; penalty lowers capture \\
+10 & law replaced by a planner & scripted search & G, H, L & law stalls removed 3/3; capture gain 1/3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Training details}
+
+\paragraph{Observation.} The head's base observation has 11 components: own position $x/5$, $y/5$ and heading $\theta/\pi$; the evader's relative position in the body frame divided by 10 and relative heading divided by $\pi$, all zero when the evader is not visible; a visibility flag; and the centres of the two obstacles in the body frame divided by 10. Obstacle radii are not observed; walls are seen only through the own position. The three filter features are the intervention flag of the last executed step, the minimum clearance clipped to $[-0.5, 2]$\,m, and the stalled-step run divided by 40 and clipped to $[0, 2]$ (constant after 80 stalled steps). The two allowed-turn features of \Obs\ and \ObsHor\ are the admissible turn-rate range at zero speed at the current pose. Widths: \Free\ 11; \Base, \Hor, \Aware\ 14; \Obs, \ObsHor\ 16.
+
+\paragraph{Reward and discount.} $+1$ on capture and $-1$ on timeout; policies trained behind the filter pay $10^{-3}$ per stalled step inside a learner transition (the penalty family of Experiment~5 pays $10^{-2}$). One learner transition is up to 10 held head steps followed by the intercept law's run until it hands back; in training a transition lasted 14.0--16.6 simulation steps on average (for example 15.9 for \Base\ seed 1). The discount applies per transition.
+
+\paragraph{PPO.} Stable-Baselines3 2.7.1 with its defaults except the discount: MLP policy with two hidden layers of 64 tanh units, 2\,048 steps per rollout, minibatch 64, 10 epochs, learning rate $3\times10^{-4}$, GAE $\lambda = 0.95$, clip 0.2, entropy coefficient 0. The recurrent arm of Experiment~5 used RecurrentPPO with an LSTM policy. The trained families ran 5\,M simulation steps, \Free\ and \Aware\ 10\,M. \Free\ is the best of five seeds on its confirmation evaluation (capture 0.738 there); \Aware\ is the best of the three seeds of the remedy with both filter features and the stall penalty.
+
+\paragraph{Intercept law.} Chase: full speed with $\omega = \mathrm{clip}(3\,\beta)$ for bearing $\beta$; go to the remembered point at full speed until within \SI{0.5}{m}. The head's hold ends early when the evader becomes visible.
+
+\section{Stall classification per policy (Experiment 2)}
 
 \begin{table}[h]
 \centering\footnotesize
-\caption{Experiment 7, deterministic arm: shares of the $n$ stalled states. Trap: no admissible command moves the body at the current heading. Position trap: no heading at the position admits motion. Rotation: an admissible rotation with $|\omega| \ge 0.5\,\wmax$ exists. QP: the exact weighted projection agrees with the filter. Law: the state arose on the intercept-law branch. Self-stop: share of immobile steps on which the nominal itself was zero.}
+\caption{Experiment~2, deterministic actions: shares of the $n$ stalled states. Trap: no admissible command moves the body at the current heading. Position trap: no heading at the position admits motion. Rotation: an admissible rotation with $|\omega| \ge 0.5\,\wmax$ exists. QP: the exact weighted projection agrees with the filter. Law: the state arose on the intercept-law branch. Self-stop: share of immobile steps on which the requested speed itself was zero.}
 \label{tab:b1}
 \begin{tabular}{@{}lrrrrrrrr@{}}
 \toprule
@@ -44,60 +81,121 @@ Policy & $n$ & Exact tier & Trap & Position trap & Rotation & QP & Law & Self-st
 \end{tabular}
 \end{table}
 
-\section{Names used in the paper and repository identifiers}
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{F6_geometry}
+\caption{Experiment~2. (a)~Admissible set at one stalled state with the policy's command, the filter's output and the exact projection. (b)~Classification of stalled states, deterministic actions. (c)~Observed against predicted dwell with sampled actions; the registered prediction failed.}
+\end{figure}
 
-The experiments were run and archived under internal identifiers, which the released records, checkpoints and pre-registration documents keep unchanged. Tables~\ref{tab:names} and~\ref{tab:experiments} map the names used in the paper to those identifiers. Record paths are relative to the repository's \texttt{results/} directory; each record names the commit it was produced at and its seed stream.
+\section{Penalties and the planner (Experiments 5, 9, 10)}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.62\linewidth]{R5_dissoc}
+\caption{(a)~Experiment~5: a stall penalty lowers the stalled-step rate, raises the immobile-step rate and lowers capture, on three seeds. (b)~Experiment~9: a correction-magnitude penalty lowers deadlock and capture, on three seeds (dense-reward variant).}
+\end{figure}
+
+\paragraph{Experiment 9 by reward variant.} The registered cross-over hypothesis was that the correction penalty raises capture under the dense varying reward and lowers it under the sparse reward. It failed: the penalty never raised pooled capture; it lowered it significantly only under the dense varying reward. Capture against the greedy evader without $\to$ with the penalty, seeds 70/71/72, and the pooled paired $p$:
 
 \begin{table}[h]
 \centering\footnotesize
-\caption{Policies, remedies and opponents.}
-\label{tab:names}
-\scriptsize\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}lll@{}}
+\caption{Experiment~9, capture without $\to$ with the correction penalty.}
+\begin{tabular}{@{}lllll@{}}
 \toprule
-Name in the paper & Repository identifier & Where it appears \\
+Reward variant & Seed 70 & Seed 71 & Seed 72 & Pooled $p$ \\
 \midrule
-\Base\ seeds 1, 2, 3 & \texttt{BASE-60}, \texttt{BASE-61}, \texttt{BASE-62} & Experiments 3, 4, 7, 8, 9 \\
-\Obs\ seeds 1, 2, 3 & \texttt{OBS-60/61/62} & Experiments 3, 4 \\
-\Hor\ seeds 1, 2, 3 & \texttt{GAM-60/61/62} & Experiments 3, 4 \\
-\ObsHor\ seeds 1, 2, 3 & \texttt{OBSGAM-60/61/62} & Experiment 4 \\
-penalty family (stall penalty) & \texttt{PEN-60/61/62} & Experiment 3 \\
-memory family (recurrent) & \texttt{MEM-60/61/62} & Experiment 3 \\
-rotation-only recovery & \texttt{REC} on the \Base\ seeds & Experiment 3 \\
-forward-offering recovery, parameter $N$ & \texttt{RECF-}$N$; arms \texttt{RECF-BASE/OBS/OBSGAM-6x} & Experiments 4, 8, 9 \\
-perturbation baseline & \texttt{PERT-20} & Experiment 8 \\
-predictive filter & \texttt{PRED-PLAIN}, \texttt{PRED-RECF-20} & Experiment 9 \\
-\Free & \texttt{STR14} & Experiments 1, 8 \\
-\Aware & \texttt{RC19} & Experiments 1, 2, 7, 8, 9 \\
-anchored fine-tune of \Aware & \texttt{FT-B-41} & Experiment 2 \\
-three remedies of Experiment 1 & \texttt{RA}, \texttt{RB}, \texttt{RC} (seeds 19--21) & Experiment 1 \\
-three penalty schedules & \texttt{DVARY}, \texttt{SPARSE}, \texttt{DRARE} (\texttt{-BASE}, \texttt{-PEN}, seeds 70--72) & Experiment 5 \\
-line law, planner law & \texttt{LINE}, \texttt{PLAN} & Experiment 6 \\
-greedy evader (G) & \texttt{GREEDY} & all \\
-wall-hugging evader (H) & \texttt{HUG7} (\texttt{HUG}) & Experiments 3, 4, 6 \\
-learned attacker (A) & \texttt{ATK4-45} & Experiments 2--4, 6--9 \\
-safety hypothesis & \texttt{H-SAFE} & all \\
+sparse & 0.516 $\to$ 0.596 & 0.622 $\to$ 0.592 & 0.466 $\to$ 0.416 & 1.0 \\
+dense, varying (main text) & 0.442 $\to$ 0.338 & 0.480 $\to$ 0.300 & 0.528 $\to$ 0.212 & $3.6\times10^{-51}$ \\
+dense, rare & 0.620 $\to$ 0.560 & 0.508 $\to$ 0.640 & 0.538 $\to$ 0.406 & 0.13 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Experiment 10.} A fully scripted pursuer (scripted orbit search; no learned part) with the line intercept law or an obstacle-avoiding planner law, behind the CBF filter, 500 paired episodes per evader. Registered verdicts: the planner raises capture on at least two of three evaders, FAIL (one of three); law stalls of at least 40 steps fall by at least half, PASS (three of three). Per evader: law-stalled episodes under the line law; how many of them the planner turned into captures; total captures line $\to$ planner; the paired $p$:
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{Experiment~10, what became of the law-stalled episodes.}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Evader & Law-stalled (line) & Captured (line) & Captured (planner) & Total captures & $p$ \\
+\midrule
+greedy & 85 & 0 & 16 & 190 $\to$ 203 & 0.015 \\
+wall-hugging & 66 & 8 & 3 & 156 $\to$ 147 & 0.035 \\
+learned attacker & 184 & 7 & 0 & 57 $\to$ 46 & 0.007 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Recovery details (Experiments 6 and 7)}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.6\linewidth]{F4_firings}
+\caption{Experiment~6: recovery firings per family over 1\,500 evaluation episodes, forward versus turning candidates.}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{F7_recovery_sweep}
+\caption{Experiment~7, five policies, 500 paired episodes, against the trigger $N$: (a)~deadlock (attacker; the 40-step count is uninformative for $N \ge 40$ because it includes the recovery's own wait), (b)~capture (greedy evader), (c)~firings per episode, (d)~cycles per engagement, (e)~immobile-step rate (attacker); open markers are the random-perturbation baseline at $N = 20$. (f)~Steps from trigger to a \SI{0.10}{m} displacement at $N = 20$, with the registered bound $N + 45$. The figure counts escaped triggers only (10\,466); the record's 10\,475 also counts 9 triggers censored with at least 65 steps left, as failures.}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.6\linewidth]{F8_predictive}
+\caption{Experiment~8: (a)~deadlock against the attacker and (b)~capture of the greedy evader under the CBF and predictive filters, without and with the recovery at $N = 20$.}
+\end{figure}
+
+\section{Names, records and the first draft's numbering}
+
+The experiments were run and archived under internal identifiers, which the released records, checkpoints and pre-registrations keep. Table~\ref{tab:cross} maps the paper's numbering to them and to the numbering of the first draft.
+
+\begin{table}[h]
+\centering\footnotesize
+\caption{Experiments, earlier numbering, internal round identifiers, seed streams and records (paths under \texttt{results/derisk/}).}\label{tab:cross}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}llllp{5.6cm}@{}}
+\toprule
+Exp.\ & Draft 1 & Round & Seed stream & Records \\
+\midrule
+1 & 1 & S4, S5 & 1\,090\,000+ & \texttt{s4\_cell\_*.json}, \texttt{s5\_arm\_*.json} \\
+2 & 7 & S26 B1 & 3\,000\,000+ & \texttt{s26\_b1\_round.json}, \texttt{s26\_b1\_cells/} \\
+3 & -- & S27 (N1) & 1\,740\,000+ & \texttt{s27\_n1\_round.json}, \texttt{s27\_n1\_cells/} \\
+4 & 2 & S15 & 1\,710\,000+ & \texttt{s15\_round.json}, \texttt{s15\_cells/} \\
+5 & 3 & S16 & 1\,720\,000+ & \texttt{s16\_round.json}, \texttt{s16\_arm\_*.json} \\
+6 & 4 & S17 & 1\,740\,000+ & \texttt{s17\_round.json}, \texttt{s17\_arm\_*.json} \\
+7 & 8 & S26 B2 & 1\,740\,000+ & \texttt{s26\_b2\_round.json}, \texttt{s26\_b2\_cells/} \\
+8 & 9 & S26 B3, B4 & 1\,740\,000+ & \texttt{s26\_b2\_cells/} (\texttt{PRED-*}) \\
+9 & 5 & S18 & 1\,900\,000+ & \texttt{s18\_round.json}, \texttt{s18\_arm\_*.json} \\
+10 & 6 & S19 & 2\,000\,000+ & \texttt{s19\_round.json}, \texttt{s19\_cells/} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[h]
 \centering\footnotesize
-\caption{Experiments, internal round identifiers, frozen commits, seed streams and records.}
-\label{tab:experiments}
-\begin{tabular}{@{}llllp{5.2cm}@{}}
+\caption{Policies, remedies and evaders.}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lll@{}}
 \toprule
-Exp.\ & Round & Frozen commit & Seed stream & Records \\
+Name in the paper & Repository identifier & Experiments \\
 \midrule
-1 & S4, S5 & \texttt{9ea99f2}, \texttt{9a73105} & 1\,090\,000+ & \texttt{derisk/s4\_cell\_*.json}, \texttt{derisk/s5\_arm\_*.json} \\
-2 & S15 & \texttt{7fcf9ba} & 1\,710\,000+ & \texttt{derisk/s15\_round.json}, \texttt{derisk/s15\_cells/} \\
-3 & S16 & \texttt{32caa57} & 1\,720\,000+ & \texttt{derisk/s16\_round.json}, \texttt{derisk/s16\_arm\_*.json} \\
-4 & S17 & \texttt{d1ed3aa} & 1\,740\,000+ & \texttt{derisk/s17\_round.json}, \texttt{derisk/s17\_arm\_*.json} \\
-5 & S18 & \texttt{0ed69e6} & 1\,900\,000+ & \texttt{derisk/s18\_round.json}, \texttt{derisk/s18\_arm\_*.json} \\
-6 & S19 & \texttt{a252bc8} & 2\,000\,000+ & \texttt{derisk/s19\_round.json}, \texttt{derisk/s19\_cells/} \\
-7 & S26 B1 & \texttt{b535af6} & 3\,000\,000+ & \texttt{derisk/s26\_b1\_round.json}, \texttt{derisk/s26\_b1\_cells/} \\
-8 & S26 B2 & \texttt{b535af6} & 1\,740\,000+ & \texttt{derisk/s26\_b2\_round.json}, \texttt{derisk/s26\_b2\_cells/} \\
-9 & S26 B3, B4 & \texttt{b535af6} & 1\,740\,000+ & same files as Experiment 8 (\texttt{PRED-*} cells) \\
+\Base\ seeds 1, 2, 3 & \texttt{BASE-60}, \texttt{BASE-61}, \texttt{BASE-62} & 2, 3, 5, 6, 7, 8 \\
+\Obs\ seeds 1, 2, 3 & \texttt{OBS-60/61/62} & 3, 5, 6 \\
+\Hor\ seeds 1, 2, 3 & \texttt{GAM-60/61/62} & 3, 5, 6 \\
+\ObsHor\ seeds 1, 2, 3 & \texttt{OBSGAM-60/61/62} & 3, 6 \\
+penalty family; recurrent family & \texttt{PEN-60/61/62}; \texttt{MEM-60/61/62} & 5 \\
+rotation-only recovery & \texttt{REC} & 5 \\
+recovery with trigger $N$ & \texttt{RECF-}$N$ & 6, 7, 8 \\
+random-perturbation baseline & \texttt{PERT-20} & 7 \\
+predictive filter & \texttt{PRED-PLAIN}, \texttt{PRED-RECF-20} & 8 \\
+\Free & \texttt{STR14} & 1, 3, 7 \\
+\Aware; its fine-tune & \texttt{RC19}; \texttt{FT-B-41} & 1--4, 7, 8; 4 \\
+remedies of Experiment~1 & \texttt{RA}, \texttt{RB}, \texttt{RC} (seeds 19--21) & 1 \\
+reward variants of Experiment~9 & \texttt{SPARSE}, \texttt{DVARY}, \texttt{DRARE} (\texttt{-BASE}, \texttt{-PEN}, seeds 70--72) & 9 \\
+line law, planner law & \texttt{LINE}, \texttt{PLAN} & 10 \\
+greedy evader; wall-hugging evader; learned attacker & \texttt{GREEDY}; \texttt{HUG7}; \texttt{ATK4-45} & -- \\
 \bottomrule
 \end{tabular}
 \end{table}

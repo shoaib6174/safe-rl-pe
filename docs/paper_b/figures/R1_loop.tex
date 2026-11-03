@@ -1,0 +1,21 @@
+\begin{tikzpicture}[font=\footnotesize, >=Stealth,
+  box/.style={draw, rounded corners=2pt, align=center, inner sep=2.5pt, minimum height=7mm},
+  law/.style={box, fill=lawc!18, text width=4.3cm}, head/.style={box, fill=headc!25, text width=4.3cm}, filt/.style={box, fill=gray!12}]
+\node[box] (obs) at (0,0) {observation\\$o_t$};
+\node[law] (law) at (3.55,0.82) {\textbf{intercept law} (scripted)\\{\scriptsize chase the evader if it is visible, else drive to where it was last seen}};
+\node[head] (head) at (3.55,-0.82) {\textbf{search head} (learned, PPO)\\{\scriptsize commands only when the law has nothing to do}};
+\node[filt] (cbf) at (7.45,0) {\textbf{CBF filter}\\{\scriptsize nearest allowed}\\{\scriptsize command}};
+\node[box] (env) at (9.55,0) {robot\\and arena};
+\node[box, dashed, text width=6.2cm] (rec) at (8.6,-2.0) {\textbf{recovery} (optional): after $N$ steps without moving, offer {\scriptsize full forward, half forward, the policy's command, then a turn}};
+\coordinate (split) at (0.95,0);
+\coordinate (join) at (6.2,0);
+\draw (obs.east) -- (split);
+\draw[->] (split) |- (law.west);
+\draw[->] (split) |- (head.west);
+\draw (law.east) -| (join);
+\draw (head.east) -| (join);
+\draw[->] (join) -- node[above, font=\scriptsize]{$u_\pi$} (cbf.west);
+\draw[->] (cbf) -- node[above, font=\scriptsize]{$u$} (env);
+\draw[->] (env.north) -- ++(0,1.3) -| node[pos=0.25, above, font=\scriptsize]{next observation $o_{t+1}$} (obs.north);
+\draw[->, dashed] (rec.north -| cbf.south) -- (cbf.south);
+\end{tikzpicture}
