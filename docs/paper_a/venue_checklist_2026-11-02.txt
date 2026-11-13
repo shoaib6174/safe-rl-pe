@@ -1,0 +1,67 @@
+ To reduce revision requests, please check your manuscript 为降低文章返修的频次，请严格按照以下标准自
+ according to the following requirements 检文章的版面
+You can directly use the Letter format preset in the template file 页边距：上：1.9 厘米，下：2.54 厘米，左：1.57
+without manually adjusting the page settings. This will ensure 厘米
+that your document complies with the IEEE formatting standards. 页面设置
+ 纸张大小：Letter，宽度：21.59 厘米，高度：
+ Page Setup
+ 27.94 厘米，无网格
+ 栏：双栏
+At least 4 pages and no more than 20 pages. 篇幅 最少 4 页，最多不高于 20 页。
+ Length
+Please refer to the template file and fill in all author information 请按照名在前、姓在后的格式，完整书写所有作
+in detail. Please mark the corresponding author with an asterisk 作者
+ 者的姓名，并注明每位作者的单位、所在城市、
+"*". Authors
+ 邮政编码和国家。注意通讯作者使用“*”标记。
+At least 3 and at most 10. 关键词 最少 3 个，最多 10 个。
+ Keywords
+Sub-titles are not captured in Xplore and should not be used 标题 无副标题。
+ Title
+Figures: 图：
+①All images should be high resolution (at 100% viewing size, ①所有图片应为高清晰度（在 100%阅读模式下，
+text and data within the images must be clearly readable), and
+ 图中文本数据应能够清晰可读），且图片中不得
+no Chinese characters are allowed in the images.
+② Figures should be embedded within the text. 包含中文字符。
+③ IEEE does not accept submissions containing the "Lena" ②图片应该嵌入至文本中；
+image. 图片 ③IEEE 不接受提交包含“Lena 图像”的论文。
+Figure Captions: Figures 图片标题：
+①Please use the full term “Figure” without abbreviation, and ①所有“Figure”应使用全称，并在标题末尾添加句
+add a period at the end of the caption.
+ 号。
+② All figures must be cited in the main text and numbered
+sequentially using Arabic numerals (e.g., Figure 1, Figure 2, Figure ②所有图片必须在正文中引用，并按照阿拉伯数
+3, etc.). 字的顺序排列（例如，Figure 1、Figure 2、Figure 3
+ 等）。
+Tables: 表格：所有表格均需使用可编辑格式。如果表中
+All tables must be in an editable format. If the table contains 包含公式，必须采用 MathType 或 Office 自带的编
+formulas, they must be created using MathType or the built-in
+ 辑器进行创作。
+equation editor in Office.
+Table Captions: 表格标题：
+①Please use the full term “Table” without abbreviation, and 表格
+ Tables ①所有“Table”应使用全称，并在标题末尾添加句
+add a period at the end of the caption.
+ 号。
+② All tables must be cited in the main text and numbered
+sequentially using Arabic numerals (e.g., Table 1, Table 2, Table ②所有表格必须在正文中进行引用，并按照阿拉
+3, etc.). 伯数字的顺序排列（例如，Table 1、Table 2、
+ Table 3 等）。
+All equations must be created using MathType or the built-in 所有公式必须使用 MathType 或 Office 自带的编辑
+equation editor in Office, and numbered sequentially with Arabic 器进行创建，并按阿拉伯数字顺序排序（例如：
+numerals (e.g., (1), (2), (3), etc.). 公式
+ (1)、(2)、(3)等）。
+ Equations
+The equation numbers should be placed outside the equation 公式的序号需标注在公式外部，切勿将其嵌入公
+and must not be embedded within the equation editor. 式编辑器内部。
+The cited references must indicate the publication year and be 所引用的文献必须注明年份并且最新的，数量不
+recent, with no fewer than five references. Additionally, the 得少于五条。同时，被引用文献的作者应来自三
+authors of the cited references should come from three or more
+ 文献 个或三个以上的国家。参考文献在正文中的引用
+different countries. In-text citations should be marked using
+superscript Arabic numerals in the form of “[number]”. All References 需采用“[阿拉伯数字]”的上标形式进行标注。所有
+references must include the DOI or a link to the source. 文献必须标注 DOI/链接。
+All references must be correctly cited within the main text. 所有文献必须在正文中正确引用。
+
+--- Added from ic-fmas.com (2026-11-02): submission page says 4-12 pages, English, Word+PDF via paper-sub.com; AI-tools page: GenAI may assist drafting but may not write the whole paper; disclose tool name, version, function and specific use in Methodology or Acknowledgement; AI-generated figures need manual verification; GenAI may not be an author.

@@ -1,0 +1,221 @@
+shielded evaluation cells 202 episodes 101000 violation_steps 0
+== S24.1 (ratio 1.2)
+  LEAD-1.0_GREEDY        n=500 0.558 [0.514,0.601] viol=0 switches=0.0 decisions=52.9 steps=697
+  LEAD-1.0_HUG           n=500 0.328 [0.288,0.370] viol=0 switches=0.0 decisions=66.1 steps=885
+  LEAD-1.0_TACTIC-V0     n=500 0.528 [0.484,0.571] viol=0 switches=0.0 decisions=47.4 steps=745
+  NOMEM-80_GREEDY        n=500 0.568 [0.524,0.611] viol=0 switches=8.5 decisions=19.6 steps=720
+  NOMEM-80_HUG           n=500 0.346 [0.306,0.389] viol=0 switches=10.1 decisions=23.9 steps=900
+  NOMEM-80_TACTIC-V0     n=500 0.736 [0.696,0.773] viol=0 switches=8.5 decisions=17.4 steps=591
+  NOMEM-81_GREEDY        n=500 0.606 [0.563,0.648] viol=0 switches=7.6 decisions=18.4 steps=668
+  NOMEM-81_HUG           n=500 0.368 [0.327,0.411] viol=0 switches=9.1 decisions=23.0 steps=874
+  NOMEM-81_TACTIC-V0     n=500 0.718 [0.677,0.756] viol=0 switches=8.3 decisions=17.3 steps=596
+  NOMEM-82_GREEDY        n=500 0.578 [0.534,0.621] viol=0 switches=9.7 decisions=19.5 steps=709
+  NOMEM-82_HUG           n=500 0.346 [0.306,0.389] viol=0 switches=9.7 decisions=23.7 steps=896
+  NOMEM-82_TACTIC-V0     n=500 0.700 [0.658,0.739] viol=0 switches=8.3 decisions=17.9 steps=612
+  RULES-V0_GREEDY        n=500 0.582 [0.538,0.624] viol=0 switches=5.7 decisions=19.4 steps=699
+  RULES-V0_HUG           n=500 0.378 [0.337,0.421] viol=0 switches=4.3 decisions=23.1 steps=865
+  RULES-V0_TACTIC-V0     n=500 0.660 [0.617,0.700] viol=0 switches=7.9 decisions=18.5 steps=638
+  SEL-80_GREEDY          n=500 0.606 [0.563,0.648] viol=0 switches=10.3 decisions=18.4 steps=675
+  SEL-80_HUG             n=500 0.382 [0.340,0.425] viol=0 switches=11.4 decisions=22.6 steps=851
+  SEL-80_TACTIC-V0       n=500 0.746 [0.706,0.782] viol=0 switches=9.0 decisions=16.3 steps=564
+  SEL-81_GREEDY          n=500 0.620 [0.577,0.661] viol=0 switches=9.1 decisions=19.0 steps=688
+  SEL-81_HUG             n=500 0.394 [0.352,0.437] viol=0 switches=9.9 decisions=22.6 steps=856
+  SEL-81_TACTIC-V0       n=500 0.782 [0.744,0.816] viol=0 switches=8.0 decisions=15.8 steps=537
+  SEL-82_GREEDY          n=500 0.528 [0.484,0.571] viol=0 switches=11.3 decisions=20.2 steps=742
+  SEL-82_HUG             n=500 0.360 [0.319,0.403] viol=0 switches=11.5 decisions=23.5 steps=887
+  SEL-82_TACTIC-V0       n=500 0.778 [0.740,0.812] viol=0 switches=8.5 decisions=15.6 steps=534
+== S24-FLAT
+  FLAT-80_GREEDY         0.122 [0.096,0.154] hold=10
+  FLAT-80_HUG            0.054 [0.037,0.077] hold=10
+  FLAT-80_TACTIC-V0      0.024 [0.014,0.041] hold=10
+  FLAT-81_GREEDY         0.348 [0.308,0.391] hold=10
+  FLAT-81_HUG            0.268 [0.231,0.308] hold=10
+  FLAT-81_TACTIC-V0      0.554 [0.510,0.597] hold=10
+  FLAT-82_GREEDY         0.122 [0.096,0.154] hold=10
+  FLAT-82_HUG            0.072 [0.052,0.098] hold=10
+  FLAT-82_TACTIC-V0      0.026 [0.015,0.044] hold=10
+  FLAT40-80_GREEDY       0.066 [0.047,0.091] hold=40
+  FLAT40-80_HUG          0.040 [0.026,0.061] hold=40
+  FLAT40-80_TACTIC-V0    0.080 [0.059,0.107] hold=40
+  FLAT40-81_GREEDY       0.026 [0.015,0.044] hold=40
+  FLAT40-81_HUG          0.006 [0.002,0.017] hold=40
+  FLAT40-81_TACTIC-V0    0.018 [0.009,0.034] hold=40
+  FLAT40-82_GREEDY       0.010 [0.004,0.023] hold=40
+  FLAT40-82_HUG          0.018 [0.009,0.034] hold=40
+  FLAT40-82_TACTIC-V0    0.066 [0.047,0.091] hold=40
+  STRUCT-80_GREEDY       0.412 [0.370,0.456] hold=10
+  STRUCT-80_HUG          0.326 [0.286,0.368] hold=10
+  STRUCT-80_TACTIC-V0    0.350 [0.309,0.393] hold=10
+  STRUCT-81_GREEDY       0.470 [0.427,0.514] hold=10
+  STRUCT-81_HUG          0.314 [0.275,0.356] hold=10
+  STRUCT-81_TACTIC-V0    0.320 [0.281,0.362] hold=10
+  STRUCT-82_GREEDY       0.406 [0.364,0.450] hold=10
+  STRUCT-82_HUG          0.312 [0.273,0.354] hold=10
+  STRUCT-82_TACTIC-V0    0.310 [0.271,0.352] hold=10
+== S24.2 stage1 (learned evader rows x pursuer seats)
+  EVS-80_LEAD-1.0        0.086 [0.064,0.114]
+  EVS-80_RULES-V0        0.110 [0.085,0.140]
+  EVS-80_SEL-80          0.130 [0.103,0.162]
+  EVS-80_SEL-81          0.136 [0.109,0.169]
+  EVS-80_SEL-82          0.128 [0.102,0.160]
+  EVS-81_LEAD-1.0        0.120 [0.094,0.151]
+  EVS-81_RULES-V0        0.104 [0.080,0.134]
+  EVS-81_SEL-80          0.144 [0.116,0.177]
+  EVS-81_SEL-81          0.192 [0.160,0.229]
+  EVS-81_SEL-82          0.218 [0.184,0.256]
+  EVS-82_LEAD-1.0        0.106 [0.082,0.136]
+  EVS-82_RULES-V0        0.122 [0.096,0.154]
+  EVS-82_SEL-80          0.138 [0.111,0.171]
+  EVS-82_SEL-81          0.152 [0.123,0.186]
+  EVS-82_SEL-82          0.150 [0.121,0.184]
+== S24.2 stage2 (SEL3 rows)
+  SEL3-80_EVS-80         0.138 [0.111,0.171]
+  SEL3-80_EVS-81         0.160 [0.130,0.195]
+  SEL3-80_EVS-82         0.156 [0.127,0.190]
+  SEL3-80_GREEDY         0.616 [0.573,0.658]
+  SEL3-80_HUG            0.380 [0.339,0.423]
+  SEL3-80_TACTIC-V0      0.734 [0.694,0.771]
+  SEL3-81_EVS-80         0.114 [0.089,0.145]
+  SEL3-81_EVS-81         0.124 [0.098,0.156]
+  SEL3-81_EVS-82         0.118 [0.093,0.149]
+  SEL3-81_GREEDY         0.608 [0.565,0.650]
+  SEL3-81_HUG            0.382 [0.340,0.425]
+  SEL3-81_TACTIC-V0      0.700 [0.658,0.739]
+  SEL3-82_EVS-80         0.140 [0.112,0.173]
+  SEL3-82_EVS-81         0.170 [0.140,0.205]
+  SEL3-82_EVS-82         0.128 [0.102,0.160]
+  SEL3-82_GREEDY         0.618 [0.575,0.660]
+  SEL3-82_HUG            0.374 [0.333,0.417]
+  SEL3-82_TACTIC-V0      0.696 [0.654,0.735]
+== meta game
+  pursuers ['RULES-V0', 'LEAD-1.0', 'SEL-81', 'SEL3-best'] evaders ['GREEDY', 'HUG', 'TACTIC-V0', 'EVS-80']
+  matrix [[0.582, 0.378, 0.66, 0.11], [0.558, 0.328, 0.528, 0.086], [0.62, 0.394, 0.782, 0.136], [0.616, 0.38, 0.734, 0.138]]
+  game {"value": 0.138, "row_player": "maximiser", "row_strategy": {"RULES-V0": 0.0, "LEAD-1.0": 0.0, "SEL-81": 0.0, "SEL3-best": 1.0}, "col_strategy": {"GREEDY": 0.0, "HUG": 0.0, "TACTIC-V0": 0.0, "EVS-80": 1.0}, "row_support": ["SEL3-best"], "col_support": ["EVS-80"], "support_tol": 1e-06, "duality_gap": 0.0, "status": "optimal", "exploitability_pursuer": {"RULES-V0": 0.02800000000000001, "LEAD-1.0": 0.05200000000000002, "SEL-81": 0.0020000000000000018, "SEL3-best": 0.0}, "exploitability_evader": {"GREEDY": 0.482, "HUG": 0.256, "TACTIC-V0": 0.644, "EVS-80": 0.0}, "best_response_to_pursuer": {"RULES-V0": "EVS-80", "LEAD-1.0": "EVS-80", "SEL-81": "EVS-80", "SEL3-best": "EVS-80"}, "best_response_to_evader": {"GREEDY": "SEL-81", "HUG": "SEL-81", "TACTIC-V0": "SEL-81", "EVS-80": "SEL3-best"}, "pure_saddle": true}
+== S24.3-ZS by ratio
+  LEAD-1.0_GREEDY_r0.8         0.832 [0.797,0.862]
+  LEAD-1.0_GREEDY_r1.0         0.650 [0.607,0.691]
+  LEAD-1.0_GREEDY_r1.2         0.558 [0.514,0.601]
+  LEAD-1.0_HUG_r0.8            0.626 [0.583,0.667]
+  LEAD-1.0_HUG_r1.0            0.348 [0.308,0.391]
+  LEAD-1.0_HUG_r1.2            0.328 [0.288,0.370]
+  LEAD-1.0_TACTIC-V0_r0.8      0.922 [0.895,0.942]
+  LEAD-1.0_TACTIC-V0_r1.0      0.656 [0.613,0.696]
+  LEAD-1.0_TACTIC-V0_r1.2      0.528 [0.484,0.571]
+  RULES-V0_GREEDY_r0.8         0.926 [0.900,0.946]
+  RULES-V0_GREEDY_r1.0         0.720 [0.679,0.758]
+  RULES-V0_GREEDY_r1.2         0.582 [0.538,0.624]
+  RULES-V0_HUG_r0.8            0.842 [0.807,0.871]
+  RULES-V0_HUG_r1.0            0.350 [0.309,0.393]
+  RULES-V0_HUG_r1.2            0.378 [0.337,0.421]
+  RULES-V0_TACTIC-V0_r0.8      0.998 [0.989,1.000]
+  RULES-V0_TACTIC-V0_r1.0      0.710 [0.669,0.748]
+  RULES-V0_TACTIC-V0_r1.2      0.660 [0.617,0.700]
+  SEL-80_GREEDY_r0.8           0.938 [0.913,0.956]
+  SEL-80_GREEDY_r1.0           0.728 [0.687,0.765]
+  SEL-80_GREEDY_r1.2           0.606 [0.563,0.648]
+  SEL-80_HUG_r0.8              0.870 [0.838,0.897]
+  SEL-80_HUG_r1.0              0.378 [0.337,0.421]
+  SEL-80_HUG_r1.2              0.382 [0.340,0.425]
+  SEL-80_TACTIC-V0_r0.8        1.000 [0.992,1.000]
+  SEL-80_TACTIC-V0_r1.0        0.768 [0.729,0.803]
+  SEL-80_TACTIC-V0_r1.2        0.746 [0.706,0.782]
+  SEL-81_GREEDY_r0.8           0.920 [0.893,0.941]
+  SEL-81_GREEDY_r1.0           0.772 [0.733,0.807]
+  SEL-81_GREEDY_r1.2           0.620 [0.577,0.661]
+  SEL-81_HUG_r0.8              0.842 [0.807,0.871]
+  SEL-81_HUG_r1.0              0.380 [0.339,0.423]
+  SEL-81_HUG_r1.2              0.394 [0.352,0.437]
+  SEL-81_TACTIC-V0_r0.8        1.000 [0.992,1.000]
+  SEL-81_TACTIC-V0_r1.0        0.774 [0.735,0.808]
+  SEL-81_TACTIC-V0_r1.2        0.782 [0.744,0.816]
+  SEL-82_GREEDY_r0.8           0.890 [0.860,0.915]
+  SEL-82_GREEDY_r1.0           0.712 [0.671,0.750]
+  SEL-82_GREEDY_r1.2           0.528 [0.484,0.571]
+  SEL-82_HUG_r0.8              0.872 [0.840,0.898]
+  SEL-82_HUG_r1.0              0.346 [0.306,0.389]
+  SEL-82_HUG_r1.2              0.360 [0.319,0.403]
+  SEL-82_TACTIC-V0_r0.8        0.992 [0.980,0.997]
+  SEL-82_TACTIC-V0_r1.0        0.736 [0.696,0.773]
+  SEL-82_TACTIC-V0_r1.2        0.778 [0.740,0.812]
+== S25 (all 80)
+  FULLOBS_EVS-80_NONE            0.042 [0.028,0.063] viol=285595
+  FULLOBS_EVS-80_d0.00           0.064 [0.046,0.089] viol=0
+  FULLOBS_EVS-80_d0.05           0.050 [0.034,0.073] viol=0
+  FULLOBS_EVS-80_d0.10           0.058 [0.041,0.082] viol=0
+  FULLOBS_EVS-80_d0.20           0.050 [0.034,0.073] viol=0
+  FULLOBS_GREEDY_NONE            0.420 [0.378,0.464] viol=278606
+  FULLOBS_GREEDY_d0.00           0.418 [0.376,0.462] viol=0
+  FULLOBS_GREEDY_d0.05           0.404 [0.362,0.448] viol=0
+  FULLOBS_GREEDY_d0.10           0.394 [0.352,0.437] viol=0
+  FULLOBS_GREEDY_d0.20           0.040 [0.026,0.061] viol=0
+  FULLOBS_HUG_NONE               0.292 [0.254,0.333] viol=260667
+  FULLOBS_HUG_d0.00              0.294 [0.256,0.335] viol=0
+  FULLOBS_HUG_d0.05              0.294 [0.256,0.335] viol=0
+  FULLOBS_HUG_d0.10              0.302 [0.263,0.344] viol=0
+  FULLOBS_HUG_d0.20              0.034 [0.021,0.054] viol=0
+  FULLOBS_TACTIC-V0_NONE         0.448 [0.405,0.492] viol=100084
+  FULLOBS_TACTIC-V0_d0.00        0.456 [0.413,0.500] viol=0
+  FULLOBS_TACTIC-V0_d0.05        0.434 [0.391,0.478] viol=0
+  FULLOBS_TACTIC-V0_d0.10        0.478 [0.435,0.522] viol=0
+  FULLOBS_TACTIC-V0_d0.20        0.434 [0.391,0.478] viol=0
+  RULES-V0_EVS-80_NONE           0.132 [0.105,0.164] viol=22286
+  RULES-V0_EVS-80_d0.00          0.110 [0.085,0.140] viol=0
+  RULES-V0_EVS-80_d0.05          0.104 [0.080,0.134] viol=0
+  RULES-V0_EVS-80_d0.10          0.108 [0.084,0.138] viol=0
+  RULES-V0_EVS-80_d0.20          0.096 [0.073,0.125] viol=0
+  RULES-V0_GREEDY_NONE           0.578 [0.534,0.621] viol=15505
+  RULES-V0_GREEDY_d0.00          0.582 [0.538,0.624] viol=0
+  RULES-V0_GREEDY_d0.05          0.572 [0.528,0.615] viol=0
+  RULES-V0_GREEDY_d0.10          0.554 [0.510,0.597] viol=0
+  RULES-V0_GREEDY_d0.20          0.122 [0.096,0.154] viol=0
+  RULES-V0_HUG_NONE              0.374 [0.333,0.417] viol=15966
+  RULES-V0_HUG_d0.00             0.378 [0.337,0.421] viol=0
+  RULES-V0_HUG_d0.05             0.376 [0.335,0.419] viol=0
+  RULES-V0_HUG_d0.10             0.412 [0.370,0.456] viol=0
+  RULES-V0_HUG_d0.20             0.042 [0.028,0.063] viol=0
+  RULES-V0_TACTIC-V0_NONE        0.724 [0.683,0.761] viol=16114
+  RULES-V0_TACTIC-V0_d0.00       0.660 [0.617,0.700] viol=0
+  RULES-V0_TACTIC-V0_d0.05       0.678 [0.636,0.717] viol=0
+  RULES-V0_TACTIC-V0_d0.10       0.640 [0.597,0.681] viol=0
+  RULES-V0_TACTIC-V0_d0.20       0.588 [0.544,0.630] viol=0
+  SEL-81_EVS-80_NONE             0.170 [0.140,0.205] viol=29448
+  SEL-81_EVS-80_d0.00            0.136 [0.109,0.169] viol=0
+  SEL-81_EVS-80_d0.05            0.132 [0.105,0.164] viol=0
+  SEL-81_EVS-80_d0.10            0.162 [0.132,0.197] viol=0
+  SEL-81_EVS-80_d0.20            0.088 [0.066,0.116] viol=0
+  SEL-81_GREEDY_NONE             0.608 [0.565,0.650] viol=23656
+  SEL-81_GREEDY_d0.00            0.620 [0.577,0.661] viol=0
+  SEL-81_GREEDY_d0.05            0.576 [0.532,0.619] viol=0
+  SEL-81_GREEDY_d0.10            0.520 [0.476,0.563] viol=0
+  SEL-81_GREEDY_d0.20            0.106 [0.082,0.136] viol=0
+  SEL-81_HUG_NONE                0.390 [0.348,0.433] viol=21380
+  SEL-81_HUG_d0.00               0.394 [0.352,0.437] viol=0
+  SEL-81_HUG_d0.05               0.380 [0.339,0.423] viol=0
+  SEL-81_HUG_d0.10               0.432 [0.389,0.476] viol=0
+  SEL-81_HUG_d0.20               0.050 [0.034,0.073] viol=0
+  SEL-81_TACTIC-V0_NONE          0.790 [0.752,0.823] viol=15766
+  SEL-81_TACTIC-V0_d0.00         0.782 [0.744,0.816] viol=0
+  SEL-81_TACTIC-V0_d0.05         0.770 [0.731,0.805] viol=0
+  SEL-81_TACTIC-V0_d0.10         0.788 [0.750,0.822] viol=0
+  SEL-81_TACTIC-V0_d0.20         0.694 [0.652,0.733] viol=0
+  SEL3-80_EVS-80_NONE            0.184 [0.152,0.220] viol=37314
+  SEL3-80_EVS-80_d0.00           0.138 [0.111,0.171] viol=0
+  SEL3-80_EVS-80_d0.05           0.136 [0.109,0.169] viol=0
+  SEL3-80_EVS-80_d0.10           0.152 [0.123,0.186] viol=0
+  SEL3-80_EVS-80_d0.20           0.128 [0.102,0.160] viol=0
+  SEL3-80_GREEDY_NONE            0.608 [0.565,0.650] viol=28656
+  SEL3-80_GREEDY_d0.00           0.616 [0.573,0.658] viol=0
+  SEL3-80_GREEDY_d0.05           0.612 [0.569,0.654] viol=0
+  SEL3-80_GREEDY_d0.10           0.526 [0.482,0.569] viol=0
+  SEL3-80_GREEDY_d0.20           0.110 [0.085,0.140] viol=0
+  SEL3-80_HUG_NONE               0.406 [0.364,0.450] viol=26313
+  SEL3-80_HUG_d0.00              0.380 [0.339,0.423] viol=0
+  SEL3-80_HUG_d0.05              0.388 [0.346,0.431] viol=0
+  SEL3-80_HUG_d0.10              0.418 [0.376,0.462] viol=0
+  SEL3-80_HUG_d0.20              0.058 [0.041,0.082] viol=0
+  SEL3-80_TACTIC-V0_NONE         0.780 [0.742,0.814] viol=21144
+  SEL3-80_TACTIC-V0_d0.00        0.734 [0.694,0.771] viol=0
+  SEL3-80_TACTIC-V0_d0.05        0.756 [0.716,0.792] viol=0
+  SEL3-80_TACTIC-V0_d0.10        0.754 [0.714,0.790] viol=0
+  SEL3-80_TACTIC-V0_d0.20        0.676 [0.634,0.716] viol=0
+S25 verdict keys ['cg_v1', 'cg_v3', 'h_safe', 'h_val_1', 'h_val_2', 'h_val_3', 'h_val_4', 'n_cells', 'n_records', 'missing', 'spec', 'direction']

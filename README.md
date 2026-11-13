@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-11-13 (tag `archive-2026-11-13`, decision D166).** This repository is frozen and kept so that its
+> recorded results stay reproducible. Work continues, from the base, in the new repository `pelab`
+> (`/home/niro-1/Codes/pelab`). Start there; read `docs/HISTORY.md` in `pelab` for what was carried over and why.
+
 # Multi-Agent Adversarial RL for Partially Observable Pursuit-Evasion
 
 A production-grade research codebase for training adversarial policies in 1v1 pursuit-evasion under strict partial observability. Built with **Stable-Baselines3**, **Gymnasium**, and **PyTorch**, featuring a custom self-play orchestrator, masking curriculum, best-response exploitability testing, and distributed training across GPU workstations.

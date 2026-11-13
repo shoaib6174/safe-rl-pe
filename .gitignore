@@ -51,3 +51,7 @@ viz_outputs/
 .claude/
 .serena/
 .worktrees/
+
+# LaTeX build files of the Paper B draft
+docs/paper_b/draft/main.bbl
+docs/paper_b/draft/main.blg
